@@ -94,7 +94,76 @@ type ChannelOtherSettings struct {
 	// ToolLossPolicy is a channel-level opt-in for request-phase conversion
 	// rejection. Empty follows the default allow policy. Accepted values:
 	// "", "allow", "safe", "strict".
-	ToolLossPolicy string `json:"tool_loss_policy,omitempty"`
+	ToolLossPolicy string                 `json:"tool_loss_policy,omitempty"`
+	Router         *ChannelRoutingProfile `json:"router,omitempty"`
+}
+
+type ChannelRoutingProfile struct {
+	Enabled         bool   `json:"enabled"`
+	SupportsText    *bool  `json:"supports_text,omitempty"`
+	SupportsImage   *bool  `json:"supports_image,omitempty"`
+	SupportsVideo   *bool  `json:"supports_video,omitempty"`
+	UnknownFallback bool   `json:"unknown_fallback"`
+	ToolSupport     string `json:"tool_support,omitempty"`
+}
+
+const (
+	ToolSupportUnverified  = "unverified"
+	ToolSupportSupported   = "supported"
+	ToolSupportUnsupported = "unsupported"
+)
+
+func DefaultChannelRoutingProfile() ChannelRoutingProfile {
+	enabled := true
+	return ChannelRoutingProfile{
+		SupportsText: &enabled,
+		ToolSupport:  ToolSupportUnverified,
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
+func (p ChannelRoutingProfile) EffectiveText() bool {
+	return p.SupportsText == nil || *p.SupportsText
+}
+
+func (p ChannelRoutingProfile) EffectiveImage() bool {
+	return p.SupportsImage != nil && *p.SupportsImage
+}
+
+func (p ChannelRoutingProfile) EffectiveVideo() bool {
+	return p.SupportsVideo != nil && *p.SupportsVideo
+}
+
+func (s *ChannelOtherSettings) RoutingProfile() ChannelRoutingProfile {
+	if s == nil || s.Router == nil {
+		return DefaultChannelRoutingProfile()
+	}
+	return *s.Router
+}
+
+func (p *ChannelRoutingProfile) Validate() error {
+	if p == nil {
+		return nil
+	}
+	switch p.ToolSupport {
+	case "", ToolSupportUnverified, ToolSupportSupported, ToolSupportUnsupported:
+	default:
+		return fmt.Errorf("invalid router.tool_support: %s", p.ToolSupport)
+	}
+	if p.UnknownFallback && (!p.EffectiveText() || !p.EffectiveImage() || !p.EffectiveVideo()) {
+		return fmt.Errorf("router.unknown_fallback requires text, image and video capabilities")
+	}
+	return nil
+}
+
+func (s *ChannelOtherSettings) ValidateRouter() error {
+	if s == nil {
+		return nil
+	}
+	return s.Router.Validate()
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

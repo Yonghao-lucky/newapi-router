@@ -230,6 +230,34 @@ func CacheGetChannel(id int) (*Channel, error) {
 	return c, nil
 }
 
+// GetEnabledChannelsForGroup returns all enabled cached channels that
+// serve the given group. This is used by the AI Router to enumerate
+// candidates for capability filtering without hitting the database.
+func GetEnabledChannelsForGroup(group string) []*Channel {
+	if !common.MemoryCacheEnabled {
+		var dbChannels []*Channel
+		DB.Where("status = ? AND \"group\" = ?", common.ChannelStatusEnabled, group).Find(&dbChannels)
+		return dbChannels
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	var result []*Channel
+	for _, c := range channelsIDM {
+		if c.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		for _, g := range c.GetGroups() {
+			if g == group {
+				result = append(result, c)
+				break
+			}
+		}
+	}
+	return result
+}
+
 func CacheGetChannelInfo(id int) (*ChannelInfo, error) {
 	if !common.MemoryCacheEnabled {
 		channel, err := GetChannelById(id, true)

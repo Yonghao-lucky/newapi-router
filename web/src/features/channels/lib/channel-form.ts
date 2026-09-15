@@ -289,6 +289,13 @@ export const channelFormSchema = z
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
+    // AI Router capability settings (stored in settings JSON)
+    router_enabled: z.string().optional(), // 'unset' | 'true' | 'false'
+    router_supports_text: z.string().optional(),
+    router_supports_image: z.string().optional(),
+    router_supports_video: z.string().optional(),
+    router_unknown_fallback: z.string().optional(),
+    router_tool_support: z.string().optional(), // 'unset' | 'supported' | 'unsupported'
   })
   .superRefine((data, ctx) => {
     if (
@@ -479,6 +486,13 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
   advanced_custom: '',
+  // AI Router capability settings
+  router_enabled: 'unset',
+  router_supports_text: 'unset',
+  router_supports_image: 'unset',
+  router_supports_video: 'unset',
+  router_unknown_fallback: 'unset',
+  router_tool_support: 'unset',
 }
 
 // ============================================================================
@@ -549,6 +563,12 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  let routerEnabled = 'unset'
+  let routerSupportsText = 'unset'
+  let routerSupportsImage = 'unset'
+  let routerSupportsVideo = 'unset'
+  let routerUnknownFallback = 'unset'
+  let routerToolSupport = 'unset'
 
   if (channel.settings) {
     try {
@@ -577,6 +597,36 @@ export function transformChannelToFormDefaults(
         : ''
       if (parsed.advanced_custom) {
         advancedCustom = stringifyAdvancedCustomConfig(parsed.advanced_custom)
+      }
+      if (parsed.router) {
+        const r = parsed.router
+        routerEnabled =
+          r.enabled === true ? 'true' : r.enabled === false ? 'false' : 'unset'
+        routerSupportsText =
+          r.supports_text === true
+            ? 'true'
+            : r.supports_text === false
+              ? 'false'
+              : 'unset'
+        routerSupportsImage =
+          r.supports_image === true
+            ? 'true'
+            : r.supports_image === false
+              ? 'false'
+              : 'unset'
+        routerSupportsVideo =
+          r.supports_video === true
+            ? 'true'
+            : r.supports_video === false
+              ? 'false'
+              : 'unset'
+        routerUnknownFallback =
+          r.unknown_fallback === true
+            ? 'true'
+            : r.unknown_fallback === false
+              ? 'false'
+              : 'unset'
+        routerToolSupport = r.tool_support || 'unset'
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -630,6 +680,13 @@ export function transformChannelToFormDefaults(
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    // AI Router capability settings
+    router_enabled: routerEnabled,
+    router_supports_text: routerSupportsText,
+    router_supports_image: routerSupportsImage,
+    router_supports_video: routerSupportsVideo,
+    router_unknown_fallback: routerUnknownFallback,
+    router_tool_support: routerToolSupport,
   }
 }
 
@@ -808,6 +865,40 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   } else if ('advanced_custom' in settingsObj) {
     delete settingsObj.advanced_custom
+  }
+
+  // AI Router capability settings
+  const hasRouterConfig =
+    formData.router_enabled !== 'unset' ||
+    formData.router_supports_text !== 'unset' ||
+    formData.router_supports_image !== 'unset' ||
+    formData.router_supports_video !== 'unset' ||
+    formData.router_unknown_fallback !== 'unset' ||
+    formData.router_tool_support !== 'unset'
+
+  if (hasRouterConfig) {
+    const router: Record<string, unknown> = {}
+    if (formData.router_enabled !== 'unset') {
+      router.enabled = formData.router_enabled === 'true'
+    }
+    if (formData.router_supports_text !== 'unset') {
+      router.supports_text = formData.router_supports_text === 'true'
+    }
+    if (formData.router_supports_image !== 'unset') {
+      router.supports_image = formData.router_supports_image === 'true'
+    }
+    if (formData.router_supports_video !== 'unset') {
+      router.supports_video = formData.router_supports_video === 'true'
+    }
+    if (formData.router_unknown_fallback !== 'unset') {
+      router.unknown_fallback = formData.router_unknown_fallback === 'true'
+    }
+    if (formData.router_tool_support !== 'unset') {
+      router.tool_support = formData.router_tool_support
+    }
+    settingsObj.router = router
+  } else if ('router' in settingsObj) {
+    delete settingsObj.router
   }
 
   return JSON.stringify(settingsObj)

@@ -195,3 +195,81 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestChannelRoutingProfileSettingsValidation(t *testing.T) {
+	boolPtr := func(value bool) *bool { return &value }
+
+	tests := []struct {
+		name    string
+		router  dto.ChannelRoutingProfile
+		wantErr string
+	}{
+		{
+			name:   "text only enabled channel is valid",
+			router: dto.ChannelRoutingProfile{Enabled: true, ToolSupport: dto.ToolSupportUnverified},
+		},
+		{
+			name:   "enabled video only channel is valid",
+			router: dto.ChannelRoutingProfile{Enabled: true, SupportsText: boolPtr(false), SupportsVideo: boolPtr(true)},
+		},
+		{
+			name:    "unknown fallback requires full capability",
+			router:  dto.ChannelRoutingProfile{UnknownFallback: true, SupportsImage: boolPtr(true)},
+			wantErr: "unknown_fallback",
+		},
+		{
+			name:    "invalid tool support rejected",
+			router:  dto.ChannelRoutingProfile{ToolSupport: "auto"},
+			wantErr: "tool_support",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := &Channel{}
+			channel.SetOtherSettings(dto.ChannelOtherSettings{Router: &tt.router})
+			err := channel.ValidateSettings()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestChannelCacheUpdatePreservesRoutingProfile(t *testing.T) {
+	boolPtr := func(value bool) *bool { return &value }
+
+	originalMemoryCache := common.MemoryCacheEnabled
+	originalChannels := channelsIDM
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = originalMemoryCache
+		channelsIDM = originalChannels
+	})
+	common.MemoryCacheEnabled = true
+	channelsIDM = make(map[int]*Channel)
+
+	profile := dto.ChannelRoutingProfile{
+		Enabled:       true,
+		SupportsImage: boolPtr(true),
+		ToolSupport:   dto.ToolSupportUnverified,
+	}
+	channel := &Channel{Id: 921001, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled}
+	channel.SetOtherSettings(dto.ChannelOtherSettings{Router: &profile})
+	require.NoError(t, channel.ValidateSettings())
+
+	CacheUpdateChannel(channel)
+	cached, err := CacheGetChannel(channel.Id)
+	require.NoError(t, err)
+	assert.Equal(t, profile, *cached.GetOtherSettings().Router)
+
+	profile.SupportsVideo = boolPtr(true)
+	profile.UnknownFallback = true
+	channel.SetOtherSettings(dto.ChannelOtherSettings{Router: &profile})
+	CacheUpdateChannel(channel)
+	cached, err = CacheGetChannel(channel.Id)
+	require.NoError(t, err)
+	assert.Equal(t, profile, *cached.GetOtherSettings().Router)
+}

@@ -112,6 +112,16 @@ export interface ChannelOtherSettings {
   upstream_model_update_last_check_time?: number
   upstream_model_update_last_detected_models?: string[]
   advanced_custom?: AdvancedCustomConfig
+  router?: ChannelRoutingProfile
+}
+
+export interface ChannelRoutingProfile {
+  enabled?: boolean
+  supports_text?: boolean | null
+  supports_image?: boolean | null
+  supports_video?: boolean | null
+  unknown_fallback?: boolean
+  tool_support?: 'unverified' | 'supported' | 'unsupported'
 }
 
 export interface AdvancedCustomConfig {

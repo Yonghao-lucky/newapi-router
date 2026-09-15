@@ -268,6 +268,17 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/task_plugin_options", middleware.AdminAuth(), middleware.RequirePermission(authz.TaskPluginBind), controller.GetTaskPluginOptions)
 		registerChannelRoutes(apiRouter)
 		registerAuthzRoutes(apiRouter)
+
+		// AI Router management API (admin only).
+		aiRouterGroup := apiRouter.Group("/ai-router")
+		aiRouterGroup.Use(middleware.AdminAuth())
+		{
+			aiRouterGroup.GET("/settings", controller.GetAIRouterSettings)
+			aiRouterGroup.PUT("/settings", controller.UpdateAIRouterSettings)
+			aiRouterGroup.GET("/logs", controller.GetAIRouterLogs)
+			aiRouterGroup.GET("/stats", controller.GetAIRouterStats)
+		}
+
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		tokenRoute.Use(middleware.TokenOperationAudit())

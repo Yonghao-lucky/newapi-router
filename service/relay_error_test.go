@@ -124,3 +124,32 @@ func TestProcessChannelErrorMasksDisableReasonAndNotification(t *testing.T) {
 	assert.NotContains(t, notification.Content, "review-secret")
 	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
 }
+
+// TestShouldRetryRelayErrorBaselineClassification records the AI Router Phase 0
+// baseline: which upstream statuses New API retries today. The V1 fallback
+// design reuses this exact classification, so these expectations must not
+// drift while the Router is being built.
+func TestShouldRetryRelayErrorBaselineClassification(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		statusCode int
+		wantRetry  bool
+	}{
+		{name: "429 rate limit retries", statusCode: http.StatusTooManyRequests, wantRetry: true},
+		{name: "500 retries", statusCode: http.StatusInternalServerError, wantRetry: true},
+		{name: "502 retries", statusCode: http.StatusBadGateway, wantRetry: true},
+		{name: "503 retries", statusCode: http.StatusServiceUnavailable, wantRetry: true},
+		{name: "504 gateway timeout never retries", statusCode: http.StatusGatewayTimeout, wantRetry: false},
+		{name: "400 bad request does not retry", statusCode: http.StatusBadRequest, wantRetry: false},
+		{name: "408 request timeout does not retry", statusCode: http.StatusRequestTimeout, wantRetry: false},
+		{name: "401 retries today", statusCode: http.StatusUnauthorized, wantRetry: true},
+		{name: "connection-level errors (code < 100) retry", statusCode: 0, wantRetry: true},
+		{name: "2xx never retries", statusCode: http.StatusOK, wantRetry: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			err := types.NewErrorWithStatusCode(errors.New("upstream failure"), types.ErrorCodeBadResponseStatusCode, test.statusCode)
+			assert.Equal(t, test.wantRetry, ShouldRetryRelayError(c, err, 1))
+		})
+	}
+}

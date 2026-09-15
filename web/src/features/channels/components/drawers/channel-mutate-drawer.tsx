@@ -36,6 +36,7 @@ import {
   Code,
   Route,
   Settings,
+  Settings2,
   SlidersHorizontal,
   Wand2,
 } from 'lucide-react'
@@ -2080,6 +2081,84 @@ export function ChannelMutateDrawer({
           </div>
         </div>
       </fieldset>
+
+      <CardHeading
+        title={t('AI Router Capability Configuration')}
+        icon={<Settings2 className='h-4 w-4' />}
+        iconTone='info'
+      />
+      <fieldset
+        disabled={sensitiveLocked}
+        className='space-y-4 disabled:opacity-60'
+      >
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Unset fields will use global defaults. Router capability tags are used by AI Router for channel selection filtering.'
+          )}
+        </p>
+        <div className='divide-border space-y-0 divide-y border-y'>
+          {(
+            [
+              ['router_enabled', 'Router Enabled'],
+              ['router_supports_text', 'Supports Text'],
+              ['router_supports_image', 'Supports Image'],
+              ['router_supports_video', 'Supports Video'],
+              ['router_unknown_fallback', 'Unknown Type Fallback'],
+            ] as const
+          ).map(([fieldName, label]) => (
+            <FormField
+              key={fieldName}
+              control={form.control}
+              name={fieldName}
+              render={({ field }) => (
+                <FormItem className='flex items-center justify-between px-4 py-3'>
+                  <FormLabel>{t(label)}</FormLabel>
+                  <Select
+                    value={String(field.value ?? 'unset')}
+                    onValueChange={(v) => field.onChange(v ?? 'unset')}
+                  >
+                    <SelectTrigger className='w-40'>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value='unset'>{t('Unset (use default)')}</SelectItem>
+                        <SelectItem value='true'>{t('Yes')}</SelectItem>
+                        <SelectItem value='false'>{t('No')}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </FormItem>
+              )}
+            />
+          ))}
+          <FormField
+            control={form.control}
+            name='router_tool_support'
+            render={({ field }) => (
+              <FormItem className='flex items-center justify-between px-4 py-3'>
+                <FormLabel>{t('Tool Support')}</FormLabel>
+                <Select
+                  value={String(field.value ?? 'unset')}
+                  onValueChange={(v) => field.onChange(v ?? 'unset')}
+                >
+                  <SelectTrigger className='w-40'>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value='unset'>{t('Unset (use default)')}</SelectItem>
+                      <SelectItem value='supported'>{t('Supported')}</SelectItem>
+                      <SelectItem value='unsupported'>{t('Unsupported')}</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </FormItem>
+            )}
+          />
+        </div>
+      </fieldset>
+
     </div>
   )
 

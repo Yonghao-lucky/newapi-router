@@ -654,3 +654,64 @@ func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool_loss_policy")
 }
+
+func TestChannelOtherSettingsOldDataUsesSafeRoutingDefaults(t *testing.T) {
+	var settings ChannelOtherSettings
+	require.NoError(t, json.Unmarshal([]byte(`{"tool_loss_policy":"safe"}`), &settings))
+	assert.Equal(t, DefaultChannelRoutingProfile(), settings.RoutingProfile())
+}
+
+func TestChannelRoutingProfileRoundTrip(t *testing.T) {
+	other := ChannelOtherSettings{
+		Router: &ChannelRoutingProfile{
+			Enabled:         true,
+			SupportsText:    boolPtr(true),
+			SupportsImage:   boolPtr(true),
+			SupportsVideo:   boolPtr(true),
+			UnknownFallback: true,
+			ToolSupport:     ToolSupportSupported,
+		},
+	}
+	raw, err := json.Marshal(other)
+	require.NoError(t, err)
+	var restored ChannelOtherSettings
+	require.NoError(t, json.Unmarshal(raw, &restored))
+	assert.Equal(t, other.RoutingProfile(), restored.RoutingProfile())
+
+	var unknownTool ChannelOtherSettings
+	require.NoError(t, json.Unmarshal([]byte(`{"router":{"tool_support":"unknown"}}`), &unknownTool))
+	assert.Equal(t, "unknown", unknownTool.RoutingProfile().ToolSupport)
+}
+
+func TestChannelRoutingProfileValidation(t *testing.T) {
+	valid := DefaultChannelRoutingProfile()
+	assert.NoError(t, valid.Validate())
+
+	invalidTool := DefaultChannelRoutingProfile()
+	invalidTool.ToolSupport = "auto"
+	assert.Error(t, invalidTool.Validate())
+
+	invalidUnknown := ChannelRoutingProfile{UnknownFallback: true, SupportsText: boolPtr(true), SupportsImage: boolPtr(true)}
+	assert.Error(t, invalidUnknown.Validate())
+}
+
+func TestChannelRoutingProfileExplicitFalse(t *testing.T) {
+	missing := ChannelOtherSettings{}
+	assert.True(t, missing.RoutingProfile().EffectiveText())
+	assert.False(t, missing.RoutingProfile().EffectiveImage())
+	assert.False(t, missing.RoutingProfile().EffectiveVideo())
+
+	empty := ChannelOtherSettings{Router: &ChannelRoutingProfile{}}
+	assert.True(t, empty.RoutingProfile().EffectiveText())
+	assert.False(t, empty.RoutingProfile().EffectiveImage())
+	assert.False(t, empty.RoutingProfile().EffectiveVideo())
+
+	raw, err := json.Marshal(ChannelOtherSettings{Router: &ChannelRoutingProfile{SupportsText: boolPtr(false)}})
+	require.NoError(t, err)
+	var restored ChannelOtherSettings
+	require.NoError(t, json.Unmarshal(raw, &restored))
+	require.NotNil(t, restored.Router.SupportsText)
+	assert.False(t, restored.RoutingProfile().EffectiveText())
+	assert.False(t, restored.RoutingProfile().EffectiveImage())
+	assert.False(t, restored.RoutingProfile().EffectiveVideo())
+}

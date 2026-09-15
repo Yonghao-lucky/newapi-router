@@ -142,6 +142,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
+	// AI Router path: use fallback loop instead of standard retry loop.
+	if common.GetContextKeyBool(c, constant.ContextKeyAIRouterActive) {
+		runAIRouterRelay(c, relayInfo, relayFormat, &newAPIError)
+		return
+	}
+
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)

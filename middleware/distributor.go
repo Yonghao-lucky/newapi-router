@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -156,7 +157,12 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				if channel == nil {
+				// AI Router: if enabled and this is a target model, skip New API
+				// channel selection. The actual channel selection and fallback
+				// happen in controller.Relay.
+				if ai_router.ShouldUseRouter(c, modelRequest.Model, c.Request.URL.Path) {
+					common.SetContextKey(c, constant.ContextKeyAIRouterActive, true)
+				} else if channel == nil {
 					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
 						Ctx:         c,
 						ModelName:   modelRequest.Model,

@@ -431,6 +431,32 @@ See [User authentication and login sessions](./docs/authentication.md) for the t
 
 ---
 
+## 🧭 AI Router
+
+AI Router is a lightweight enhancement to New API's channel selection flow. For configured target models (e.g. `kimi-k3`), it inspects the request content modality (text / image / video / unknown), strictly filters out incompatible channels, then reuses New API's existing priority/weight selection, Provider Adapters, retry and streaming handling — with automatic fallback across channels on retryable failures.
+
+### Core Features
+
+- Content-modality channel filtering: video requests never reach text-only channels; unknown content types only reach full-capability fallback channels
+- Automatic fallback: excludes already-attempted channels and retries up to N times (default 3), using New API's existing error classification
+- No SSE duplication: once the first valid streamed output is sent, channel switching is disabled
+- Hot-reloaded config with strict validation (`ai_router.*` options); toggle off to instantly restore the standard New API path
+- Async telemetry (`ai_router_logs`): modality, attempt chain, TTFT, duration — never blocks requests, never stores message content or media
+- Admin API (`/api/ai-router/*`) and web console page (`/ai-router`) for config, logs and stats
+
+### Quick Start
+
+1. Deploy as usual (existing New API steps apply; the `ai_router_logs` table is created automatically)
+2. Edit each channel's **AI Router Capability Configuration** block in the channel form
+3. Open **AI Router** in the admin sidebar, set target models, review max attempts, enable the switch
+4. Monitor routes and stats in the **AI Router** page's Monitoring tab
+
+AI Router only affects models listed in its target models; all other traffic follows the standard New API path unchanged.
+
+📖 Full documentation: [AI Router project docs](../ai-router/README.md) (admin guide, ops guide, API reference, known limitations)
+
+---
+
 ## 🔗 Related Projects
 
 ### Upstream Projects

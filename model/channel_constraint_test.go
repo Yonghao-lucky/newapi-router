@@ -176,6 +176,103 @@ func TestFilterCandidateIDs(t *testing.T) {
 	}
 }
 
+// Baseline fixture for AI Router Phase 0: three enabled OpenAI channels
+// offering the same model at two priority levels, mirroring the planned
+// A/B(priority=100)/C(priority=50) fallback topology.
+func baselinePriorityChannels(t *testing.T) {
+	t.Helper()
+	high, low := int64(100), int64(50)
+	weight := uint(0)
+	channels := []*Channel{
+		{Id: 920001, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "A", Models: "kimi-k3", Group: "default", Priority: &high, Weight: &weight},
+		{Id: 920002, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "B", Models: "kimi-k3", Group: "default", Priority: &high, Weight: &weight},
+		{Id: 920003, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "C", Models: "kimi-k3", Group: "default", Priority: &low, Weight: &weight},
+	}
+	for _, channel := range channels {
+		require.NoError(t, channel.Insert())
+	}
+}
+
+// TestGetRandomSatisfiedChannelRetrySkipsSamePriority pins the current retry
+// semantics that AI Router V1 will change for target models: the retry index
+// maps directly onto a priority tier, so a same-priority sibling is never
+// retried after a failure, and an exhausted tier index clamps to the last
+// tier instead of failing over to a lower one.
+func TestGetRandomSatisfiedChannelRetrySkipsSamePriority(t *testing.T) {
+	originalMemoryCache := common.MemoryCacheEnabled
+	originalChannels := channelsIDM
+	originalGroups := group2model2channels
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = originalMemoryCache
+		channelsIDM = originalChannels
+		group2model2channels = originalGroups
+	})
+	baselinePriorityChannels(t)
+	InitChannelCache()
+
+	// retry=0 selects the highest tier (A or B).
+	first, err := GetRandomSatisfiedChannel("default", "kimi-k3", 0, nil)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Contains(t, []string{"A", "B"}, first.Name)
+
+	// retry=1 jumps straight to the lower tier: same-priority sibling B is
+	// unreachable through the retry index.
+	second, err := GetRandomSatisfiedChannel("default", "kimi-k3", 1, nil)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	assert.Equal(t, "C", second.Name)
+
+	// retry beyond the tier count clamps to the last tier, so a repeated
+	// call with a clamped index can return the same channel that already
+	// failed this request (there is no per-request exclusion set).
+	for _, clamped := range []int{2, 5} {
+		again, err := GetRandomSatisfiedChannel("default", "kimi-k3", clamped, nil)
+		require.NoError(t, err)
+		require.NotNil(t, again)
+		assert.Equal(t, "C", again.Name)
+	}
+}
+
+// TestGetRandomSatisfiedChannelSingleTierReturnsAnySibling documents that a
+// single tier with weight 0 channels may return any member on every call —
+// including one already chosen earlier in the same request — because channel
+// exclusion is not part of the current selection contract.
+func TestGetRandomSatisfiedChannelSingleTierReturnsAnySibling(t *testing.T) {
+	originalMemoryCache := common.MemoryCacheEnabled
+	originalChannels := channelsIDM
+	originalGroups := group2model2channels
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = originalMemoryCache
+		channelsIDM = originalChannels
+		group2model2channels = originalGroups
+	})
+	high := int64(100)
+	weight := uint(0)
+	channels := []*Channel{
+		{Id: 920011, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "A", Models: "kimi-k3", Group: "default", Priority: &high, Weight: &weight},
+		{Id: 920012, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "B", Models: "kimi-k3", Group: "default", Priority: &high, Weight: &weight},
+	}
+	for _, channel := range channels {
+		require.NoError(t, channel.Insert())
+	}
+	InitChannelCache()
+
+	seen := map[string]bool{}
+	for range 50 {
+		channel, err := GetRandomSatisfiedChannel("default", "kimi-k3", 0, nil)
+		require.NoError(t, err)
+		require.NotNil(t, channel)
+		seen[channel.Name] = true
+	}
+	// Both siblings are reachable at the same tier; selection cannot exclude
+	// a previously failed channel today.
+	assert.Contains(t, seen, "A")
+	assert.Contains(t, seen, "B")
+}
+
 func TestChannelSatisfiesFilters(t *testing.T) {
 	alphaSetting := `{"task_plugin_key":"alpha"}`
 	alpha := &Channel{Id: 1, Type: constant.ChannelTypeTaskPlugin, Setting: &alphaSetting}

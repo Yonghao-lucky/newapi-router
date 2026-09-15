@@ -138,6 +138,11 @@ export function useSidebarData(): SidebarData {
             icon: Radio,
           },
           {
+            title: t('AI Router'),
+            url: '/ai-router',
+            icon: Activity,
+          },
+          {
             title: t('Models'),
             url: '/models/metadata',
             icon: Box,

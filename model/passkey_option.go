@@ -263,7 +263,7 @@ func applyPasskeyDomainOptions(values map[string]string) {
 			if key == "ServerAddress" {
 				system_setting.ServerAddress = value
 			} else {
-				handleConfigUpdate(key, value)
+				_, _ = handleConfigUpdate(key, value)
 			}
 		}
 	}

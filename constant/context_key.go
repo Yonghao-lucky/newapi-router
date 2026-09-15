@@ -80,3 +80,9 @@ const (
 	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.
 	ContextKeyTokenAuditSucceeded ContextKey = "token_audit_succeeded"
 )
+
+// AI Router request-scoped context keys.
+const (
+	ContextKeyAIRouterActive  ContextKey = "ai_router_active"
+	ContextKeyAIRouterContext ContextKey = "ai_router_context"
+)
