@@ -30,6 +30,7 @@ import (
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
+	ai_router_service "github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/service/authz"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -105,6 +106,21 @@ func main() {
 
 		go model.SyncChannelCache(common.SyncFrequency)
 	}
+
+	// AI Router: recover the target policy snapshot from the database, then
+	// migrate V1's global target_models into policies on the master node.
+	// Runs after InitChannelCache so migration candidates come from the same
+	// view the Router would use. Both are best-effort: a failure logs and
+	// leaves the previous behavior (V1 target_models routing) in place.
+	if err := ai_router_service.ReloadTargetPolicySnapshot(); err != nil {
+		common.SysError("ai router: failed to load target policy snapshot: " + err.Error())
+	}
+	if common.IsMasterNode {
+		if err := ai_router_service.MigrateV1TargetPolicies(); err != nil {
+			common.SysError("ai router: V1 target model migration failed: " + err.Error())
+		}
+	}
+
 	wsmanager.StartSubscriber(context.Background())
 
 	// Warm pricing after channel cache initialization so Advanced Custom
