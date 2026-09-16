@@ -230,29 +230,52 @@ func CacheGetChannel(id int) (*Channel, error) {
 	return c, nil
 }
 
-// GetEnabledChannelsForGroup returns all enabled cached channels that
-// serve the given group. This is used by the AI Router to enumerate
-// candidates for capability filtering without hitting the database.
-func GetEnabledChannelsForGroup(group string) []*Channel {
+// GetEnabledChannelsForGroupModel returns the enabled channels that can serve
+// the given group and model, after applying the request's channel constraints.
+// It uses the same candidate source as New API's own selection (memory cache or
+// abilities table) so the AI Router only layers capability filtering on top;
+// enumerating the whole group would hand the Router channels that do not serve
+// the requested model at all.
+func GetEnabledChannelsForGroupModel(group, modelName string, filters []dto.ChannelFilter) []*Channel {
 	if !common.MemoryCacheEnabled {
-		var dbChannels []*Channel
-		DB.Where("status = ? AND \"group\" = ?", common.ChannelStatusEnabled, group).Find(&dbChannels)
-		return dbChannels
+		var abilities []Ability
+		if err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, modelName, true).Find(&abilities).Error; err != nil {
+			common.SysLog(fmt.Sprintf("ai router: failed to load abilities for group %s model %s: %v", group, modelName, err))
+			return nil
+		}
+		var ids []int
+		for _, ability := range filterAbilitiesByConstraints(abilities, modelName, filters) {
+			ids = append(ids, ability.ChannelId)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		channels, err := GetChannelsByIds(ids)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("ai router: failed to load channels %v: %v", ids, err))
+			return nil
+		}
+		result := make([]*Channel, 0, len(channels))
+		for _, channel := range channels {
+			if channel.Status == common.ChannelStatusEnabled {
+				result = append(result, channel)
+			}
+		}
+		return result
 	}
 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
-	var result []*Channel
-	for _, c := range channelsIDM {
-		if c.Status != common.ChannelStatusEnabled {
-			continue
-		}
-		for _, g := range c.GetGroups() {
-			if g == group {
-				result = append(result, c)
-				break
-			}
+	ids, _ := filterCandidateIDs(group2model2channels[group][modelName], modelName, filters)
+	if len(ids) == 0 {
+		normalizedModel := ratio_setting.RoutingMatchModelName(modelName)
+		ids, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], modelName, filters)
+	}
+	result := make([]*Channel, 0, len(ids))
+	for _, id := range ids {
+		if channel, ok := channelsIDM[id]; ok && channel.Status == common.ChannelStatusEnabled {
+			result = append(result, channel)
 		}
 	}
 	return result

@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -51,11 +52,9 @@ func runAIRouterRelay(
 	demand.Model = relayInfo.OriginModelName
 
 	// Collect all enabled channels for this group and model from cache.
-	group := relayInfo.TokenGroup
-	if group == "" {
-		group = "default"
-	}
-	allChannels := collectChannelsForGroup(group)
+	filters := service.GetChannelConstraints(c).Filters
+	group := resolveRouterGroup(c, relayInfo, filters)
+	allChannels := collectChannelsForGroup(group, relayInfo.OriginModelName, filters)
 
 	routeCtx := ai_router.NewRouteContext(demand, settings.MaxAttempts)
 	routeCtx.RequestID = c.GetString(common.RequestIdKey)
@@ -131,10 +130,32 @@ func runAIRouterRelay(
 	ai_router.RecordTelemetry(routeCtx, relayInfo.UserId, group, success, errMsg)
 }
 
-// CollectChannelsForGroup returns the cached channel candidates for a
-// given group, converted to RouterChannel views for the Router pipeline.
-func collectChannelsForGroup(group string) []ai_router.RouterChannel {
-	channels := model.GetEnabledChannelsForGroup(group)
+// resolveRouterGroup picks the group the Router enumerates channels from,
+// mirroring New API's own selection: an empty token group falls back to
+// "default", and "auto" expands to the first auto group that can serve the
+// model. The resolved auto group is published so billing uses its ratio.
+func resolveRouterGroup(c *gin.Context, relayInfo *relaycommon.RelayInfo, filters []dto.ChannelFilter) string {
+	group := relayInfo.TokenGroup
+	if group == "" {
+		group = "default"
+	}
+	if group != "auto" {
+		return group
+	}
+	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	for _, autoGroup := range service.GetRequestAutoGroups(c, userGroup) {
+		if len(model.GetEnabledChannelsForGroupModel(autoGroup, relayInfo.OriginModelName, filters)) > 0 {
+			common.SetContextKey(c, constant.ContextKeyAutoGroup, autoGroup)
+			return autoGroup
+		}
+	}
+	return group
+}
+
+// collectChannelsForGroup converts the model-eligible channels of a group into
+// RouterChannel views for the Router pipeline.
+func collectChannelsForGroup(group, modelName string, filters []dto.ChannelFilter) []ai_router.RouterChannel {
+	channels := model.GetEnabledChannelsForGroupModel(group, modelName, filters)
 	result := make([]ai_router.RouterChannel, 0, len(channels))
 	for _, ch := range channels {
 		otherSettings := ch.GetOtherSettings()
