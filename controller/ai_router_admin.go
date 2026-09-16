@@ -89,6 +89,8 @@ func GetAIRouterLogs(c *gin.Context) {
 	groupID := c.Query("group_id")
 	successStr := c.Query("success")
 	modality := c.Query("modality")
+	fallback := c.Query("fallback")
+	channelID, _ := strconv.Atoi(c.Query("channel_id"))
 
 	var success *bool
 	if successStr == "true" {
@@ -101,6 +103,7 @@ func GetAIRouterLogs(c *gin.Context) {
 
 	logs, total, err := model.GetAIRouterLogs(
 		startTime, endTime, modelName, userID, groupID, success, modality,
+		fallback, channelID,
 		page, pageSize,
 	)
 	if err != nil {
@@ -140,7 +143,112 @@ func GetAIRouterStats(c *gin.Context) {
 	common.ApiSuccess(c, stats)
 }
 
-// GetAIRouterTargetPolicies returns paginated target policies.
+// GetAIRouterTrend returns time-bucketed success/failure counts.
+func GetAIRouterTrend(c *gin.Context) {
+	startTime, err := strconv.ParseInt(c.Query("start_time"), 10, 64)
+	if err != nil || startTime == 0 {
+		common.ApiErrorMsg(c, "start_time is required")
+		return
+	}
+	endTime, err := strconv.ParseInt(c.Query("end_time"), 10, 64)
+	if err != nil || endTime == 0 {
+		common.ApiErrorMsg(c, "end_time is required")
+		return
+	}
+	points, err := model.GetAIRouterTrend(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, points)
+}
+
+// GetAIRouterChannelStats aggregates per-channel attempts/finals for the
+// monitoring dashboard.
+func GetAIRouterChannelStats(c *gin.Context) {
+	startTime, err := strconv.ParseInt(c.Query("start_time"), 10, 64)
+	if err != nil || startTime == 0 {
+		common.ApiErrorMsg(c, "start_time is required")
+		return
+	}
+	endTime, err := strconv.ParseInt(c.Query("end_time"), 10, 64)
+	if err != nil || endTime == 0 {
+		common.ApiErrorMsg(c, "end_time is required")
+		return
+	}
+	stats, err := model.GetAIRouterChannelStats(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, stats)
+}
+
+// aiRouterCandidateView is one candidate row in the policy list response.
+type aiRouterCandidateView struct {
+	Id        int                            `json:"id"`
+	PolicyId  int                            `json:"policy_id"`
+	ChannelId int                            `json:"channel_id"`
+	Enabled   bool                           `json:"enabled"`
+	Channel   *model.TargetPolicyChannelInfo `json:"channel"`
+}
+
+// aiRouterTargetPolicyView is the policy row for the Web list: candidates are
+// enriched with the read-only channel view (scheduling/capabilities sourced
+// from the Channel itself).
+type aiRouterTargetPolicyView struct {
+	Id          int                     `json:"id"`
+	Model       string                  `json:"model"`
+	GroupId     string                  `json:"group_id"`
+	Enabled     bool                    `json:"enabled"`
+	MaxAttempts int                     `json:"max_attempts"`
+	CreatedAt   int64                   `json:"created_at"`
+	UpdatedAt   int64                   `json:"updated_at"`
+	Candidates  []aiRouterCandidateView `json:"candidates"`
+}
+
+// enrichTargetPolicies joins candidate channels with their live channel data.
+func enrichTargetPolicies(policies []*model.AIRouterTargetPolicy) []aiRouterTargetPolicyView {
+	ids := make([]int, 0, len(policies)*4)
+	for _, policy := range policies {
+		for _, candidate := range policy.Candidates {
+			ids = append(ids, candidate.ChannelId)
+		}
+	}
+	infos, err := model.BuildTargetPolicyChannelInfos(ids)
+	if err != nil {
+		common.SysError(fmt.Sprintf("ai router: build policy channel infos: %v", err))
+		infos = map[int]*model.TargetPolicyChannelInfo{}
+	}
+	views := make([]aiRouterTargetPolicyView, 0, len(policies))
+	for _, policy := range policies {
+		view := aiRouterTargetPolicyView{
+			Id:          policy.Id,
+			Model:       policy.Model,
+			GroupId:     policy.GroupId,
+			Enabled:     policy.Enabled,
+			MaxAttempts: policy.MaxAttempts,
+			CreatedAt:   policy.CreatedAt,
+			UpdatedAt:   policy.UpdatedAt,
+			Candidates:  make([]aiRouterCandidateView, 0, len(policy.Candidates)),
+		}
+		for _, candidate := range policy.Candidates {
+			view.Candidates = append(view.Candidates, aiRouterCandidateView{
+				Id:        candidate.Id,
+				PolicyId:  candidate.PolicyId,
+				ChannelId: candidate.ChannelId,
+				Enabled:   candidate.Enabled,
+				Channel:   infos[candidate.ChannelId],
+			})
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
+// GetAIRouterTargetPolicies returns paginated target policies with enriched
+// candidate channel info. search matches model/group substring; group_id is
+// an exact filter.
 func GetAIRouterTargetPolicies(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -153,28 +261,11 @@ func GetAIRouterTargetPolicies(c *gin.Context) {
 	if pageSize > 100 {
 		pageSize = 100
 	}
-	modelFilter := c.Query("model")
-	groupFilter := c.Query("group_id")
 
-	query := model.DB.Model(&model.AIRouterTargetPolicy{})
-	if modelFilter != "" {
-		query = query.Where("model = ?", modelFilter)
-	}
-	if groupFilter != "" {
-		query = query.Where("group_id = ?", groupFilter)
-	}
-
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	var policies []*model.AIRouterTargetPolicy
-	if err := query.Preload("Candidates").
-		Order("id DESC").
-		Offset((page - 1) * pageSize).
-		Limit(pageSize).
-		Find(&policies).Error; err != nil {
+	policies, total, err := model.GetAIRouterTargetPolicyPage(
+		c.Query("search"), c.Query("group_id"), page, pageSize,
+	)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -182,7 +273,7 @@ func GetAIRouterTargetPolicies(c *gin.Context) {
 		"total":     total,
 		"page":      page,
 		"page_size": pageSize,
-		"items":     policies,
+		"items":     enrichTargetPolicies(policies),
 	})
 }
 
@@ -247,7 +338,7 @@ func UpdateAIRouterTargetPolicy(c *gin.Context) {
 	})
 }
 
-// GetAIRouterTargetPolicy returns one policy with its candidates.
+// GetAIRouterTargetPolicy returns one policy with enriched candidates.
 func GetAIRouterTargetPolicy(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
@@ -259,7 +350,8 @@ func GetAIRouterTargetPolicy(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, policy)
+	views := enrichTargetPolicies([]*model.AIRouterTargetPolicy{policy})
+	common.ApiSuccess(c, views[0])
 }
 
 // DeleteAIRouterTargetPolicy removes the policy and its candidates.
@@ -308,6 +400,7 @@ type aiRouterChannelView struct {
 
 type aiRouterChannelRouterView struct {
 	Enabled         bool   `json:"enabled"`
+	RouterSet       bool   `json:"router_set"`
 	MaxRetry        int    `json:"max_retry"`
 	SupportsText    *bool  `json:"supports_text,omitempty"`
 	SupportsImage   *bool  `json:"supports_image,omitempty"`
@@ -406,6 +499,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			Weight:   ch.GetWeight(),
 			RoutingProfile: aiRouterChannelRouterView{
 				Enabled:         profile.Enabled,
+				RouterSet:       otherSettings.Router != nil,
 				MaxRetry:        profile.MaxRetry,
 				SupportsText:    profile.SupportsText,
 				SupportsImage:   profile.SupportsImage,
@@ -426,8 +520,10 @@ func GetAIRouterChannels(c *gin.Context) {
 
 // UpdateAIRouterChannelRouter merges Router capability fields into the
 // channel's existing settings JSON. Only the "router" key changes; every
-// other setting key is preserved as-is. Scheduling fields live on the
-// Channel itself and are updated via the scheduling endpoint.
+// other setting key is preserved as-is. Sending "router": null removes the
+// Router profile entirely (falls back to the default profile). Scheduling
+// fields live on the Channel itself and are updated via the scheduling
+// endpoint.
 func UpdateAIRouterChannelRouter(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
@@ -439,10 +535,6 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 	}
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
 		common.ApiErrorMsg(c, "无效的参数")
-		return
-	}
-	if req.Router == nil {
-		common.ApiErrorMsg(c, "router is required")
 		return
 	}
 
