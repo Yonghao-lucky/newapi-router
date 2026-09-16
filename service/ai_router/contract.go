@@ -45,6 +45,7 @@ type RouteContext struct {
 	AttemptedChannels map[int]bool
 	AttemptOrder      []int // attempt order for telemetry; maps give no ordering
 	CurrentAttempt    int
+	ChannelRetryNo    int // 0 = first call to the current channel
 	ResponseStarted   bool
 	StartedAt         int64 // unix nano
 	TTFT              int64 // milliseconds; 0 for non-streaming

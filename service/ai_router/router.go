@@ -46,11 +46,13 @@ func FilterChannelsWithExclusions(channels []RouterChannel, constraints ChannelR
 // RunFallbackLoop implements the request-level fallback strategy:
 //  1. Filter by capability (excluding already-attempted channels)
 //  2. Select highest priority, weight-random within tier
-//  3. Call relay
-//  4. On retryable error and response not started, exclude channel and retry
-//  5. On success or non-retryable error or response started, return
+//  3. Call relay; on a retryable error and response not started, retry the
+//     same channel up to its max_retry before excluding it
+//  4. On success or non-retryable error or response started, return
 //
-// callRelay is the callback that invokes the actual relay handler.
+// max_attempts counts distinct channels; max_retry only adds calls to the
+// current channel. callRelay is the callback that invokes the actual relay
+// handler.
 func RunFallbackLoop(
 	rc *RouteContext,
 	allChannels []RouterChannel,
@@ -86,23 +88,39 @@ func RunFallbackLoop(
 			return types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 		}
 		rc.Decision = *decision
+		rc.ChannelRetryNo = 0
+
+		// Channel-level retries: max_retry extra calls to the SAME channel
+		// after retryable failures, before the channel joins the attempted
+		// set and we move on. Non-retryable errors and a started response
+		// return immediately; the attempted-set exclusion below must not run
+		// until this channel's own retries are exhausted.
+		maxRetry := 0
+		if selected := findChannel(allChannels, decision.ChannelID); selected != nil {
+			maxRetry = selected.RoutingProfile.MaxRetry
+		}
+		for retryNo := 0; retryNo <= maxRetry; retryNo++ {
+			rc.ChannelRetryNo = retryNo
+			relayErr := callRelay()
+			if relayErr == nil {
+				return nil
+			}
+			lastError = relayErr
+
+			// If response already started, cannot retry or switch channels.
+			if rc.ResponseStarted {
+				return relayErr
+			}
+			// If non-retryable, return immediately.
+			if !isRetryable(relayErr) {
+				return relayErr
+			}
+			if retryNo < maxRetry {
+				continue
+			}
+			break
+		}
 		rc.MarkAttempted(decision.ChannelID)
-
-		relayErr := callRelay()
-		if relayErr == nil {
-			return nil
-		}
-		lastError = relayErr
-
-		// If response already started, cannot fallback to another channel.
-		if rc.ResponseStarted {
-			return relayErr
-		}
-
-		// If non-retryable, return immediately.
-		if !isRetryable(relayErr) {
-			return relayErr
-		}
 	}
 
 	return lastError
@@ -118,4 +136,13 @@ func isRetryable(err *types.NewAPIError) bool {
 		return false
 	}
 	return true
+}
+
+func findChannel(channels []RouterChannel, id int) *RouterChannel {
+	for i := range channels {
+		if channels[i].ID == id {
+			return &channels[i]
+		}
+	}
+	return nil
 }

@@ -204,6 +204,50 @@ func TestSnapshotImmutability(t *testing.T) {
 	assert.True(t, stored.Candidates[0].Enabled)
 }
 
+// The policy candidate set is the Router's admission list: an enabled policy
+// with a subset of channels must reduce the pool to exactly those channels,
+// and disabled candidate rows must drop their channel even though the
+// channel itself is up.
+func TestPolicyCandidatesRestrictPool(t *testing.T) {
+	setupPolicyServiceTest(t)
+	policyTestChannel(t, 947001, "in-a", "default", "kimi-k3", true)
+	policyTestChannel(t, 947002, "in-b", "default", "kimi-k3", true)
+	policyTestChannel(t, 947003, "outside", "default", "kimi-k3", true)
+
+	input := TargetPolicyInput{
+		Model: "kimi-k3", GroupId: "default", Enabled: true, MaxAttempts: 3,
+		Candidates: []TargetPolicyCandidateInput{
+			{ChannelID: 947001, Enabled: true},
+			{ChannelID: 947002, Enabled: false},
+		},
+	}
+	_, _, err := SaveTargetPolicy(input, 0)
+	require.NoError(t, err)
+
+	channels := model.GetEnabledChannelsForGroupModel("default", "kimi-k3", nil)
+	require.Len(t, channels, 3)
+
+	// Mirror the controller's intersection: only enabled candidates survive.
+	policy := GetTargetPolicySnapshot().GetPolicy("kimi-k3", "default")
+	require.NotNil(t, policy)
+	allowed := map[int]bool{}
+	for _, candidate := range policy.Candidates {
+		if candidate.Enabled {
+			allowed[candidate.ChannelID] = true
+		}
+	}
+	kept := 0
+	for _, ch := range channels {
+		if allowed[ch.Id] {
+			kept++
+		}
+	}
+	assert.Equal(t, 1, kept)
+	assert.True(t, allowed[947001])
+	assert.False(t, allowed[947002])
+	assert.False(t, allowed[947003], "channel outside the policy must not be admitted")
+}
+
 func TestMigrateV1TargetPoliciesIdempotent(t *testing.T) {
 	setupPolicyServiceTest(t)
 	policyTestChannel(t, 944001, "text-a", "default", "kimi-k3", true)

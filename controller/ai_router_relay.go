@@ -51,12 +51,16 @@ func runAIRouterRelay(
 	}
 	demand.Model = relayInfo.OriginModelName
 
-	// Collect all enabled channels for this group and model from cache.
+	// Resolve the group first (mirrors New API's own selection), then build
+	// the candidate set from the target policy snapshot intersected with the
+	// model/state-eligible channels of that group. All reads come from memory
+	// snapshots and the channel cache; the policy tables are never queried on
+	// this path.
 	filters := service.GetChannelConstraints(c).Filters
 	group := resolveRouterGroup(c, relayInfo, filters)
-	allChannels := collectChannelsForGroup(group, relayInfo.OriginModelName, filters)
+	allChannels := collectPolicyChannels(group, relayInfo.OriginModelName, filters, settings.MaxAttempts)
 
-	routeCtx := ai_router.NewRouteContext(demand, settings.MaxAttempts)
+	routeCtx := ai_router.NewRouteContext(demand, policyMaxAttempts(group, relayInfo.OriginModelName, settings.MaxAttempts))
 	routeCtx.RequestID = c.GetString(common.RequestIdKey)
 	common.SetContextKey(c, constant.ContextKeyAIRouterContext, routeCtx)
 
@@ -169,4 +173,41 @@ func collectChannelsForGroup(group, modelName string, filters []dto.ChannelFilte
 		})
 	}
 	return result
+}
+
+// collectPolicyChannels builds the Router's candidate set for a request: the
+// enabled candidates of the (model, group) target policy, intersected with the
+// model-eligible enabled channels of the group. Channels outside the policy
+// are never considered, for the first selection or for fallback. When no
+// enabled policy covers (model, group), it falls back to the V1-compatible
+// behavior of considering every model-eligible channel in the group.
+func collectPolicyChannels(group, modelName string, filters []dto.ChannelFilter, defaultMaxAttempts int) []ai_router.RouterChannel {
+	groupChannels := collectChannelsForGroup(group, modelName, filters)
+	policy := ai_router.GetTargetPolicySnapshot().GetPolicy(modelName, group)
+	if policy == nil || !policy.Enabled || len(policy.Candidates) == 0 {
+		return groupChannels
+	}
+	candidateEnabled := make(map[int]bool, len(policy.Candidates))
+	for _, candidate := range policy.Candidates {
+		if candidate.Enabled {
+			candidateEnabled[candidate.ChannelID] = true
+		}
+	}
+	result := make([]ai_router.RouterChannel, 0, len(candidateEnabled))
+	for _, ch := range groupChannels {
+		if candidateEnabled[ch.ID] {
+			result = append(result, ch)
+		}
+	}
+	return result
+}
+
+// policyMaxAttempts returns the policy's own max_attempts when an enabled
+// policy covers (model, group); otherwise the global default applies.
+func policyMaxAttempts(group, modelName string, defaultMaxAttempts int) int {
+	policy := ai_router.GetTargetPolicySnapshot().GetPolicy(modelName, group)
+	if policy != nil && policy.Enabled && policy.MaxAttempts >= 1 {
+		return policy.MaxAttempts
+	}
+	return defaultMaxAttempts
 }
