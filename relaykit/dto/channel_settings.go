@@ -105,7 +105,18 @@ type ChannelRoutingProfile struct {
 	SupportsVideo   *bool  `json:"supports_video,omitempty"`
 	UnknownFallback bool   `json:"unknown_fallback"`
 	ToolSupport     string `json:"tool_support,omitempty"`
+	// MaxRetry is the number of additional calls to this same channel after a
+	// retryable failure, before the channel joins the request-level attempted
+	// set. Default 0 means the channel is called at most once.
+	MaxRetry int `json:"max_retry,omitempty"`
 }
+
+const (
+	// MinChannelMaxRetry and MaxChannelMaxRetry bound the channel-level
+	// extra-retry count. max_retry=0 means one call per channel.
+	MinChannelMaxRetry = 0
+	MaxChannelMaxRetry = 5
+)
 
 const (
 	ToolSupportUnverified  = "unverified"
@@ -155,6 +166,9 @@ func (p *ChannelRoutingProfile) Validate() error {
 	}
 	if p.UnknownFallback && (!p.EffectiveText() || !p.EffectiveImage() || !p.EffectiveVideo()) {
 		return fmt.Errorf("router.unknown_fallback requires text, image and video capabilities")
+	}
+	if p.MaxRetry < MinChannelMaxRetry || p.MaxRetry > MaxChannelMaxRetry {
+		return fmt.Errorf("router.max_retry must be between %d and %d", MinChannelMaxRetry, MaxChannelMaxRetry)
 	}
 	return nil
 }

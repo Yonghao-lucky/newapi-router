@@ -371,6 +371,8 @@ func migrateDB() error {
 		&CasbinRule{},
 		&AuthzRole{},
 		&AIRouterLog{},
+		&AIRouterTargetPolicy{},
+		&AIRouterTargetCandidate{},
 	)
 	if err != nil {
 		return err
