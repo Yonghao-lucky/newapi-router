@@ -277,6 +277,17 @@ func SetApiRouter(router *gin.Engine) {
 			aiRouterGroup.PUT("/settings", controller.UpdateAIRouterSettings)
 			aiRouterGroup.GET("/logs", controller.GetAIRouterLogs)
 			aiRouterGroup.GET("/stats", controller.GetAIRouterStats)
+
+			aiRouterGroup.GET("/targets", controller.GetAIRouterTargetPolicies)
+			aiRouterGroup.POST("/targets", controller.CreateAIRouterTargetPolicy)
+			aiRouterGroup.GET("/targets/:id", controller.GetAIRouterTargetPolicy)
+			aiRouterGroup.PUT("/targets/:id", controller.UpdateAIRouterTargetPolicy)
+			aiRouterGroup.DELETE("/targets/:id", controller.DeleteAIRouterTargetPolicy)
+			aiRouterGroup.POST("/targets/:id/validate", controller.ValidateAIRouterTargetPolicy)
+
+			aiRouterGroup.GET("/channels", controller.GetAIRouterChannels)
+			aiRouterGroup.PUT("/channels/:id/router", controller.UpdateAIRouterChannelRouter)
+			aiRouterGroup.PUT("/channels/:id/scheduling", controller.UpdateAIRouterChannelScheduling)
 		}
 
 		tokenRoute := apiRouter.Group("/token")

@@ -268,6 +268,12 @@ func SaveTargetPolicy(input TargetPolicyInput, policyID int) (*model.AIRouterTar
 // delete covers both rows.
 func DeleteTargetPolicy(policyID int) error {
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// Candidates first: the AutoMigrate-generated foreign key from
+		// candidates back to policies would otherwise block the delete.
+		if err := tx.Where("policy_id = ?", policyID).
+			Delete(&model.AIRouterTargetCandidate{}).Error; err != nil {
+			return err
+		}
 		result := tx.Delete(&model.AIRouterTargetPolicy{}, policyID)
 		if result.Error != nil {
 			return result.Error
@@ -275,7 +281,7 @@ func DeleteTargetPolicy(policyID int) error {
 		if result.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		return tx.Where("policy_id = ?", policyID).Delete(&model.AIRouterTargetCandidate{}).Error
+		return nil
 	})
 	if err != nil {
 		return err
