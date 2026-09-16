@@ -26,6 +26,16 @@ import {
 } from './api'
 import type { AIRouterLog, AIRouterSettings, AIRouterStats } from './types'
 
+function successParam(value: string): 'true' | 'false' | undefined {
+  if (value === 'true') {
+    return 'true'
+  }
+  if (value === 'false') {
+    return 'false'
+  }
+  return undefined
+}
+
 export function AIRouterPage() {
   const { t } = useTranslation()
   const [settings, setSettings] = useState<AIRouterSettings | null>(null)
@@ -74,13 +84,12 @@ export function AIRouterPage() {
         const data = await getAIRouterLogs({
           page: p,
           page_size: pageSize,
-          start_time: ff.startTime || undefined,
-          end_time: ff.endTime || undefined,
+          start_time: ff.startTime ? Number(ff.startTime) : undefined,
+          end_time: ff.endTime ? Number(ff.endTime) : undefined,
           model: ff.model || undefined,
           user_id: ff.userId ? parseInt(ff.userId, 10) || undefined : undefined,
           group_id: ff.groupId || undefined,
-          success:
-            ff.success === '' ? undefined : ff.success === 'true' ? 'true' : 'false',
+          success: successParam(ff.success),
           modality: ff.modality || undefined,
         })
         setLogs(data.items ?? [])

@@ -1,3 +1,25 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+// Shared AI Router types. Router settings come from the V1 global option;
+// policies/candidates and channel router profiles come from V1.5 Phase 1.
+
 export interface AIRouterSettings {
   enabled: boolean
   target_models: string[]
@@ -6,6 +28,105 @@ export interface AIRouterSettings {
   tool_filter_enabled: boolean
   telemetry_enabled: boolean
   retention_days: number
+}
+
+// Capability values are tri-state: null means "unset" (channel default).
+export interface ChannelRoutingProfile {
+  enabled: boolean
+  router_set?: boolean
+  supports_text?: boolean | null
+  supports_image?: boolean | null
+  supports_video?: boolean | null
+  unknown_fallback: boolean
+  tool_support?: string
+  max_retry: number
+}
+
+export interface TargetPolicyChannelInfo {
+  id: number
+  name: string
+  status: number
+  group: string
+  models: string
+  priority: number
+  weight: number
+  router_enabled: boolean
+  router_set: boolean
+  max_retry: number
+  supports_text: boolean | null
+  supports_image: boolean | null
+  supports_video: boolean | null
+  unknown_fallback: boolean
+  tool_support: string
+}
+
+export interface AIRouterTargetCandidate {
+  id: number
+  policy_id: number
+  channel_id: number
+  enabled: boolean
+  // Present for list/get responses; null when the channel was deleted.
+  channel: TargetPolicyChannelInfo | null
+}
+
+export interface AIRouterTargetPolicy {
+  id: number
+  model: string
+  group_id: string
+  enabled: boolean
+  max_attempts: number
+  created_at: number
+  updated_at: number
+  candidates: AIRouterTargetCandidate[]
+}
+
+export interface TargetPolicyCandidateInput {
+  channel_id: number
+  enabled: boolean
+}
+
+export interface TargetPolicyInput {
+  model: string
+  group_id: string
+  enabled: boolean
+  max_attempts: number
+  candidates: TargetPolicyCandidateInput[]
+}
+
+export interface AIRouterValidationIssue {
+  level: 'error' | 'warning'
+  code: string
+  message: string
+}
+
+export interface AIRouterValidationResult {
+  issues: AIRouterValidationIssue[]
+  blocking: boolean
+}
+
+export interface AIRouterPolicyRef {
+  policy_id: number
+  model: string
+  group_id: string
+  enabled: boolean
+}
+
+export interface AIRouterChannel {
+  id: number
+  name: string
+  status: number
+  group: string
+  models: string
+  priority: number
+  weight: number
+  router: ChannelRoutingProfile
+  referenced_by: AIRouterPolicyRef[]
+}
+
+export interface AIRouterSchedulingInput {
+  group?: string
+  priority?: number
+  weight?: number
 }
 
 export interface AIRouterLog {
@@ -19,6 +140,7 @@ export interface AIRouterLog {
   unknown_types: string
   attempts: number
   max_attempts: number
+  // JSON array of channel ids in attempt order, e.g. "[4,9,10]".
   selected_channels: string
   final_channel_id: number
   success: boolean
@@ -33,8 +155,49 @@ export interface AIRouterStats {
   success_count: number
   failure_count: number
   success_rate: number
+  fallback_count: number
+  fallback_rate: number
   avg_duration_ms: number
   avg_ttft_ms: number
   avg_attempts: number
   by_modality: Record<string, number>
+}
+
+export interface AIRouterTrendPoint {
+  time: number
+  total: number
+  success: number
+  failure: number
+}
+
+export interface AIRouterChannelStat {
+  channel_id: number
+  attempts: number
+  finals: number
+  success_finals: number
+  failure_finals: number
+  success_rate: number
+  avg_duration_ms: number
+  avg_ttft_ms: number
+}
+
+export interface AIRouterPage<T> {
+  total: number
+  page: number
+  page_size: number
+  items: T[]
+}
+
+// Shared filter shape for the logs/monitoring toolbars. Times are unix
+// seconds; empty strings mean "not set".
+export interface AIRouterLogFilters {
+  start_time: string
+  end_time: string
+  model: string
+  group_id: string
+  user_id: string
+  modality: string
+  success: string
+  fallback: string
+  channel_id: string
 }
