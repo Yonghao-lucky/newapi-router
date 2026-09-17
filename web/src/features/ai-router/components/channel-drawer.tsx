@@ -579,7 +579,7 @@ export function ChannelDrawer(props: {
                 </div>
               </SideDrawerSection>
 
-              {channel && channel.referenced_by.length > 0 && (
+              {channel && (channel.referenced_by?.length ?? 0) > 0 && (
                 <SideDrawerSection>
                   <div className='space-y-2'>
                     <p className='text-sm font-medium'>

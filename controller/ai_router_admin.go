@@ -525,6 +525,15 @@ type aiRouterPolicyRef struct {
 	Enabled  bool   `json:"enabled"`
 }
 
+// orEmptyRefs normalizes an absent reference list to an empty one so the
+// JSON shape of referenced_by is always an array.
+func orEmptyRefs(refs []aiRouterPolicyRef) []aiRouterPolicyRef {
+	if refs == nil {
+		return []aiRouterPolicyRef{}
+	}
+	return refs
+}
+
 // GetAIRouterChannels returns channel routing info plus the policies that
 // reference each channel.
 func GetAIRouterChannels(c *gin.Context) {
@@ -616,7 +625,9 @@ func GetAIRouterChannels(c *gin.Context) {
 				UnknownFallback: profile.UnknownFallback,
 				ToolSupport:     profile.ToolSupport,
 			},
-			ReferencedBy: refs[ch.Id],
+			// Always a list: a channel no policy references must serialize as []
+			// rather than null, so clients that iterate it do not have to guard.
+			ReferencedBy: orEmptyRefs(refs[ch.Id]),
 		})
 	}
 	common.ApiSuccess(c, gin.H{

@@ -219,10 +219,10 @@ export function ChannelConfigTab() {
       },
       {
         id: 'referenced',
-        accessorFn: (row) => row.referenced_by.length,
+        accessorFn: (row) => row.referenced_by?.length ?? 0,
         header: t('Referenced policies'),
         cell: ({ row }) => (
-          <Badge variant='secondary'>{row.original.referenced_by.length}</Badge>
+          <Badge variant='secondary'>{row.original.referenced_by?.length ?? 0}</Badge>
         ),
       },
       {
