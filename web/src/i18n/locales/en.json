@@ -6677,6 +6677,10 @@
     "timeout": "timeout",
     "connection": "connection",
     "stream_interrupted": "stream interrupted",
-    "other": "other"
+    "other": "other",
+    "Error category": "Error category",
+    "Error category distribution": "Error category distribution",
+    "HTTP status code distribution": "HTTP status code distribution",
+    "No errors in the selected range.": "No errors in the selected range."
   }
 }

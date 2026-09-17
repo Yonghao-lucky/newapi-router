@@ -189,6 +189,24 @@ export interface AIRouterChannelStat {
   count_other: number
 }
 
+// Error-analysis charts: failed attempts by category and by upstream HTTP
+// status. Attempts that never got a response carry no status code, so the
+// status chart can hold fewer rows than the category chart.
+export interface AIRouterErrorCategoryStat {
+  error_category: string
+  count: number
+}
+
+export interface AIRouterStatusCodeStat {
+  http_status_code: number
+  count: number
+}
+
+export interface AIRouterErrorDistribution {
+  by_category: AIRouterErrorCategoryStat[]
+  by_status_code: AIRouterStatusCodeStat[]
+}
+
 export interface AIRouterPage<T> {
   total: number
   page: number

@@ -26,6 +26,7 @@ export const AI_ROUTER_QUERY_KEYS = {
   stats: ['ai-router-stats'] as const,
   trend: ['ai-router-trend'] as const,
   channelStats: ['ai-router-channel-stats'] as const,
+  errorStats: ['ai-router-error-stats'] as const,
   logs: ['ai-router-logs'] as const,
 }
 

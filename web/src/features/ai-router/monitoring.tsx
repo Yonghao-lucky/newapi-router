@@ -34,9 +34,10 @@ import { StatCard } from '@/features/dashboard/components/ui/stat-card'
 import { useChartTheme } from '@/lib/use-chart-theme'
 import { VCHART_OPTION } from '@/lib/vchart'
 
-import { getAIRouterChannelStats, getAIRouterStats, getAIRouterTrend } from './api'
+import { getAIRouterChannelStats, getAIRouterErrorStats, getAIRouterStats, getAIRouterTrend } from './api'
 import { AI_ROUTER_QUERY_KEYS } from './constants'
 import type { AIRouterChannelStat, AIRouterTrendPoint } from './types'
+import { ErrorCharts } from './components/error-charts'
 import { CompactDateTimeRangePicker } from '@/features/usage-logs/components/compact-date-time-range-picker'
 
 // Time-range filter state shared by the stat cards and both charts.
@@ -96,15 +97,27 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
     queryKey: [...AI_ROUTER_QUERY_KEYS.channelStats, params],
     queryFn: async () => getAIRouterChannelStats(params),
   })
+  const errorStatsQuery = useQuery({
+    queryKey: [...AI_ROUTER_QUERY_KEYS.errorStats, params],
+    queryFn: async () => getAIRouterErrorStats(params),
+  })
 
   const isLoading = statsQuery.isLoading || trendQuery.isLoading
-  const isError = statsQuery.isError || trendQuery.isError || channelStatsQuery.isError
+  const isError =
+    statsQuery.isError ||
+    trendQuery.isError ||
+    channelStatsQuery.isError ||
+    errorStatsQuery.isError
   const error =
-    statsQuery.error ?? trendQuery.error ?? channelStatsQuery.error
+    statsQuery.error ??
+    trendQuery.error ??
+    channelStatsQuery.error ??
+    errorStatsQuery.error
   const refetchAll = () => {
     void statsQuery.refetch()
     void trendQuery.refetch()
     void channelStatsQuery.refetch()
+    void errorStatsQuery.refetch()
     setLastRefreshedAt(new Date())
   }
 
@@ -311,6 +324,11 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
           </div>
         </Card>
       </div>
+
+      <ErrorCharts
+        byCategory={errorStatsQuery.data?.by_category ?? []}
+        byStatusCode={errorStatsQuery.data?.by_status_code ?? []}
+      />
 
       <Card className='p-4'>
         <p className='mb-3 text-sm font-medium'>

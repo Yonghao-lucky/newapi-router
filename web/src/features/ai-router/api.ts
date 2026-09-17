@@ -22,6 +22,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 import type {
   AIRouterChannel,
   AIRouterChannelStat,
+  AIRouterErrorDistribution,
   AIRouterLog,
   AIRouterLogDetail,
   AIRouterLogFilters,
@@ -218,6 +219,17 @@ export async function getAIRouterChannelStats(
     success: boolean
     data: AIRouterChannelStat[]
   }>('/api/ai-router/stats/channels', { params })
+  return requireServerSuccess(response.data).data
+}
+
+// Failed-attempt distribution for the two error-analysis charts.
+export async function getAIRouterErrorStats(
+  params: AIRouterStatsParams
+): Promise<AIRouterErrorDistribution> {
+  const response = await api.get<{
+    success: boolean
+    data: AIRouterErrorDistribution
+  }>('/api/ai-router/stats/errors', { params })
   return requireServerSuccess(response.data).data
 }
 

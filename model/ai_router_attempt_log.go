@@ -167,6 +167,65 @@ func GetAIRouterAttemptChannelStats(startTime, endTime int64, modelName, groupID
 	return stats, nil
 }
 
+// AIRouterErrorCategoryStat is one bar of the error-category chart.
+type AIRouterErrorCategoryStat struct {
+	ErrorCategory string `json:"error_category"`
+	Count         int64  `json:"count"`
+}
+
+// AIRouterStatusCodeStat is one bar of the HTTP-status chart.
+type AIRouterStatusCodeStat struct {
+	HttpStatusCode int   `json:"http_status_code"`
+	Count          int64 `json:"count"`
+}
+
+// AIRouterErrorDistribution is the payload of the two error-analysis charts:
+// failed attempts by category and by upstream HTTP status. Success rows are
+// excluded, so both charts sum to the same number of failed attempts.
+type AIRouterErrorDistribution struct {
+	ByCategory   []AIRouterErrorCategoryStat `json:"by_category"`
+	ByStatusCode []AIRouterStatusCodeStat    `json:"by_status_code"`
+}
+
+// GetAIRouterErrorDistribution aggregates failed attempts by category and by
+// upstream HTTP status. Attempts that never got a response (connection
+// failures, stream interruptions) carry a NULL status, so they appear in the
+// category chart but not the status chart.
+func GetAIRouterErrorDistribution(startTime, endTime int64, modelName, groupID string) (*AIRouterErrorDistribution, error) {
+	dist := &AIRouterErrorDistribution{
+		ByCategory:   []AIRouterErrorCategoryStat{},
+		ByStatusCode: []AIRouterStatusCodeStat{},
+	}
+
+	var categories []AIRouterErrorCategoryStat
+	if err := airRouterAttemptScope(startTime, endTime, modelName, groupID).
+		Select("error_category, COUNT(*) as count").
+		Where("error_category <> ?", AttemptErrorCategorySuccess).
+		Group("error_category").
+		Order("count DESC").
+		Scan(&categories).Error; err != nil {
+		return nil, err
+	}
+	if categories != nil {
+		dist.ByCategory = categories
+	}
+
+	var statuses []AIRouterStatusCodeStat
+	if err := airRouterAttemptScope(startTime, endTime, modelName, groupID).
+		Select("http_status_code, COUNT(*) as count").
+		Where("error_category <> ? AND http_status_code IS NOT NULL", AttemptErrorCategorySuccess).
+		Group("http_status_code").
+		Order("http_status_code ASC").
+		Scan(&statuses).Error; err != nil {
+		return nil, err
+	}
+	if statuses != nil {
+		dist.ByStatusCode = statuses
+	}
+
+	return dist, nil
+}
+
 // CountAIRouterAttemptStats returns global attempt totals for consistency
 // checks between the summary and attempt tables.
 func CountAIRouterAttemptStats(startTime, endTime int64) (total int64, success int64, err error) {

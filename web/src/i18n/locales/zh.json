@@ -6675,6 +6675,10 @@
     "timeout": "超时",
     "connection": "连接失败",
     "stream_interrupted": "流中断",
-    "other": "其他"
+    "other": "其他",
+    "Error category": "错误分类",
+    "Error category distribution": "错误分类分布",
+    "HTTP status code distribution": "HTTP 状态码分布",
+    "No errors in the selected range.": "所选范围内没有错误。"
   }
 }

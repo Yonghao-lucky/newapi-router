@@ -252,6 +252,27 @@ func GetAIRouterChannelStats(c *gin.Context) {
 	common.ApiSuccess(c, view)
 }
 
+// GetAIRouterErrorStats returns the failed-attempt distribution by error
+// category and by upstream HTTP status for the error-analysis charts.
+func GetAIRouterErrorStats(c *gin.Context) {
+	startTime, err := strconv.ParseInt(c.Query("start_time"), 10, 64)
+	if err != nil || startTime == 0 {
+		common.ApiErrorMsg(c, "start_time is required")
+		return
+	}
+	endTime, err := strconv.ParseInt(c.Query("end_time"), 10, 64)
+	if err != nil || endTime == 0 {
+		common.ApiErrorMsg(c, "end_time is required")
+		return
+	}
+	dist, err := model.GetAIRouterErrorDistribution(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, dist)
+}
+
 // aiRouterChannelStatView extends the V1.5 channel stat with the Phase 3
 // per-attempt error counts.
 type aiRouterChannelStatView struct {
