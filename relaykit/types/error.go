@@ -96,12 +96,31 @@ type NewAPIError struct {
 	errorCode      ErrorCode
 	StatusCode     int
 	Metadata       json.RawMessage
+
+	// cause keeps the original transport error when Err was replaced by a
+	// client-safe message (ErrOptionWithHideErrMsg). Classification of the
+	// failure reason (timeout vs connection) needs the real error; the
+	// client-facing message must not carry it.
+	cause error
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
 func (e *NewAPIError) Unwrap() error {
 	if e == nil {
 		return nil
+	}
+	return e.Err
+}
+
+// Cause returns the error that actually caused the failure: the preserved
+// transport error when Err holds a client-safe replacement, otherwise Err
+// itself. It is nil for a successful call.
+func (e *NewAPIError) Cause() error {
+	if e == nil {
+		return nil
+	}
+	if e.cause != nil {
+		return e.cause
 	}
 	return e.Err
 }
@@ -401,6 +420,10 @@ func ErrOptionWithHideErrMsg(replaceStr string) NewAPIErrorOptions {
 		if kitutil.Debug.Load() {
 			fmt.Printf("ErrOptionWithHideErrMsg: %s, origin error: %s", replaceStr, e.Err)
 		}
+		// Keep the original error reachable through Cause(): callers that
+		// classify failures (AI Router attempt telemetry) still need to tell a
+		// timeout from a refused connection.
+		e.cause = e.Err
 		e.Err = errors.New(replaceStr)
 	}
 }

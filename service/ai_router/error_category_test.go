@@ -141,6 +141,49 @@ func TestClassifyAttemptErrorSyntheticStatusStaysNull(t *testing.T) {
 	}
 }
 
+func TestClassifyAttemptErrorWithHiddenMessage(t *testing.T) {
+	// Production shape: relay/channel/api_request.go builds the error with
+	// ErrOptionWithHideErrMsg, so Err is a plain message. The reason must
+	// still be classified from the preserved cause, otherwise the timeout
+	// column can never be non-zero.
+	cases := []struct {
+		name     string
+		cause    error
+		category string
+	}{
+		{"response header timeout", wrapOpError(syscall.ETIMEDOUT, true), "timeout"},
+		{"deadline exceeded", context.DeadlineExceeded, "timeout"},
+		{"connection refused", fmt.Errorf("dial tcp: %w", syscall.ECONNREFUSED), "connection"},
+	}
+	for _, tc := range cases {
+		err := types.NewError(
+			tc.cause,
+			types.ErrorCodeDoRequestFailed,
+			types.ErrOptionWithHideErrMsg("upstream error: do request failed"),
+		)
+		category, status, success := ClassifyAttemptError(err, false)
+		if category != tc.category {
+			t.Errorf("%s: category = %s, want %s", tc.name, category, tc.category)
+		}
+		if success {
+			t.Errorf("%s: success should be false", tc.name)
+		}
+		if status != nil {
+			t.Errorf("%s: status = %d, want nil", tc.name, *status)
+		}
+	}
+
+	// The client-facing message is unchanged by the fix.
+	err := types.NewError(
+		wrapOpError(syscall.ETIMEDOUT, true),
+		types.ErrorCodeDoRequestFailed,
+		types.ErrOptionWithHideErrMsg("upstream error: do request failed"),
+	)
+	if err.Error() != "upstream error: do request failed" {
+		t.Errorf("client message = %q, want the hidden replacement", err.Error())
+	}
+}
+
 func wrapOpError(errno syscall.Errno, timeout bool) error {
 	op := &net.OpError{
 		Op:  "dial",

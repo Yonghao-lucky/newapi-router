@@ -34,10 +34,14 @@ func ClassifyAttemptError(err *types.NewAPIError, interrupted bool) (category st
 	if interrupted {
 		return model.AttemptErrorCategoryStreamInterrupted, status, false
 	}
-	if isTimeoutError(err.Err) {
+	// Classify on the transport error: do_request_failed replaces Err with a
+	// client-safe message, so Err alone cannot tell a timeout from a refused
+	// connection (Cause() keeps the original).
+	cause := err.Cause()
+	if isTimeoutError(cause) {
 		return model.AttemptErrorCategoryTimeout, status, false
 	}
-	if isConnectionError(err.Err) {
+	if isConnectionError(cause) {
 		return model.AttemptErrorCategoryConnection, status, false
 	}
 	if status == nil {
