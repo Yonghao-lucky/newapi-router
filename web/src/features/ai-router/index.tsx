@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -33,6 +33,22 @@ import { TargetsTable } from './components/targets-table'
 export function AIRouterPage() {
   const { t } = useTranslation()
   const [tab, setTab] = useState('targets')
+  // Channel-performance row click: filter the request logs by that channel
+  // and scroll them into view. The nonce makes a repeat click on the same
+  // channel re-apply the filter.
+  const [channelJump, setChannelJump] = useState<{
+    channelId: string
+    nonce: number
+  } | null>(null)
+  const logsRef = useRef<HTMLDivElement>(null)
+
+  const jumpToLogsForChannel = (channelId: number) => {
+    setChannelJump((prev) => ({
+      channelId: String(channelId),
+      nonce: (prev?.nonce ?? 0) + 1,
+    }))
+    logsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
     <SectionPageLayout>
@@ -52,9 +68,9 @@ export function AIRouterPage() {
             <ChannelConfigTab />
           </TabsContent>
           <TabsContent value='monitoring'>
-            <MonitoringTab />
-            <div className='mt-6'>
-              <LogsTable />
+            <MonitoringTab onChannelSelect={jumpToLogsForChannel} />
+            <div className='mt-6' ref={logsRef}>
+              <LogsTable channelJump={channelJump} />
             </div>
           </TabsContent>
           <TabsContent value='settings'>

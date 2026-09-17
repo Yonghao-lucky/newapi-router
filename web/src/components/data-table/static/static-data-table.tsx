@@ -46,6 +46,7 @@ type StaticDataTableDataProps<TData = unknown> = StaticDataTableBaseProps & {
   data: TData[]
   getRowKey?: (row: TData, index: number) => React.Key
   getRowClassName?: (row: TData, index: number) => string | undefined
+  onRowClick?: (row: TData, index: number) => void
   renderRow?: (row: TData, index: number) => React.ReactNode
   empty?: boolean
   emptyContent?: React.ReactNode
@@ -97,6 +98,7 @@ function StaticDataTableWithColumns<TData>({
   data,
   getRowKey,
   getRowClassName,
+  onRowClick,
   renderRow,
   empty,
   emptyContent,
@@ -111,6 +113,7 @@ function StaticDataTableWithColumns<TData>({
       index={index}
       columns={columns}
       getRowClassName={getRowClassName}
+      onRowClick={onRowClick}
       renderRow={renderRow}
     />
   ))
@@ -145,7 +148,10 @@ function StaticDataTableWithColumns<TData>({
 type StaticDataTableRowProps<TData> = Required<
   Pick<StaticDataTableDataProps<TData>, 'columns'>
 > &
-  Pick<StaticDataTableDataProps<TData>, 'getRowClassName' | 'renderRow'> & {
+  Pick<
+    StaticDataTableDataProps<TData>,
+    'getRowClassName' | 'onRowClick' | 'renderRow'
+  > & {
     row: TData
     index: number
   }
@@ -155,6 +161,7 @@ function StaticDataTableRow<TData>({
   index,
   columns,
   getRowClassName,
+  onRowClick,
   renderRow,
 }: StaticDataTableRowProps<TData>) {
   if (renderRow) {
@@ -162,7 +169,13 @@ function StaticDataTableRow<TData>({
   }
 
   return (
-    <TableRow className={getRowClassName?.(row, index)}>
+    <TableRow
+      className={cn(
+        getRowClassName?.(row, index),
+        onRowClick && 'cursor-pointer'
+      )}
+      onClick={onRowClick ? () => onRowClick(row, index) : undefined}
+    >
       {columns.map((column) => (
         <TableCell
           key={column.id}

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowUpDown, FileJson, FileSpreadsheet } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -64,6 +64,13 @@ import type {
   AIRouterLogFilters,
 } from '../types'
 
+export interface LogsTableProps {
+  // Set by a channel-performance row click: applies the channel filter and
+  // re-runs the query. The nonce makes repeated clicks on the same channel
+  // take effect again.
+  channelJump?: { channelId: string; nonce: number } | null
+}
+
 const EMPTY_FILTERS: AIRouterLogFilters = {
   start_time: '',
   end_time: '',
@@ -97,7 +104,7 @@ const defaultFilters = (): AIRouterLogFilters => ({ ...EMPTY_FILTERS })
 // LogsTable lists AI Router request logs with rich filters, a compact
 // attempt chain, a detail drawer and CSV/JSON export. Prompt and response
 // bodies are never rendered — the telemetry does not store them.
-export function LogsTable() {
+export function LogsTable({ channelJump }: LogsTableProps = {}) {
   const { t } = useTranslation()
   const [filters, setFilters] = useState<AIRouterLogFilters>(defaultFilters)
   const [appliedFilters, setAppliedFilters] = useState<AIRouterLogFilters>(
@@ -105,6 +112,18 @@ export function LogsTable() {
   )
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [detailRow, setDetailRow] = useState<AIRouterLog | null>(null)
+
+  // A channel click on the performance table sets both the draft and the
+  // applied filter, so the list refreshes without a second click on Search.
+  useEffect(() => {
+    if (!channelJump) return
+    setFilters((prev) => ({ ...prev, channel_id: channelJump.channelId }))
+    setAppliedFilters((prev) => ({
+      ...prev,
+      channel_id: channelJump.channelId,
+    }))
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+  }, [channelJump])
 
   // Per-attempt rows of the open drawer (Phase 3 detail endpoint). Old logs
   // have no rows; the chain view alone still renders.
@@ -291,7 +310,7 @@ export function LogsTable() {
                             : 'text-muted-foreground text-xs'
                         }
                       >
-                        {name} {isFinal ? '' : '→'}
+                        {name} (#{channelId})
                       </span>
                       {isFinal && (
                         <Badge

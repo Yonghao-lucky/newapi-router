@@ -179,6 +179,14 @@ export interface AIRouterChannelStat {
   success_rate: number
   avg_duration_ms: number
   avg_ttft_ms: number
+  // Phase 3 per-attempt error counts; zero for channels whose traffic
+  // predates attempt telemetry.
+  count_429: number
+  count_5xx: number
+  count_timeout: number
+  count_connection: number
+  count_stream_interrupted: number
+  count_other: number
 }
 
 export interface AIRouterPage<T> {

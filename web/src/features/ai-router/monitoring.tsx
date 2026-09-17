@@ -45,6 +45,11 @@ interface MonitoringRange {
   end?: Date
 }
 
+interface MonitoringTabProps {
+  // Clicking a channel row jumps to the request logs filtered by that channel.
+  onChannelSelect?: (channelId: number) => void
+}
+
 const formatPercent = (value: number): string =>
   `${(value * 100).toFixed(1)}%`
 
@@ -53,7 +58,11 @@ const formatMs = (value: number): string => {
   return `${Math.round(value)}ms`
 }
 
-export function MonitoringTab() {
+// Counts are rendered with a thousands separator and never as an empty cell:
+// a channel with zero 429s shows "0".
+const formatCount = (value: number): string => value.toLocaleString()
+
+export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
   const { t } = useTranslation()
   const { resolvedTheme, themeReady } = useChartTheme()
   const [range, setRange] = useState<MonitoringRange>({
@@ -326,52 +335,54 @@ export function MonitoringTab() {
               {
                 id: 'attempts',
                 header: t('Attempts'),
-                cellClassName: 'tabular-nums',
-                cell: (row) => row.attempts,
-              },
-              {
-                id: 'finals',
-                header: t('Final selections'),
-                cellClassName: 'tabular-nums',
-                cell: (row) => row.finals,
-              },
-              {
-                id: 'success_finals',
-                header: t('Success'),
-                cellClassName: 'tabular-nums',
-                cell: (row) => row.success_finals,
-              },
-              {
-                id: 'failure_finals',
-                header: t('Failures'),
-                cellClassName: 'tabular-nums',
-                cell: (row) => row.failure_finals,
+                className: 'text-right',
+                cellClassName: 'text-right tabular-nums',
+                cell: (row) => formatCount(row.attempts),
               },
               {
                 id: 'success_rate',
                 header: t('Success rate'),
+                className: 'text-right',
+                cellClassName: 'text-right',
                 cell: (row) => (
                   <Badge variant={row.success_rate >= 0.9 ? 'secondary' : 'outline'}>
                     {formatPercent(row.success_rate)}
                   </Badge>
                 ),
               },
+              ...([
+                ['count_429', '429'],
+                ['count_5xx', '5xx'],
+                ['count_timeout', 'timeout'],
+                ['count_connection', 'connection'],
+                ['count_stream_interrupted', 'Stream interrupted'],
+                ['count_other', 'Other'],
+              ] as const).map(([field, label]) => ({
+                id: field,
+                header: t(label),
+                className: 'text-right',
+                cellClassName: 'text-right tabular-nums',
+                cell: (row: AIRouterChannelStat) => formatCount(row[field]),
+              })),
               {
                 id: 'avg_duration',
                 header: t('Avg duration'),
-                cellClassName: 'tabular-nums',
+                className: 'text-right',
+                cellClassName: 'text-right tabular-nums',
                 cell: (row) => formatMs(row.avg_duration_ms),
               },
               {
                 id: 'avg_ttft',
                 header: t('Avg TTFT'),
-                cellClassName: 'tabular-nums',
+                className: 'text-right',
+                cellClassName: 'text-right tabular-nums',
                 cell: (row) =>
                   row.avg_ttft_ms > 0 ? formatMs(row.avg_ttft_ms) : '-',
               },
             ]}
             data={channelStats}
             getRowKey={(row) => String(row.channel_id)}
+            onRowClick={(row) => onChannelSelect?.(row.channel_id)}
           />
         )}
       </Card>
