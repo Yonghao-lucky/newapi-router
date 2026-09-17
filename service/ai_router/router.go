@@ -153,14 +153,16 @@ func isRetryable(err *types.NewAPIError) bool {
 // AttemptRecord appended to the route context. Classification reuses the
 // router's own retry semantics: Retryable mirrors what the loop just did
 // with the error — once a response started the loop returns immediately
-// (no retry), otherwise the error's skip-retry flag decides.
+// (no retry), otherwise the error's skip-retry flag decides. Success comes
+// from the classifier so an interrupted stream (relay returned nil) still
+// records as a failure.
 func settleAttemptRecord(rc *RouteContext, call *AttemptCall, relayErr *types.NewAPIError) {
 	if call == nil {
 		// callRelay failed before its capture (e.g. cache miss): still
 		// record the attempt so the chain has no gaps.
 		call = &AttemptCall{Err: relayErr}
 	}
-	category, status := ClassifyAttemptError(relayErr, call.Responded)
+	category, status, success := ClassifyAttemptError(relayErr, call.StreamInterrupted)
 	retryable := false
 	if relayErr != nil && !call.Responded && !rc.ResponseStarted {
 		retryable = isRetryable(relayErr)
@@ -176,7 +178,7 @@ func settleAttemptRecord(rc *RouteContext, call *AttemptCall, relayErr *types.Ne
 		Retryable:      retryable,
 		DurationMs:     call.DurationMs,
 		TtftMs:         call.TtftMs,
-		Success:        relayErr == nil,
+		Success:        success,
 	})
 }
 

@@ -126,6 +126,13 @@ func runAIRouterRelay(
 				routeCtx.TTFT = ttft
 				call.TtftMs = &ttft
 			}
+			// The relay returned without error but the stream ended
+			// abnormally (panic, scanner error, client-visible timeout):
+			// 断流, not success.
+			call.StreamInterrupted = !relayInfo.StreamStatus.IsNormalEnd()
+			if call.StreamInterrupted {
+				routeCtx.StreamInterrupted = true
+			}
 		}
 
 		if relayErr == nil {
@@ -149,12 +156,16 @@ func runAIRouterRelay(
 	finalErr := ai_router.RunFallbackLoop(routeCtx, allChannels, group, settings, callRelay)
 	*newAPIError = finalErr
 
-	// Record Telemetry asynchronously (never blocks the request).
-	success := finalErr == nil
+	// Record Telemetry asynchronously (never blocks the request). A stream
+	// that started but ended abnormally is 断流: not a success for the
+	// summary either, even when the relay returned no error.
+	success := finalErr == nil && !routeCtx.StreamInterrupted
 	errMsg := ""
 	if finalErr != nil {
 		errMsg = finalErr.Error()
 		logger.LogError(c, fmt.Sprintf("ai_router relay error: %s", common.LocalLogPreview(finalErr.Error())))
+	} else if routeCtx.StreamInterrupted {
+		errMsg = "stream interrupted"
 	}
 	ai_router.RecordTelemetry(routeCtx, relayInfo.UserId, group, success, errMsg)
 }

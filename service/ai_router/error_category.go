@@ -14,9 +14,9 @@ import (
 // ClassifyAttemptError is the single place that maps a relay error onto an
 // ai_router_attempt_logs error category. Rules, in order:
 //
-//  1. no error            -> "success"
-//  2. response had already started streaming and then failed
-//     -> "stream_interrupted" (断流), whatever the cause
+//  1. no error and the stream, if any, ended normally -> "success"
+//  2. stream started (first event arrived) but died abnormally — via err or
+//     the interrupted flag -> "stream_interrupted" (断流), whatever the cause
 //  3. wrapped transport error is a timeout -> "timeout"
 //  4. wrapped transport error is a connection failure -> "connection"
 //  5. no upstream response at all (synthetic status) -> "connection"
@@ -25,33 +25,33 @@ import (
 // It also returns the status code worth persisting: calls that never got a
 // response (do_request_failed / get_channel_failed carry a synthetic 500)
 // keep a NULL http_status_code instead of a misleading 500.
-func ClassifyAttemptError(err *types.NewAPIError, responseStarted bool) (category string, statusCode *int) {
-	if err == nil {
-		return model.AttemptErrorCategorySuccess, nil
+func ClassifyAttemptError(err *types.NewAPIError, interrupted bool) (category string, statusCode *int, success bool) {
+	if err == nil && !interrupted {
+		return model.AttemptErrorCategorySuccess, nil, true
 	}
 	status := normalizedAttemptStatus(err)
 
-	if responseStarted {
-		return model.AttemptErrorCategoryStreamInterrupted, status
+	if interrupted {
+		return model.AttemptErrorCategoryStreamInterrupted, status, false
 	}
 	if isTimeoutError(err.Err) {
-		return model.AttemptErrorCategoryTimeout, status
+		return model.AttemptErrorCategoryTimeout, status, false
 	}
 	if isConnectionError(err.Err) {
-		return model.AttemptErrorCategoryConnection, status
+		return model.AttemptErrorCategoryConnection, status, false
 	}
 	if status == nil {
 		// The call failed before the upstream answered (dial refused, TLS
 		// handshake, malformed URL, ...): there was no HTTP status.
-		return model.AttemptErrorCategoryConnection, nil
+		return model.AttemptErrorCategoryConnection, nil, false
 	}
 	switch {
 	case *status == 429:
-		return model.AttemptErrorCategory429, status
+		return model.AttemptErrorCategory429, status, false
 	case *status >= 500 && *status <= 599:
-		return model.AttemptErrorCategory5xx, status
+		return model.AttemptErrorCategory5xx, status, false
 	default:
-		return model.AttemptErrorCategoryOther, status
+		return model.AttemptErrorCategoryOther, status, false
 	}
 }
 

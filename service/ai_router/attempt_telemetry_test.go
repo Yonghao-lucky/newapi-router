@@ -109,8 +109,9 @@ func TestAttemptRecordsFallbackAcrossChannels(t *testing.T) {
 	}
 }
 
-// First event arrived, then the stream died: the failed call is classified
-// as stream_interrupted, not connection — even though the transport error
+// First event arrived, then the stream died: the call is classified as
+// stream_interrupted with success=false — even when the relay returned nil
+// (interrupted flag from StreamStatus) and even when the transport error
 // looks like a reset.
 func TestAttemptRecordsStreamInterrupted(t *testing.T) {
 	chs := []RouterChannel{
@@ -125,8 +126,9 @@ func TestAttemptRecordsStreamInterrupted(t *testing.T) {
 	var captured []*AttemptRecord
 	callRelay := func() *types.NewAPIError {
 		// Mirrors the relay closure: first event arrived (Responded, TTFT),
-		// then the upstream connection died mid-stream.
-		rc.LastCall = &AttemptCall{ChannelName: "ch-1", Responded: true, TtftMs: int64Ptr(120), DurationMs: 900}
+		// then the upstream connection died mid-stream and the relay
+		// surfaced the transport error.
+		rc.LastCall = &AttemptCall{ChannelName: "ch-1", Responded: true, StreamInterrupted: true, TtftMs: int64Ptr(120), DurationMs: 900}
 		return types.NewErrorWithStatusCode(fmt.Errorf("read tcp: connection reset"), types.ErrorCodeDoRequestFailed, 500)
 	}
 
@@ -146,6 +148,41 @@ func TestAttemptRecordsStreamInterrupted(t *testing.T) {
 	}
 	if record.Retryable {
 		t.Error("post-start failure must not be retried")
+	}
+	if record.Success {
+		t.Error("interrupted stream must not be success")
+	}
+}
+
+// Relay returned nil but StreamStatus reported an abnormal end: the record
+// is stream_interrupted and not a success.
+func TestAttemptRecordsInterruptedNilError(t *testing.T) {
+	chs := []RouterChannel{
+		{ID: 1, Priority: 100, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsText: ptr(true)}},
+	}
+	settings := ai_router_setting.DefaultSettings()
+	settings.MaxAttempts = 1
+
+	demand := RouteDemand{Model: "kimi-k3", Modality: ModalityText, DetectorFamily: "openai_chat"}
+	rc := NewRouteContext(demand, settings.MaxAttempts)
+
+	callRelay := func() *types.NewAPIError {
+		rc.LastCall = &AttemptCall{ChannelName: "ch-1", Responded: true, StreamInterrupted: true, TtftMs: int64Ptr(90), DurationMs: 700}
+		return nil
+	}
+
+	if err := RunFallbackLoop(rc, chs, "default", settings, callRelay); err != nil {
+		t.Fatalf("nil relay error should not fail the loop: %v", err)
+	}
+	if len(rc.AttemptRecords) != 1 {
+		t.Fatalf("expected 1 attempt record, got %d", len(rc.AttemptRecords))
+	}
+	record := rc.AttemptRecords[0]
+	if record.ErrorCategory != "stream_interrupted" {
+		t.Errorf("category = %s, want stream_interrupted", record.ErrorCategory)
+	}
+	if record.Success {
+		t.Error("interrupted stream must not be success even with nil relay error")
 	}
 }
 

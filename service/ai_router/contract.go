@@ -49,6 +49,10 @@ type AttemptCall struct {
 	// Responded is true when THIS call got a (possibly partial) response
 	// from the upstream, i.e. streaming had begun.
 	Responded bool
+	// StreamInterrupted is true when the stream started but ended
+	// abnormally (panic, scanner error, timeout, ...) — first event
+	// arrived, then the flow died.
+	StreamInterrupted bool
 	// TtftMs is the time to first event of this call; nil when it never
 	// produced one.
 	TtftMs *int64
@@ -86,6 +90,10 @@ type RouteContext struct {
 	CurrentAttempt    int
 	ChannelRetryNo    int // 0 = first call to the current channel
 	ResponseStarted   bool
+	// StreamInterrupted marks the whole request: the stream started but
+	// ended abnormally, so the summary is not a success even when the relay
+	// returned no error.
+	StreamInterrupted bool
 	StartedAt         int64 // unix nano
 	TTFT              int64 // milliseconds; 0 for non-streaming
 	Decision          RouteDecision
