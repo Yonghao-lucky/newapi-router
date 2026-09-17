@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -26,6 +26,7 @@ import { z } from 'zod'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   Form,
   FormControl,
@@ -251,9 +252,14 @@ export function ChannelDrawer(props: {
     },
   })
   const isSubmitting = save.isPending
+  const [closeConfirm, setCloseConfirm] = useState(false)
 
   const close = (open: boolean) => {
     if (!open && isSubmitting) return
+    if (!open && form.formState.isDirty) {
+      setCloseConfirm(true)
+      return
+    }
     props.onOpenChange(open)
   }
 
@@ -275,8 +281,9 @@ export function ChannelDrawer(props: {
   }
 
   return (
-    <Sheet open={props.open} onOpenChange={close}>
-      <SheetContent className={sideDrawerContentClassName('sm:max-w-[640px]')}>
+    <>
+      <Sheet open={props.open} onOpenChange={close}>
+        <SheetContent className={sideDrawerContentClassName('sm:max-w-[640px]')}>
           <SheetHeader className={sideDrawerHeaderClassName()}>
             <SheetTitle className='pr-6 break-all'>
               {channel ? `${channel.name} (#${channel.id})` : ''}
@@ -625,6 +632,21 @@ export function ChannelDrawer(props: {
             </Button>
           </SheetFooter>
         </SheetContent>
-    </Sheet>
+      </Sheet>
+
+      {/* Closing with unsaved changes asks for confirmation first. */}
+      <ConfirmDialog
+        open={closeConfirm}
+        onOpenChange={setCloseConfirm}
+        title={t('Discard unsaved changes?')}
+        desc={t('Your changes have not been saved.')}
+        confirmText={t('Discard changes')}
+        destructive
+        handleConfirm={() => {
+          setCloseConfirm(false)
+          props.onOpenChange(false)
+        }}
+      />
+    </>
   )
 }
