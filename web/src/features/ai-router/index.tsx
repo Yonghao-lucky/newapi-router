@@ -25,6 +25,7 @@ import { SectionPageLayout } from '@/components/layout'
 import { ChannelConfigTab } from './channel-config'
 import { GlobalConfigTab } from './global-config'
 import { MonitoringTab } from './monitoring'
+import { LogsTable } from './components/logs-table'
 import { TargetsTable } from './components/targets-table'
 
 // AIRouterPage is the single admin entry: global config, target policies,
@@ -52,6 +53,9 @@ export function AIRouterPage() {
           </TabsContent>
           <TabsContent value='monitoring'>
             <MonitoringTab />
+            <div className='mt-6'>
+              <LogsTable />
+            </div>
           </TabsContent>
           <TabsContent value='settings'>
             <GlobalConfigTab />
