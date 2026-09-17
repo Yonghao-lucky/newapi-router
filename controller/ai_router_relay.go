@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -66,22 +67,40 @@ func runAIRouterRelay(
 
 	// Call relay for a specific channel. SetupContextForSelectedChannel
 	// updates the gin context so InitChannelMeta picks up the new channel.
+	// Each call captures its outcome into routeCtx.LastCall for the
+	// per-attempt telemetry (attempt logs), including the channel name
+	// snapshotted from the cache.
 	callRelay := func() *types.NewAPIError {
+		callStart := time.Now()
+		call := &ai_router.AttemptCall{}
+		defer func() {
+			call.DurationMs = time.Since(callStart).Milliseconds()
+			routeCtx.LastCall = call
+		}()
+
 		channel, err := model.CacheGetChannel(routeCtx.Decision.ChannelID)
 		if err != nil {
-			return types.NewError(fmt.Errorf("ai router: channel %d not found in cache: %w", routeCtx.Decision.ChannelID, err), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+			call.Err = types.NewError(fmt.Errorf("ai router: channel %d not found in cache: %w", routeCtx.Decision.ChannelID, err), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+			return call.Err
 		}
+		call.ChannelName = channel.Name
 		if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+			call.Err = setupErr
 			return setupErr
 		}
 		addUsedChannel(c, channel.Id)
 
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+			call.Err = billingErr
 			return billingErr
 		}
 
 		// Reset body for this attempt.
 		c.Request.Body = io.NopCloser(bodyStorage)
+
+		// FirstResponseTime is request-sticky; compare before/after to know
+		// whether THIS call got a response.
+		respondedBefore := relayInfo.HasSendResponse()
 
 		var relayErr *types.NewAPIError
 		switch relayFormat {
@@ -96,11 +115,16 @@ func runAIRouterRelay(
 		}
 
 		// Capture response-start state on both success and error paths:
-		// TTFT must be recorded for successful streams too.
+		// TTFT must be recorded for successful streams too. The loop never
+		// re-enters after a response started, so the first responding call
+		// is also the only one.
 		if relayInfo.HasSendResponse() {
 			routeCtx.ResponseStarted = true
+			call.Responded = !respondedBefore
 			if routeCtx.TTFT == 0 {
-				routeCtx.TTFT = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+				ttft := relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+				routeCtx.TTFT = ttft
+				call.TtftMs = &ttft
 			}
 		}
 
@@ -110,6 +134,7 @@ func runAIRouterRelay(
 		}
 		relayErr = service.NormalizeViolationFeeError(relayErr)
 		relayInfo.LastError = relayErr
+		call.Err = relayErr
 
 		processChannelError(c, *types.NewChannelError(
 			channel.Id, channel.Type, channel.Name,

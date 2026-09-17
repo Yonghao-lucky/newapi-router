@@ -102,6 +102,9 @@ func RunFallbackLoop(
 		for retryNo := 0; retryNo <= maxRetry; retryNo++ {
 			rc.ChannelRetryNo = retryNo
 			relayErr := callRelay()
+			call := rc.LastCall
+			rc.LastCall = nil
+			settleAttemptRecord(rc, call, relayErr)
 			if relayErr == nil {
 				return nil
 			}
@@ -136,6 +139,37 @@ func isRetryable(err *types.NewAPIError) bool {
 		return false
 	}
 	return true
+}
+
+// settleAttemptRecord turns one relay call's capture into a settled
+// AttemptRecord appended to the route context. Classification reuses the
+// router's own retry semantics: Retryable mirrors what the loop just did
+// with the error — once a response started the loop returns immediately
+// (no retry), otherwise the error's skip-retry flag decides.
+func settleAttemptRecord(rc *RouteContext, call *AttemptCall, relayErr *types.NewAPIError) {
+	if call == nil {
+		// callRelay failed before its capture (e.g. cache miss): still
+		// record the attempt so the chain has no gaps.
+		call = &AttemptCall{Err: relayErr}
+	}
+	category, status := ClassifyAttemptError(relayErr, call.Responded)
+	retryable := false
+	if relayErr != nil && !call.Responded && !rc.ResponseStarted {
+		retryable = isRetryable(relayErr)
+	}
+	rc.AttemptRecords = append(rc.AttemptRecords, &AttemptRecord{
+		AttemptSeq:     rc.CurrentAttempt + 1, // 1-based over distinct channels
+		ChannelRetryNo: rc.ChannelRetryNo,
+		ChannelId:      rc.Decision.ChannelID,
+		ChannelName:    call.ChannelName,
+		Modality:       string(rc.Demand.Modality),
+		HttpStatusCode: status,
+		ErrorCategory:  category,
+		Retryable:      retryable,
+		DurationMs:     call.DurationMs,
+		TtftMs:         call.TtftMs,
+		Success:        relayErr == nil,
+	})
 }
 
 func findChannel(channels []RouterChannel, id int) *RouterChannel {

@@ -1,6 +1,10 @@
 package ai_router
 
-import "time"
+import (
+	"time"
+
+	"github.com/QuantumNous/new-api/relaykit/types"
+)
 
 type Modality string
 
@@ -35,6 +39,41 @@ type RouteDecision struct {
 	AttemptIndex    int      `json:"attempt_index"`
 }
 
+// AttemptCall captures the observable outcome of one relay call — the raw
+// material for an attempt-log row. The relay closure fills it; the router
+// loop turns it into an AttemptRecord together with the classification.
+type AttemptCall struct {
+	// ChannelName is snapshotted at call time from the channel cache so
+	// attempt rows survive channel deletion.
+	ChannelName string
+	// Responded is true when THIS call got a (possibly partial) response
+	// from the upstream, i.e. streaming had begun.
+	Responded bool
+	// TtftMs is the time to first event of this call; nil when it never
+	// produced one.
+	TtftMs *int64
+	// DurationMs covers the whole callRelay invocation.
+	DurationMs int64
+	// Err is the relay error of this call; nil on success.
+	Err *types.NewAPIError
+}
+
+// AttemptRecord is the settled outcome of one upstream call, ready for
+// telemetry persistence.
+type AttemptRecord struct {
+	AttemptSeq     int
+	ChannelRetryNo int
+	ChannelId      int
+	ChannelName    string
+	Modality       string
+	HttpStatusCode *int
+	ErrorCategory  string
+	Retryable      bool
+	DurationMs     int64
+	TtftMs         *int64
+	Success        bool
+}
+
 // RouteContext carries per-request routing state.
 // It must never be shared across requests.
 type RouteContext struct {
@@ -50,6 +89,12 @@ type RouteContext struct {
 	StartedAt         int64 // unix nano
 	TTFT              int64 // milliseconds; 0 for non-streaming
 	Decision          RouteDecision
+	// AttemptRecords holds one settled record per real upstream call in
+	// call order; filled by the router loop from AttemptCall captures.
+	AttemptRecords []*AttemptRecord
+	// LastCall is the capture of the most recent relay call, reset before
+	// each callRelay and settled into AttemptRecords by the loop.
+	LastCall *AttemptCall
 }
 
 func NewRouteContext(demand RouteDemand, maxAttempts int) *RouteContext {
