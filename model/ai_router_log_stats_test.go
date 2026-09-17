@@ -23,26 +23,26 @@ func TestGetAIRouterLogsFallbackAndChannelFilters(t *testing.T) {
 	insertAIRouterLog(t, &AIRouterLog{RequestId: "r3", Model: "m", Attempts: 3, SelectedChannels: "[14,15]", FinalChannelId: 15, Success: false, CreatedAt: base + 2})
 	insertAIRouterLog(t, &AIRouterLog{RequestId: "r4", Model: "m", Attempts: 0, SelectedChannels: "", FinalChannelId: 0, Success: true, CreatedAt: base + 3})
 
-	_, fallbackTrue, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "true", 0, 1, 20)
+	_, fallbackTrue, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "true", 0, 0, "", nil, 1, 20)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), fallbackTrue, "attempts>1 rows are fallback")
 
-	_, fallbackFalse, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "false", 0, 1, 20)
+	_, fallbackFalse, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "false", 0, 0, "", nil, 1, 20)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), fallbackFalse, "attempts<=1 rows are non-fallback")
 
-	_, ch4, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 4, 1, 20)
+	_, ch4, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 4, 0, "", nil, 1, 20)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), ch4, "channel 4 appears in two chains")
 
-	_, ch14, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 14, 1, 20)
+	_, ch14, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 14, 0, "", nil, 1, 20)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), ch14, "channel 14 must not match channel 4 chains")
-	_, ch1, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 1, 1, 20)
+	_, ch1, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 1, 0, "", nil, 1, 20)
 	require.NoError(t, err)
 	assert.Zero(t, ch1, "channel 1 must not match channel 14 via substring")
 
-	_, final10, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 10, 1, 20)
+	_, final10, err := GetAIRouterLogs(0, 0, "m", 0, "", nil, "", "", 10, 0, "", nil, 1, 20)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), final10)
 }

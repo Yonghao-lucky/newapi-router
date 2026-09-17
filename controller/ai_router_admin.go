@@ -91,6 +91,9 @@ func GetAIRouterLogs(c *gin.Context) {
 	modality := c.Query("modality")
 	fallback := c.Query("fallback")
 	channelID, _ := strconv.Atoi(c.Query("channel_id"))
+	statusCode, _ := strconv.Atoi(c.Query("http_status_code"))
+	errorCategory := c.Query("error_category")
+	streamStr := c.Query("stream_interrupted")
 
 	var success *bool
 	if successStr == "true" {
@@ -101,9 +104,21 @@ func GetAIRouterLogs(c *gin.Context) {
 		success = &v
 	}
 
+	// stream_interrupted: "true"/"false" filter, "" = no filter. It maps to
+	// the stream_interrupted error category on attempt rows.
+	var streamInterrupted *bool
+	switch streamStr {
+	case "true":
+		v := true
+		streamInterrupted = &v
+	case "false":
+		v := false
+		streamInterrupted = &v
+	}
+
 	logs, total, err := model.GetAIRouterLogs(
 		startTime, endTime, modelName, userID, groupID, success, modality,
-		fallback, channelID,
+		fallback, channelID, statusCode, errorCategory, streamInterrupted,
 		page, pageSize,
 	)
 	if err != nil {
@@ -117,6 +132,27 @@ func GetAIRouterLogs(c *gin.Context) {
 		"page_size": pageSize,
 		"items":     logs,
 	})
+}
+
+// GetAIRouterLogDetail returns one summary log with its full attempt list
+// ordered by (attempt_seq, channel_retry_no). Logs recorded before Phase 3
+// come back with an empty attempts list instead of an error.
+func GetAIRouterLogDetail(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorMsg(c, "无效的日志 ID")
+		return
+	}
+	detail, err := model.GetAIRouterLogDetail(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if detail == nil {
+		common.ApiErrorMsg(c, "日志不存在")
+		return
+	}
+	common.ApiSuccess(c, detail)
 }
 
 // GetAIRouterStats returns basic aggregate statistics for a time range.
@@ -181,7 +217,45 @@ func GetAIRouterChannelStats(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, stats)
+
+	// Enrich with per-attempt error breakdown (Phase 3): counts of 429 /
+	// 5xx / timeout / connection / stream_interrupted / other per channel.
+	// Channels with no attempt rows (pre-Phase-3 traffic) keep zero error
+	// counts and their summary-derived success rate.
+	attemptStats, err := model.GetAIRouterAttemptChannelStats(startTime, endTime)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	view := make([]aiRouterChannelStatView, 0, len(stats))
+	for _, stat := range stats {
+		row := aiRouterChannelStatView{AIRouterChannelStat: stat}
+		if attempt, ok := attemptStats[stat.ChannelId]; ok {
+			row.Count429 = attempt.Count429
+			row.Count5xx = attempt.Count5xx
+			row.CountTimeout = attempt.CountTimeout
+			row.CountConnection = attempt.CountConnection
+			row.CountInterrupted = attempt.CountInterrupted
+			row.CountOther = attempt.CountOther
+			if attempt.Attempts > 0 {
+				row.SuccessRate = float64(attempt.SuccessCount) / float64(attempt.Attempts)
+			}
+		}
+		view = append(view, row)
+	}
+	common.ApiSuccess(c, view)
+}
+
+// aiRouterChannelStatView extends the V1.5 channel stat with the Phase 3
+// per-attempt error counts.
+type aiRouterChannelStatView struct {
+	model.AIRouterChannelStat
+	Count429         int64 `json:"count_429"`
+	Count5xx         int64 `json:"count_5xx"`
+	CountTimeout     int64 `json:"count_timeout"`
+	CountConnection  int64 `json:"count_connection"`
+	CountInterrupted int64 `json:"count_stream_interrupted"`
+	CountOther       int64 `json:"count_other"`
 }
 
 // aiRouterCandidateView is one candidate row in the policy list response.

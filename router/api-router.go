@@ -276,6 +276,7 @@ func SetApiRouter(router *gin.Engine) {
 			aiRouterGroup.GET("/settings", controller.GetAIRouterSettings)
 			aiRouterGroup.PUT("/settings", controller.UpdateAIRouterSettings)
 			aiRouterGroup.GET("/logs", controller.GetAIRouterLogs)
+			aiRouterGroup.GET("/logs/:id", controller.GetAIRouterLogDetail)
 			aiRouterGroup.GET("/stats", controller.GetAIRouterStats)
 			aiRouterGroup.GET("/stats/trend", controller.GetAIRouterTrend)
 			aiRouterGroup.GET("/stats/channels", controller.GetAIRouterChannelStats)

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 
@@ -36,7 +37,9 @@ func (AIRouterLog) TableName() string {
 
 // GetAIRouterLogs returns paginated, filtered AI Router log entries.
 // fallback: "", "true", "false". channelID > 0 matches any channel on the
-// attempt chain.
+// attempt chain. The error filters (statusCode > 0, errorCategory,
+// streamInterrupted) match requests having at least one matching attempt row
+// via an EXISTS subquery on ai_router_attempt_logs.
 func GetAIRouterLogs(
 	startTime, endTime int64,
 	modelName string,
@@ -46,6 +49,9 @@ func GetAIRouterLogs(
 	modality string,
 	fallback string,
 	channelID int,
+	statusCode int,
+	errorCategory string,
+	streamInterrupted *bool,
 	page, pageSize int,
 ) (logs []*AIRouterLog, total int64, err error) {
 	tx := DB.Model(&AIRouterLog{})
@@ -94,6 +100,21 @@ func GetAIRouterLogs(
 			fmt.Sprintf("%%[%d]%%", channelID),
 		)
 	}
+	// Error filters live on the attempt rows: a summary matches when any of
+	// its attempts does. The (request_log_id) index serves the subquery.
+	if statusCode > 0 {
+		tx = tx.Where("EXISTS (SELECT 1 FROM ai_router_attempt_logs a WHERE a.request_log_id = ai_router_logs.id AND a.http_status_code = ?)", statusCode)
+	}
+	if errorCategory != "" {
+		tx = tx.Where("EXISTS (SELECT 1 FROM ai_router_attempt_logs a WHERE a.request_log_id = ai_router_logs.id AND a.error_category = ?)", errorCategory)
+	}
+	if streamInterrupted != nil {
+		if *streamInterrupted {
+			tx = tx.Where("EXISTS (SELECT 1 FROM ai_router_attempt_logs a WHERE a.request_log_id = ai_router_logs.id AND a.error_category = ?)", AttemptErrorCategoryStreamInterrupted)
+		} else {
+			tx = tx.Where("NOT EXISTS (SELECT 1 FROM ai_router_attempt_logs a WHERE a.request_log_id = ai_router_logs.id AND a.error_category = ?)", AttemptErrorCategoryStreamInterrupted)
+		}
+	}
 
 	if err = tx.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -101,6 +122,37 @@ func GetAIRouterLogs(
 	offset := (page - 1) * pageSize
 	err = tx.Order("created_at DESC, id DESC").Offset(offset).Limit(pageSize).Find(&logs).Error
 	return logs, total, err
+}
+
+// AIRouterLogDetail is the single-log payload: the summary plus its attempt
+// rows ordered by (attempt_seq, channel_retry_no). Logs recorded before
+// V1.5 Phase 3 carry an empty (non-nil) attempt list.
+type AIRouterLogDetail struct {
+	Log      *AIRouterLog          `json:"log"`
+	Attempts []*AIRouterAttemptLog `json:"attempts"`
+}
+
+// GetAIRouterLogDetail loads one summary with its attempt rows. Unknown ids
+// return a nil detail without error (the handler decides the 404 shape).
+func GetAIRouterLogDetail(id int) (*AIRouterLogDetail, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+	var log AIRouterLog
+	if err := DB.First(&log, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	attempts, err := GetAIRouterAttemptLogsByRequestLogId(id)
+	if err != nil {
+		return nil, err
+	}
+	if attempts == nil {
+		attempts = []*AIRouterAttemptLog{}
+	}
+	return &AIRouterLogDetail{Log: &log, Attempts: attempts}, nil
 }
 
 // AIRouterStats holds basic aggregate statistics.
