@@ -1,6 +1,7 @@
 {
   "translation": {
     "360": "360",
+    "429": "429",
     "1000": "1000",
     "10000": "10000",
     "\"default\": \"us-central1\", \"claude-3-5-sonnet-20240620\": \"europe-west1\"": "\"default\": \"us-central1\", \"claude-3-5-sonnet-20240620\": \"europe-west1\"",
@@ -6672,7 +6673,6 @@
     "Attempt details": "Attempt details",
     "Retryable": "Retryable",
     "No response": "No response",
-    "429": "429",
     "5xx": "5xx",
     "timeout": "timeout",
     "connection": "connection",
