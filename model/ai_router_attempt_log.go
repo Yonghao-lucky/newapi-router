@@ -80,7 +80,11 @@ func GetAIRouterAttemptLogsByRequestLogId(requestLogId int) ([]*AIRouterAttemptL
 // monitoring channel table: total attempts, successes and per-category
 // failure counts.
 type AIRouterAttemptChannelStat struct {
-	ChannelId        int
+	ChannelId int
+	// ChannelName is the name snapshotted on the attempt rows. Empty when
+	// every row of the channel predates attempt telemetry; the UI falls back
+	// to "#id" then.
+	ChannelName      string
 	Attempts         int64
 	SuccessCount     int64
 	Count429         int64
@@ -128,12 +132,13 @@ func airRouterAttemptScope(startTime, endTime int64, modelName, groupID string) 
 func GetAIRouterAttemptChannelStats(startTime, endTime int64, modelName, groupID string) (map[int]*AIRouterAttemptChannelStat, error) {
 	var rows []struct {
 		ChannelId     int    `json:"channel_id"`
+		ChannelName   string `json:"channel_name"`
 		ErrorCategory string `json:"error_category"`
 		Count         int64  `json:"count"`
 		TotalDuration int64  `json:"total_duration"`
 	}
 	tx := airRouterAttemptScope(startTime, endTime, modelName, groupID).
-		Select("channel_id, error_category, COUNT(*) as count, COALESCE(SUM(duration_ms), 0) as total_duration")
+		Select("channel_id, MAX(channel_name) as channel_name, error_category, COUNT(*) as count, COALESCE(SUM(duration_ms), 0) as total_duration")
 	if err := tx.Group("channel_id, error_category").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -144,6 +149,9 @@ func GetAIRouterAttemptChannelStats(startTime, endTime int64, modelName, groupID
 		if !ok {
 			s = &AIRouterAttemptChannelStat{ChannelId: row.ChannelId}
 			stats[row.ChannelId] = s
+		}
+		if s.ChannelName == "" {
+			s.ChannelName = row.ChannelName
 		}
 		s.Attempts += row.Count
 		s.TotalDurationMs += row.TotalDuration

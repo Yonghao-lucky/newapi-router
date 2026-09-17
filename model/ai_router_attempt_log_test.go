@@ -52,6 +52,7 @@ func TestAIRouterAttemptChannelStatsGroupsByCategory(t *testing.T) {
 	require.Equal(t, int64(1), s4.SuccessCount)
 	require.Equal(t, int64(1), s4.CountOther)
 	require.Equal(t, int64(150), s4.TotalDurationMs)
+	require.Equal(t, "ch-4", s4.ChannelName)
 
 	s5 := stats[5]
 	require.NotNil(t, s5)

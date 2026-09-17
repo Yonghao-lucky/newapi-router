@@ -345,8 +345,11 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
                 id: 'channel',
                 header: t('Channel'),
                 cell: (row) => (
-                  <span className='font-medium tabular-nums'>
-                    #{row.channel_id}
+                  <span className='font-medium whitespace-nowrap'>
+                    {row.channel_name || `#${row.channel_id}`}
+                    <span className='text-muted-foreground ml-1 text-xs tabular-nums'>
+                      #{row.channel_id}
+                    </span>
                   </span>
                 ),
               },

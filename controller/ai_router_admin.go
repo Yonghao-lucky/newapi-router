@@ -236,6 +236,7 @@ func GetAIRouterChannelStats(c *gin.Context) {
 	for _, stat := range stats {
 		row := aiRouterChannelStatView{AIRouterChannelStat: stat}
 		if attempt, ok := attemptStats[stat.ChannelId]; ok {
+			row.ChannelName = attempt.ChannelName
 			row.Count429 = attempt.Count429
 			row.Count5xx = attempt.Count5xx
 			row.CountTimeout = attempt.CountTimeout
@@ -280,7 +281,11 @@ func GetAIRouterErrorStats(c *gin.Context) {
 // per-attempt error counts.
 type aiRouterChannelStatView struct {
 	model.AIRouterChannelStat
-	Count429         int64 `json:"count_429"`
+	// ChannelName comes from the attempt rows, which snapshot the name at
+	// write time. Channels without attempt telemetry keep the empty string
+	// and the table falls back to "#id".
+	ChannelName      string `json:"channel_name"`
+	Count429         int64  `json:"count_429"`
 	Count5xx         int64 `json:"count_5xx"`
 	CountTimeout     int64 `json:"count_timeout"`
 	CountConnection  int64 `json:"count_connection"`

@@ -172,6 +172,9 @@ export interface AIRouterTrendPoint {
 
 export interface AIRouterChannelStat {
   channel_id: number
+  // Snapshot of the channel name taken from the attempt rows; empty for
+  // channels whose traffic predates attempt telemetry.
+  channel_name: string
   attempts: number
   finals: number
   success_finals: number

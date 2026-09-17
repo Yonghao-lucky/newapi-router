@@ -109,6 +109,21 @@ const parseChannelIds = (raw: string): number[] => {
 
 const defaultFilters = (): AIRouterLogFilters => ({ ...EMPTY_FILTERS })
 
+// formatChainSummary renders the attempt chain as the list column does:
+// "name (#id) → name (#id)". Used by the CSV export so a spreadsheet row
+// carries the same chain the table shows, without the channel-name lookup
+// the UI does at render time.
+const formatChainSummary = (
+  log: AIRouterLog,
+  channelNameMap: Map<number, string>
+): string =>
+  parseChannelIds(log.selected_channels)
+    .map((channelId) => {
+      const name = channelNameMap.get(channelId) ?? `#${channelId}`
+      return `${name} (#${channelId})`
+    })
+    .join(' → ')
+
 // LogsTable lists AI Router request logs with rich filters, a compact
 // attempt chain, a detail drawer and CSV/JSON export. Prompt and response
 // bodies are never rendered — the telemetry does not store them.
@@ -205,6 +220,7 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
           'has_tools',
           'attempts',
           'max_attempts',
+          'attempt_chain',
           'selected_channels',
           'final_channel_id',
           'success',
@@ -232,6 +248,7 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
               item.has_tools,
               item.attempts,
               item.max_attempts,
+              escape(formatChainSummary(item, channelNameMap)),
               escape(item.selected_channels),
               item.final_channel_id,
               item.success,
