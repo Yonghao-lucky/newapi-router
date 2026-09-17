@@ -151,6 +151,10 @@ func main() {
 	// Subscription quota reset task (daily/weekly/monthly/custom)
 	service.StartSubscriptionQuotaResetTask()
 
+	// AI Router telemetry retention: hourly batched cleanup of router logs and
+	// their attempt rows past the configured retention_days.
+	ai_router_service.StartRetentionCleanupTask()
+
 	// Report this process as a system instance so the System Info page can show
 	// all currently alive nodes in multi-instance deployments.
 	service.StartSystemInstanceReporter()
