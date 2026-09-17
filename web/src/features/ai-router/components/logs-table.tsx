@@ -20,6 +20,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowUpDown, FileJson, FileSpreadsheet } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import dayjs from 'dayjs'
 import { toast } from 'sonner'
 
 import { DataTablePage, useDataTable } from '@/components/data-table'
@@ -36,6 +37,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   SideDrawerSection,
   sideDrawerContentClassName,
@@ -61,6 +63,7 @@ import {
 } from '../constants'
 import type {
   AIRouterLog,
+  AIRouterAttemptLog,
   AIRouterLogFilters,
 } from '../types'
 
@@ -70,6 +73,11 @@ export interface LogsTableProps {
   // take effect again.
   channelJump?: { channelId: string; nonce: number } | null
 }
+
+// Client-side export ceiling. The backend serves up to 1000 rows in one
+// request; anything beyond that is reported to the user instead of silently
+// dropped.
+const EXPORT_ROW_LIMIT = 1000
 
 const EMPTY_FILTERS: AIRouterLogFilters = {
   start_time: '',
@@ -163,15 +171,15 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
   const exportMutation = useMutation({
     meta: { errorToast: false },
     mutationFn: async (format: 'csv' | 'json') => {
-      // Export up to 1000 rows of the current filter client-side; the
-      // backend has no dedicated export endpoint in V1.5.
-      const rows = await getAIRouterLogs({
-        ...aiRouterLogFiltersToParams(appliedFilters, 1, 1000),
-        page_size: 1000,
-      })
-      return { format, items: rows.items }
+      // Export the first 1000 rows of the current filter client-side; V1.5
+      // ships no server-side export endpoint. The response total tells us
+      // whether anything was left out.
+      const rows = await getAIRouterLogs(
+        aiRouterLogFiltersToParams(appliedFilters, 1, EXPORT_ROW_LIMIT)
+      )
+      return { format, items: rows.items, total: rows.total }
     },
-    onSuccess: ({ format, items }) => {
+    onSuccess: ({ format, items, total }) => {
       if (items.length === 0) {
         toast.warning(t('No logs to export'))
         return
@@ -214,7 +222,9 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
             [
               item.id,
               item.request_id,
-              item.created_at,
+              // Same shape as the list column, not a raw epoch: the CSV is
+              // opened in a spreadsheet, the epoch is meaningless there.
+              dayjs(item.created_at * 1000).format('YYYY-MM-DD HH:mm:ss'),
               escape(item.model),
               escape(item.group_id),
               item.user_id,
@@ -239,7 +249,16 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
       anchor.download = `ai-router-logs-${format}-${timestamp}.${format}`
       anchor.click()
       URL.revokeObjectURL(url)
-      toast.success(t('Export started'))
+      if (total > items.length) {
+        toast.warning(
+          t(
+            'Exported {{count}} rows. Only the first {{limit}} rows are exported.',
+            { count: items.length, limit: EXPORT_ROW_LIMIT }
+          )
+        )
+        return
+      }
+      toast.success(t('Exported {{count}} rows', { count: items.length }))
     },
   })
 
@@ -732,15 +751,31 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
 
             {detailRow &&
               (() => {
-                const attempts = detailQuery.data?.attempts ?? []
+                const attempts: AIRouterAttemptLog[] =
+                  detailQuery.data?.attempts ?? []
                 return (
-                  attempts.length > 0 && (
-                    <SideDrawerSection>
-                      <div className='space-y-2'>
-                        <p className='text-sm font-medium'>
-                          {t('Attempt details')}
-                        </p>
-                        {attempts.map((attempt) => (
+                  <SideDrawerSection>
+                    <div className='space-y-2'>
+                      <p className='text-sm font-medium'>
+                        {t('Attempt details')}
+                      </p>
+                      {(() => {
+                        if (detailQuery.isLoading) {
+                          return <Skeleton className='h-16 w-full' />
+                        }
+                        if (attempts.length === 0) {
+                          // Logs written before attempt telemetry existed have
+                          // only the summary chain; say so instead of leaving
+                          // an unexplained blank block.
+                          return (
+                            <p className='text-muted-foreground rounded-md border border-dashed p-3 text-xs'>
+                              {t(
+                                'No per-attempt details (this log predates attempt tracking).'
+                              )}
+                            </p>
+                          )
+                        }
+                        return attempts.map((attempt) => (
                           <div
                             key={attempt.id}
                             className='rounded-md border p-2 text-sm'
@@ -788,10 +823,10 @@ export function LogsTable({ channelJump }: LogsTableProps = {}) {
                               {attempt.retryable && <span>{t('Retryable')}</span>}
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </SideDrawerSection>
-                  )
+                        ))
+                      })()}
+                    </div>
+                  </SideDrawerSection>
                 )
               })()}
           </div>

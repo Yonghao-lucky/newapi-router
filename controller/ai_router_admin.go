@@ -78,8 +78,11 @@ func GetAIRouterLogs(c *gin.Context) {
 	if pageSize < 1 {
 		pageSize = 20
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	// The list view asks for a page of 20; the client-side export asks for one
+	// 1000-row page, which is the documented export ceiling (V1.5 has no
+	// server-side export endpoint).
+	if pageSize > 1000 {
+		pageSize = 1000
 	}
 
 	startTime, _ := strconv.ParseInt(c.Query("start_time"), 10, 64)

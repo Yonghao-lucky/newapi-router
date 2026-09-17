@@ -6681,6 +6681,9 @@
     "Error category": "Error category",
     "Error category distribution": "Error category distribution",
     "HTTP status code distribution": "HTTP status code distribution",
-    "No errors in the selected range.": "No errors in the selected range."
+    "No errors in the selected range.": "No errors in the selected range.",
+    "No per-attempt details (this log predates attempt tracking).": "No per-attempt details (this log predates attempt tracking).",
+    "Exported {{count}} rows": "Exported {{count}} rows",
+    "Exported {{count}} rows. Only the first {{limit}} rows are exported.": "Exported {{count}} rows. Only the first {{limit}} rows are exported."
   }
 }

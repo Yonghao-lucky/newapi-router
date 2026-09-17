@@ -6679,6 +6679,9 @@
     "Error category": "错误分类",
     "Error category distribution": "错误分类分布",
     "HTTP status code distribution": "HTTP 状态码分布",
-    "No errors in the selected range.": "所选范围内没有错误。"
+    "No errors in the selected range.": "所选范围内没有错误。",
+    "No per-attempt details (this log predates attempt tracking).": "无逐次尝试明细（该日志早于尝试明细记录）。",
+    "Exported {{count}} rows": "已导出 {{count}} 条记录",
+    "Exported {{count}} rows. Only the first {{limit}} rows are exported.": "已导出 {{count}} 条记录，仅导出前 {{limit}} 条。"
   }
 }
