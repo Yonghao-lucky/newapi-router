@@ -373,6 +373,7 @@ func migrateDB() error {
 		&AIRouterLog{},
 		&AIRouterTargetPolicy{},
 		&AIRouterTargetCandidate{},
+		&AIRouterAttemptLog{},
 	)
 	if err != nil {
 		return err
