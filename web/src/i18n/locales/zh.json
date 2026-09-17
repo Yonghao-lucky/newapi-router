@@ -6660,6 +6660,21 @@
     "Video capability": "视频能力",
     "Whether tool calls survive this channel; unverified learns from traffic.": "工具调用在该渠道是否可用；未验证时会根据流量学习。",
     "With fallback": "有 Fallback",
-    "{{count}} retries": "重试 {{count}} 次"
+    "{{count}} retries": "重试 {{count}} 次",
+    "Status code": "状态码",
+    "All error categories": "全部错误分类",
+    "Stream interrupted": "流中断",
+    "All streams": "全部流",
+    "Interrupted": "已中断",
+    "Not interrupted": "未中断",
+    "Attempt details": "尝试明细",
+    "Retryable": "可重试",
+    "No response": "无响应",
+    "429": "429",
+    "5xx": "5xx",
+    "timeout": "超时",
+    "connection": "连接失败",
+    "stream_interrupted": "流中断",
+    "other": "其他"
   }
 }

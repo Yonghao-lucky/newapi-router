@@ -48,15 +48,21 @@ import { formatTimestampToDate } from '@/lib/format'
 import {
   aiRouterLogFiltersToParams,
   getAIRouterChannels,
+  getAIRouterLogDetail,
   getAIRouterLogs,
 } from '../api'
 import {
   AI_ROUTER_QUERY_KEYS,
+  ERROR_CATEGORY_OPTIONS,
   FALLBACK_FILTER_OPTIONS,
   MODALITY_OPTIONS,
+  STREAM_INTERRUPTED_FILTER_OPTIONS,
   SUCCESS_FILTER_OPTIONS,
 } from '../constants'
-import type { AIRouterLog, AIRouterLogFilters } from '../types'
+import type {
+  AIRouterLog,
+  AIRouterLogFilters,
+} from '../types'
 
 const EMPTY_FILTERS: AIRouterLogFilters = {
   start_time: '',
@@ -68,6 +74,9 @@ const EMPTY_FILTERS: AIRouterLogFilters = {
   success: '',
   fallback: '',
   channel_id: '',
+  http_status_code: '',
+  error_category: '',
+  stream_interrupted: '',
 }
 
 // Parse "[4,9,10]" into [4, 9, 10]; tolerate malformed JSON.
@@ -96,6 +105,17 @@ export function LogsTable() {
   )
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [detailRow, setDetailRow] = useState<AIRouterLog | null>(null)
+
+  // Per-attempt rows of the open drawer (Phase 3 detail endpoint). Old logs
+  // have no rows; the chain view alone still renders.
+  const detailQuery = useQuery({
+    queryKey: [...AI_ROUTER_QUERY_KEYS.logs, 'detail', detailRow?.id],
+    queryFn: async () => {
+      if (detailRow === null) return null
+      return getAIRouterLogDetail(detailRow.id)
+    },
+    enabled: detailRow !== null,
+  })
 
   const params = useMemo(
     () => aiRouterLogFiltersToParams(appliedFilters, pagination.pageIndex + 1, pagination.pageSize),
@@ -474,6 +494,52 @@ export function LogsTable() {
             </SelectGroup>
           </SelectContent>
         </Select>
+        <Input
+          className='h-8 w-28'
+          placeholder={t('Status code')}
+          value={filters.http_status_code}
+          onChange={(event) =>
+            setFilter({ http_status_code: event.target.value })
+          }
+        />
+        <Select
+          value={filters.error_category}
+          onValueChange={(value) => setFilter({ error_category: value ?? '' })}
+        >
+          <SelectTrigger className='w-36' aria-label={t('Error category')}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value=''>{t('All error categories')}</SelectItem>
+              {ERROR_CATEGORY_OPTIONS.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {t(option)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        <Select
+          value={filters.stream_interrupted}
+          onValueChange={(value) =>
+            setFilter({ stream_interrupted: value ?? '' })
+          }
+        >
+          <SelectTrigger className='w-40' aria-label={t('Stream interrupted')}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value=''>{t('All streams')}</SelectItem>
+              {STREAM_INTERRUPTED_FILTER_OPTIONS.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {option === 'true' ? t('Interrupted') : t('Not interrupted')}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
         <Button size='sm' onClick={() => applyFilters()}>
           {t('Search')}
         </Button>
@@ -644,6 +710,71 @@ export function LogsTable() {
                 )}
               </div>
             </SideDrawerSection>
+
+            {detailRow &&
+              (() => {
+                const attempts = detailQuery.data?.attempts ?? []
+                return (
+                  attempts.length > 0 && (
+                    <SideDrawerSection>
+                      <div className='space-y-2'>
+                        <p className='text-sm font-medium'>
+                          {t('Attempt details')}
+                        </p>
+                        {attempts.map((attempt) => (
+                          <div
+                            key={attempt.id}
+                            className='rounded-md border p-2 text-sm'
+                          >
+                            <div className='flex items-center gap-2'>
+                              <span className='bg-muted text-muted-foreground flex h-5 w-5 items-center justify-center rounded-full text-[10px] tabular-nums'>
+                                {attempt.attempt_seq}
+                              </span>
+                              <span className='font-medium'>
+                                {attempt.channel_name || `#${attempt.channel_id}`}
+                              </span>
+                              <span className='text-muted-foreground text-xs'>
+                                (#{attempt.channel_id})
+                              </span>
+                              {attempt.channel_retry_no > 0 && (
+                                <span className='text-muted-foreground text-xs'>
+                                  {t('Retry')} {attempt.channel_retry_no}
+                                </span>
+                              )}
+                              <span className='flex-1' />
+                              {attempt.success ? (
+                                <StatusBadge variant='success' type='text'>
+                                  {t('Success')}
+                                </StatusBadge>
+                              ) : (
+                                <StatusBadge variant='danger' type='text'>
+                                  {t(attempt.error_category)}
+                                </StatusBadge>
+                              )}
+                            </div>
+                            <div className='text-muted-foreground mt-1 flex gap-3 text-xs'>
+                              <span className='tabular-nums'>
+                                {attempt.http_status_code !== null
+                                  ? `HTTP ${attempt.http_status_code}`
+                                  : t('No response')}
+                              </span>
+                              <span className='tabular-nums'>
+                                {attempt.duration_ms}ms
+                              </span>
+                              {attempt.ttft_ms !== null && (
+                                <span className='tabular-nums'>
+                                  TTFT {attempt.ttft_ms}ms
+                                </span>
+                              )}
+                              {attempt.retryable && <span>{t('Retryable')}</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </SideDrawerSection>
+                  )
+                )
+              })()}
           </div>
         </SheetContent>
       </Sheet>

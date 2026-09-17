@@ -6662,6 +6662,21 @@
     "Video capability": "Video capability",
     "Whether tool calls survive this channel; unverified learns from traffic.": "Whether tool calls survive this channel; unverified learns from traffic.",
     "With fallback": "With fallback",
-    "{{count}} retries": "{{count}} retries"
+    "{{count}} retries": "{{count}} retries",
+    "Status code": "Status code",
+    "All error categories": "All error categories",
+    "Stream interrupted": "Stream interrupted",
+    "All streams": "All streams",
+    "Interrupted": "Interrupted",
+    "Not interrupted": "Not interrupted",
+    "Attempt details": "Attempt details",
+    "Retryable": "Retryable",
+    "No response": "No response",
+    "429": "429",
+    "5xx": "5xx",
+    "timeout": "timeout",
+    "connection": "connection",
+    "stream_interrupted": "stream interrupted",
+    "other": "other"
   }
 }

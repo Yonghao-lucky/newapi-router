@@ -200,4 +200,34 @@ export interface AIRouterLogFilters {
   success: string
   fallback: string
   channel_id: string
+  // Phase 3 error filters: exact status code, category enum and the
+  // stream-interruption flag; empty string = not set.
+  http_status_code: string
+  error_category: string
+  stream_interrupted: string
+}
+
+// Per-attempt row of the request-log detail drawer.
+export interface AIRouterAttemptLog {
+  id: number
+  request_log_id: number
+  request_id: string
+  attempt_seq: number
+  channel_retry_no: number
+  channel_id: number
+  channel_name: string
+  modality: string
+  http_status_code: number | null
+  error_category: string
+  retryable: boolean
+  duration_ms: number
+  ttft_ms: number | null
+  success: boolean
+  created_at: number
+}
+
+// Response of GET /api/ai-router/logs/:id.
+export interface AIRouterLogDetail {
+  log: AIRouterLog
+  attempts: AIRouterAttemptLog[]
 }

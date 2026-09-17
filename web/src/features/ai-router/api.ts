@@ -23,6 +23,7 @@ import type {
   AIRouterChannel,
   AIRouterChannelStat,
   AIRouterLog,
+  AIRouterLogDetail,
   AIRouterLogFilters,
   AIRouterPage,
   AIRouterSettings,
@@ -232,11 +233,25 @@ export async function getAIRouterLogs(params: {
   modality?: string
   fallback?: string
   channel_id?: number
+  http_status_code?: number
+  error_category?: string
+  stream_interrupted?: string
 }): Promise<AIRouterPage<AIRouterLog>> {
   const response = await api.get<{
     success: boolean
     data: AIRouterPage<AIRouterLog>
   }>('/api/ai-router/logs', { params })
+  return requireServerSuccess(response.data).data
+}
+
+// Full attempt list of one request log (Phase 3 detail endpoint).
+export async function getAIRouterLogDetail(
+  id: number
+): Promise<AIRouterLogDetail> {
+  const response = await api.get<{
+    success: boolean
+    data: AIRouterLogDetail
+  }>(`/api/ai-router/logs/${id}`)
   return requireServerSuccess(response.data).data
 }
 
@@ -259,5 +274,12 @@ export function aiRouterLogFiltersToParams(
   if (filters.success) params.success = filters.success
   if (filters.fallback) params.fallback = filters.fallback
   if (filters.channel_id) params.channel_id = Number(filters.channel_id)
+  if (filters.http_status_code) {
+    params.http_status_code = Number(filters.http_status_code)
+  }
+  if (filters.error_category) params.error_category = filters.error_category
+  if (filters.stream_interrupted) {
+    params.stream_interrupted = filters.stream_interrupted
+  }
   return params
 }

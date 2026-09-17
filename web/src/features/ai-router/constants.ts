@@ -56,3 +56,16 @@ export const MODALITY_OPTIONS = ['text', 'image', 'video', 'unknown'] as const
 // Success/failure filter options for logs.
 export const SUCCESS_FILTER_OPTIONS = ['true', 'false'] as const
 export const FALLBACK_FILTER_OPTIONS = ['true', 'false'] as const
+
+// Error-category filter options matching ai_router_attempt_logs categories.
+export const ERROR_CATEGORY_OPTIONS = [
+  '429',
+  '5xx',
+  'timeout',
+  'connection',
+  'stream_interrupted',
+  'other',
+] as const
+
+// Boolean filter options for the stream-interruption flag.
+export const STREAM_INTERRUPTED_FILTER_OPTIONS = ['true', 'false'] as const
