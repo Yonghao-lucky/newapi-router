@@ -221,8 +221,10 @@ func GetAIRouterChannelStats(c *gin.Context) {
 	// Enrich with per-attempt error breakdown (Phase 3): counts of 429 /
 	// 5xx / timeout / connection / stream_interrupted / other per channel.
 	// Channels with no attempt rows (pre-Phase-3 traffic) keep zero error
-	// counts and their summary-derived success rate.
-	attemptStats, err := model.GetAIRouterAttemptChannelStats(startTime, endTime)
+	// counts and their summary-derived success rate. The same model/group
+	// filter applies to both aggregates so the row stays internally
+	// consistent.
+	attemptStats, err := model.GetAIRouterAttemptChannelStats(startTime, endTime, c.Query("model"), c.Query("group_id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -238,7 +240,11 @@ func GetAIRouterChannelStats(c *gin.Context) {
 			row.CountInterrupted = attempt.CountInterrupted
 			row.CountOther = attempt.CountOther
 			if attempt.Attempts > 0 {
+				// Attempt-derived rate and duration: the row answers "how did
+				// this channel behave on every upstream call", not just on the
+				// requests it happened to be the final channel of.
 				row.SuccessRate = float64(attempt.SuccessCount) / float64(attempt.Attempts)
+				row.AvgDurationMs = float64(attempt.TotalDurationMs) / float64(attempt.Attempts)
 			}
 		}
 		view = append(view, row)

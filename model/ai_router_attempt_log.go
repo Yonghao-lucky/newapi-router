@@ -1,5 +1,7 @@
 package model
 
+import "gorm.io/gorm"
+
 // Error categories for ai_router_attempt_logs. Success rows carry the
 // "success" category; the rest classify the failure so the monitoring
 // dashboard can break errors down without parsing messages. Classification
@@ -90,25 +92,48 @@ type AIRouterAttemptChannelStat struct {
 	TotalDurationMs  int64
 }
 
-// GetAIRouterAttemptChannelStats aggregates attempt rows per channel between
-// start and end (unix seconds, inclusive bounds, zero = unbounded). The
-// per-category counts come from a GROUP BY on (channel_id, error_category);
-// the (channel_id, created_at) index bounds the scan by time range.
-func GetAIRouterAttemptChannelStats(startTime, endTime int64) (map[int]*AIRouterAttemptChannelStat, error) {
-	var rows []struct {
-		ChannelId     int    `json:"channel_id"`
-		ErrorCategory string `json:"error_category"`
-		Count         int64  `json:"count"`
-		TotalDuration int64  `json:"total_duration"`
-	}
-	tx := DB.Model(&AIRouterAttemptLog{}).
-		Select("channel_id, error_category, COUNT(*) as count, COALESCE(SUM(duration_ms), 0) as total_duration")
+// airRouterAttemptScope builds a fresh attempt-row query with the shared time
+// bounds and model/group filters. Model and group live on the summary table,
+// so they are applied as an EXISTS against ai_router_logs — the same filter
+// the summary-level channel stats use. Without it, narrowing the dashboard to
+// one model would still count attempts from every other model.
+func airRouterAttemptScope(startTime, endTime int64, modelName, groupID string) *gorm.DB {
+	tx := DB.Model(&AIRouterAttemptLog{})
 	if startTime > 0 {
 		tx = tx.Where("created_at >= ?", startTime)
 	}
 	if endTime > 0 {
 		tx = tx.Where("created_at <= ?", endTime)
 	}
+	if modelName != "" || groupID != "" {
+		sub := "SELECT 1 FROM ai_router_logs l WHERE l.id = ai_router_attempt_logs.request_log_id"
+		args := make([]any, 0, 2)
+		if modelName != "" {
+			sub += " AND l.model = ?"
+			args = append(args, modelName)
+		}
+		if groupID != "" {
+			sub += " AND l.group_id = ?"
+			args = append(args, groupID)
+		}
+		tx = tx.Where("EXISTS ("+sub+")", args...)
+	}
+	return tx
+}
+
+// GetAIRouterAttemptChannelStats aggregates attempt rows per channel between
+// start and end (unix seconds, inclusive bounds, zero = unbounded). The
+// per-category counts come from a GROUP BY on (channel_id, error_category);
+// the (channel_id, created_at) index bounds the scan by time range.
+func GetAIRouterAttemptChannelStats(startTime, endTime int64, modelName, groupID string) (map[int]*AIRouterAttemptChannelStat, error) {
+	var rows []struct {
+		ChannelId     int    `json:"channel_id"`
+		ErrorCategory string `json:"error_category"`
+		Count         int64  `json:"count"`
+		TotalDuration int64  `json:"total_duration"`
+	}
+	tx := airRouterAttemptScope(startTime, endTime, modelName, groupID).
+		Select("channel_id, error_category, COUNT(*) as count, COALESCE(SUM(duration_ms), 0) as total_duration")
 	if err := tx.Group("channel_id, error_category").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
