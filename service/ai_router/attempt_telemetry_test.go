@@ -197,3 +197,59 @@ func intPtr(v int) *int {
 func int64Ptr(v int64) *int64 {
 	return &v
 }
+
+// Every exit path of the loop must leave the final channel in the attempt
+// chain — a first-channel success previously returned before MarkAttempted,
+// recording attempts=0 with an empty chain.
+func TestAttemptChainIncludesFinalChannelOnSuccess(t *testing.T) {
+	chs := []RouterChannel{
+		{ID: 1, Priority: 100, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsText: ptr(true)}},
+	}
+	settings := ai_router_setting.DefaultSettings()
+	settings.MaxAttempts = 3
+
+	demand := RouteDemand{Model: "kimi-k3", Modality: ModalityText, DetectorFamily: "openai_chat"}
+	rc := NewRouteContext(demand, settings.MaxAttempts)
+
+	callRelay := func() *types.NewAPIError {
+		rc.LastCall = &AttemptCall{ChannelName: "ch-1", DurationMs: 50, TtftMs: int64Ptr(10)}
+		return nil
+	}
+
+	if err := RunFallbackLoop(rc, chs, "default", settings, callRelay); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if rc.CurrentAttempt != 1 {
+		t.Errorf("CurrentAttempt = %d, want 1", rc.CurrentAttempt)
+	}
+	if len(rc.AttemptOrder) != 1 || rc.AttemptOrder[0] != 1 {
+		t.Errorf("AttemptOrder = %v, want [1]", rc.AttemptOrder)
+	}
+	if len(rc.AttemptRecords) != 1 || !rc.AttemptRecords[0].Success {
+		t.Errorf("expected one success record, got %+v", rc.AttemptRecords)
+	}
+}
+
+// A non-retryable error on the last channel must also keep the chain.
+func TestAttemptChainIncludesFinalChannelOnNonRetryable(t *testing.T) {
+	chs := []RouterChannel{
+		{ID: 1, Priority: 100, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsText: ptr(true)}},
+	}
+	settings := ai_router_setting.DefaultSettings()
+	settings.MaxAttempts = 3
+
+	demand := RouteDemand{Model: "kimi-k3", Modality: ModalityText, DetectorFamily: "openai_chat"}
+	rc := NewRouteContext(demand, settings.MaxAttempts)
+
+	callRelay := func() *types.NewAPIError {
+		rc.LastCall = &AttemptCall{ChannelName: "ch-1", DurationMs: 20}
+		return types.NewErrorWithStatusCode(fmt.Errorf("bad request"), types.ErrorCodeInvalidRequest, 400, types.ErrOptionWithSkipRetry())
+	}
+
+	if err := RunFallbackLoop(rc, chs, "default", settings, callRelay); err == nil {
+		t.Fatal("expected error")
+	}
+	if rc.CurrentAttempt != 1 || len(rc.AttemptOrder) != 1 || rc.AttemptOrder[0] != 1 {
+		t.Errorf("chain must contain channel 1: attempts=%d order=%v", rc.CurrentAttempt, rc.AttemptOrder)
+	}
+}

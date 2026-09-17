@@ -106,16 +106,24 @@ func RunFallbackLoop(
 			rc.LastCall = nil
 			settleAttemptRecord(rc, call, relayErr)
 			if relayErr == nil {
+				// The successful channel must join the attempt chain before
+				// returning, or a first-channel success records attempts=0
+				// and an empty chain (breaking channel filters and stats).
+				rc.MarkAttempted(decision.ChannelID)
 				return nil
 			}
 			lastError = relayErr
 
 			// If response already started, cannot retry or switch channels.
+			// Same for a non-retryable error: this channel was the request's
+			// last, so it joins the chain on every exit path.
 			if rc.ResponseStarted {
+				rc.MarkAttempted(decision.ChannelID)
 				return relayErr
 			}
 			// If non-retryable, return immediately.
 			if !isRetryable(relayErr) {
+				rc.MarkAttempted(decision.ChannelID)
 				return relayErr
 			}
 			if retryNo < maxRetry {
