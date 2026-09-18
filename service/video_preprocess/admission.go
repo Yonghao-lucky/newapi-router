@@ -284,7 +284,18 @@ func (q *Queue) Execute(ctx context.Context, lease *Lease, handler StageHandler)
 		if errors.As(stageErr, &classified) {
 			return stageErr
 		}
-		return &StageError{Code: CodeProcessingFailed, Stage: stage, Err: stageErr, Message: "stage failed"}
+		// Preserve the wrapped failure's stable code and message: a stage
+		// boundary adds context, it must not re-classify a media or budget
+		// rejection into a generic processing failure.
+		code := CodeOf(stageErr)
+		if code == "" {
+			code = CodeProcessingFailed
+		}
+		message := MessageOf(stageErr)
+		if message == "" {
+			message = "stage failed"
+		}
+		return &StageError{Code: code, Stage: stage, Err: stageErr, Message: message}
 	}
 
 	lease.enterStage(JobStageHandoff)
@@ -619,4 +630,3 @@ func retryAfterMillisToSeconds(millis int64) int64 {
 func retryAfterSeconds(d time.Duration, minSeconds, maxSeconds int64) int64 {
 	return max(min(int64(d/time.Second), maxSeconds), minSeconds)
 }
-

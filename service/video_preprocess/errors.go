@@ -121,6 +121,10 @@ func CodeOf(err error) string {
 		}
 		return CodeProcessingFailed
 	}
+	var coder interface{ VideoPreprocessCode() string }
+	if errors.As(err, &coder) {
+		return coder.VideoPreprocessCode()
+	}
 	return ""
 }
 
@@ -139,6 +143,10 @@ func MessageOf(err error) string {
 	var stage *StageError
 	if errors.As(err, &stage) {
 		return stage.Message
+	}
+	var messager interface{ VideoPreprocessMessage() string }
+	if errors.As(err, &messager) {
+		return messager.VideoPreprocessMessage()
 	}
 	return ""
 }

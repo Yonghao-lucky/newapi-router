@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/video_preprocess"
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
 	"github.com/gin-gonic/gin"
@@ -141,12 +142,26 @@ func UpdateVideoPreprocessSettings(c *gin.Context) {
 		return
 	}
 
+	// The save published a new generation directly, without passing the option
+	// reload path where the node hooks pick it up, so push the new contract to
+	// this node's processor here. A nil processor (build failure) is a no-op
+	// that the runtime API already reports.
+	video_preprocess.ApplyPublishedSettings()
+
 	common.ApiSuccess(c, videoSettingsResponse{
 		Settings:      snapshot.Settings,
 		Version:       snapshot.Version,
 		ConfigVersion: video_preprocess_setting.ConfigVersion,
 		Deployment:    video_preprocess_setting.GetDeploymentConfig(),
 	})
+}
+
+// GetVideoPreprocessRuntime returns this node's live video preprocessing
+// counters: queue occupancy, media subprocess gauge, temp storage, wait age,
+// config version and binary health. Everything is read from in-process state —
+// no throughput, trend or persisted statistic exists to report.
+func GetVideoPreprocessRuntime(c *gin.Context) {
+	common.ApiSuccess(c, video_preprocess.GetRuntimeStatus())
 }
 
 // ValidateVideoPreprocessSettings checks a candidate document without writing.

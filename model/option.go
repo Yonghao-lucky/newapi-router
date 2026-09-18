@@ -689,6 +689,12 @@ func handleConfigUpdate(key, value string) (bool, error) {
 		if err := video_preprocess_setting.PublishFromOption(value); err != nil {
 			return true, err
 		}
+		// 发布成功后把新配置推给本节点的视频预处理器：队列限制按 D 的
+		// 非对称缩放语义生效，媒体/改写限制随下一次请求的配置代际生效。
+		// 通过函数变量注入，避免 model -> service/video_preprocess 的依赖环。
+		if hook := OnVideoPreprocessPublished; hook != nil {
+			hook()
+		}
 		return true, nil
 	}
 

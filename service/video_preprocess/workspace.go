@@ -81,6 +81,30 @@ func (w *workspace) remove(name string) error {
 	return err
 }
 
+// bytesOnDisk reports the current size of the workspace's files by walking its
+// directory. A workspace deleted concurrently reports zero; read errors on
+// individual entries are skipped, because the gauge is advisory and a missing
+// file no longer occupies space.
+func (w *workspace) bytesOnDisk() int64 {
+	if w == nil {
+		return 0
+	}
+	var total int64
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if info, err := entry.Info(); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
 // Cleanup removes the workspace and everything inside it. It is idempotent and
 // safe to call concurrently, so a request path, its deferred cleanup and a
 // cancellation handler can all invoke it without coordination.

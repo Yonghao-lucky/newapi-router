@@ -32,6 +32,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	ai_router_service "github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/service/video_preprocess"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -154,6 +155,12 @@ func main() {
 	// AI Router telemetry retention: hourly batched cleanup of router logs and
 	// their attempt rows past the configured retention_days.
 	ai_router_service.StartRetentionCleanupTask()
+
+	// Video preprocessing runtime: build the singleton queue from the published
+	// settings and start this node's stale workspace cleanup. Settings changes
+	// propagate through the option reload hook below, not through this call.
+	video_preprocess.StartVideoPreprocessRuntime()
+	model.OnVideoPreprocessPublished = video_preprocess.ApplyPublishedSettings
 
 	// Report this process as a system instance so the System Info page can show
 	// all currently alive nodes in multi-instance deployments.

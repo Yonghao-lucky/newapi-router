@@ -2,6 +2,14 @@ package model
 
 import "github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
+// OnVideoPreprocessPublished is invoked after a video preprocessing settings
+// document was published to the in-memory snapshot — at boot load, on an
+// administrator's save and on the periodic option reload. main injects the
+// hook so the node's video preprocess processor picks up the new generation;
+// the indirection keeps model from depending on service/video_preprocess, the
+// same break GetTaskAdaptorFunc provides for the relay factory.
+var OnVideoPreprocessPublished func()
+
 // SaveVideoPreprocessSettingsDocument persists the Video Preprocessing settings
 // document.
 //

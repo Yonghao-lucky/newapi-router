@@ -55,6 +55,10 @@ type ProcessVideoResult struct {
 	// directory. It is not exported because the Cleanup method is the only
 	// stable contract.
 	workspace *workspace
+
+	// limits are the defaults-applied limits this result was produced with, so
+	// a staged export can reuse the exact contract it was probed under.
+	limits MediaLimits
 }
 
 // Cleanup removes all temporary files and directories created for this video.
@@ -73,6 +77,14 @@ func (r *ProcessVideoResult) Cleanup() error {
 // The caller must invoke result.Cleanup() when the frames are no longer needed,
 // regardless of success, failure, cancellation or timeout.
 func ProcessVideo(ctx context.Context, input ProcessVideoInput, opts Options) (*ProcessVideoResult, error) {
+	return processVideoStage(ctx, input, opts, true)
+}
+
+// processVideoStage runs the decode and probe halves of the pipeline. When
+// export is true the whole one-shot flow is preserved for direct callers;
+// otherwise the decoded file stays in the retained workspace so a later export
+// does not have to re-decode, and the caller owns result.Cleanup on every path.
+func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Options, export bool) (*ProcessVideoResult, error) {
 	start := time.Now()
 
 	// Apply defaults and validate limits
@@ -90,12 +102,16 @@ func ProcessVideo(ctx context.Context, input ProcessVideoInput, opts Options) (*
 	result := &ProcessVideoResult{
 		VideoIndex: input.Video.Index,
 		workspace:  ws,
+		limits:     limits,
 	}
 
-	// Ensure cleanup on early return
-	var cleanupOnError = true
+	// Ensure cleanup on early return. In the staged flow (export=false) the
+	// result is handed back successfully with its workspace retained — the
+	// caller owns Cleanup from the moment this function returns — so only the
+	// one-shot flow auto-cleans on error paths after a successful handoff.
+	var failedStage = true
 	defer func() {
-		if cleanupOnError {
+		if failedStage {
 			_ = ws.Cleanup()
 		}
 	}()
@@ -150,22 +166,56 @@ func ProcessVideo(ctx context.Context, input ProcessVideoInput, opts Options) (*
 	result.Metadata = *meta
 	result.DurationMillis.Probe = time.Since(probeStart).Milliseconds()
 
-	// Stage 4: Generate uniform timestamps
+	if !export {
+		// The decode and probe halves are done; the caller decides the frame
+		// budget and runs the export through exportKept. The workspace is
+		// retained on purpose, so the auto-cleanup must not run.
+		failedStage = false
+		return result, nil
+	}
+
 	maxFrames := input.MaxFramesForThisVideo
 	if limits.MaxFramesPerRequest > 0 && (maxFrames <= 0 || maxFrames > limits.MaxFramesPerRequest) {
 		maxFrames = limits.MaxFramesPerRequest
 	}
-
-	timestamps, err := generateUniformTimestamps(
-		meta.DurationSeconds,
-		maxFrames,
-		limits.MinFramesPerVideo,
-	)
+	timestamps, err := generateUniformTimestamps(meta.DurationSeconds, maxFrames, limits.MinFramesPerVideo)
 	if err != nil {
 		return nil, err
 	}
 
-	// Stage 5: Export JPEG frames with downgrade
+	if err := exportJobWithTimestamps(ctx, limits, videoPath, timestamps, ws.dir, meta.RotationDegrees, result); err != nil {
+		return nil, err
+	}
+	result.DurationMillis.Total = time.Since(start).Milliseconds()
+	// Success: the caller owns cleanup from here on.
+	failedStage = false
+	return result, nil
+}
+
+// exportForFrameCount generates uniform timestamps for the allocated frame
+// count and exports them from the already-decoded video.
+func exportForFrameCount(ctx context.Context, limits MediaLimits, videoPath string, durationSeconds float64, frames int, outputDir string) ([]ExportedFrame, error) {
+	if frames < 1 {
+		return nil, newError(CodeImageLimitExceeded, "video was allocated no frames")
+	}
+	timestamps, err := generateUniformTimestamps(durationSeconds, frames, 1)
+	if err != nil {
+		return nil, err
+	}
+	var result ProcessVideoResult
+	if err := exportJobWithTimestamps(ctx, limits, videoPath, timestamps, outputDir, 0, &result); err != nil {
+		return nil, err
+	}
+	return result.Frames, nil
+}
+
+// exportJobWithTimestamps runs the batch FFmpeg export with the downgrade
+// ladder and records the frames and their byte sizes onto result.
+func exportJobWithTimestamps(ctx context.Context, limits MediaLimits, videoPath string, timestamps []float64, outputDir string, rotationDegrees int, result *ProcessVideoResult) error {
+	if err := timeoutOrCancel(ctx); err != nil {
+		return err
+	}
+
 	exportStart := time.Now()
 	exportCtx, exportCancel := context.WithTimeout(ctx, limits.ExportTimeout)
 	defer exportCancel()
@@ -173,25 +223,22 @@ func ProcessVideo(ctx context.Context, input ProcessVideoInput, opts Options) (*
 	job := exportJob{
 		videoPath:       videoPath,
 		timestamps:      timestamps,
-		outputDir:       ws.dir,
+		outputDir:       outputDir,
 		quality:         limits.JPEGQuality,
 		maxLongSide:     limits.MaxLongSide,
-		rotationDegrees: meta.RotationDegrees,
+		rotationDegrees: rotationDegrees,
 		ffmpegThreads:   limits.FFmpegThreads,
 	}
 
 	frames, err := attemptExportWithDowngrade(exportCtx, limits.FFmpegPath, job, limits)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	result.Frames = frames
-	result.DurationMillis.Export = time.Since(exportStart).Milliseconds()
-
-	result.DurationMillis.Total = time.Since(start).Milliseconds()
-
-	// Success: caller owns cleanup
-	cleanupOnError = false
-	return result, nil
+	if result != nil {
+		result.Frames = frames
+		result.DurationMillis.Export = time.Since(exportStart).Milliseconds()
+	}
+	return nil
 }
 
 // EncodeFrameToDataURL reads a JPEG frame from disk and returns it as a
