@@ -35,7 +35,7 @@ type VideoMetadata struct {
 // under ctx and has its stderr capped at limits.MaxProbeStderrBytes.
 //
 // On cancellation, the entire process group is killed.
-func probeVideo(ctx context.Context, ffprobePath, path string, limits Limits) (*VideoMetadata, error) {
+func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimits) (*VideoMetadata, error) {
 	if err := timeoutOrCancel(ctx); err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func parseRational(s string) float64 {
 	return num / den
 }
 
-func validateMetadata(meta *VideoMetadata, limits Limits) error {
+func validateMetadata(meta *VideoMetadata, limits MediaLimits) error {
 	if len(limits.AllowedContainerFormats) > 0 && !containsFold(limits.AllowedContainerFormats, meta.Container) {
 		return newError(CodeUnsupportedFormat, "container format "+meta.Container+" is not enabled")
 	}

@@ -1,10 +1,5 @@
 package video_preprocess
 
-import (
-	"fmt"
-	"math"
-)
-
 // generateUniformTimestamps returns an ascending list of timestamps uniformly
 // distributed across [0, durationSeconds). The count is bounded by
 // maxFramesPerRequest (caller's image budget) and minFramesPerVideo (minimum
@@ -80,16 +75,4 @@ func frameBudgetForDuration(seconds float64) int {
 	default:
 		return 56
 	}
-}
-
-// formatTimestamp converts a floating-point timestamp in seconds into the
-// MM:SS.mmm format expected by the request rewriter. Negative timestamps are
-// clamped to zero.
-func formatTimestamp(seconds float64) string {
-	if seconds < 0 {
-		seconds = 0
-	}
-	minutes := int(seconds) / 60
-	secs := math.Mod(seconds, 60)
-	return fmt.Sprintf("%02d:%06.3f", minutes, secs)
 }

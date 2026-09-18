@@ -36,7 +36,7 @@ type exportJob struct {
 //
 // The export writes one JPEG per timestamp into outputDir with generated names,
 // then returns the list of frames in timestamp order. The caller owns the files.
-func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits Limits) ([]ExportedFrame, error) {
+func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits MediaLimits) ([]ExportedFrame, error) {
 	if err := timeoutOrCancel(ctx); err != nil {
 		return nil, err
 	}
@@ -141,7 +141,7 @@ func attemptExportWithDowngrade(
 	ctx context.Context,
 	ffmpegPath string,
 	job exportJob,
-	limits Limits,
+	limits MediaLimits,
 ) ([]ExportedFrame, error) {
 	quality := job.quality
 	longSide := job.maxLongSide

@@ -9,15 +9,15 @@ import (
 )
 
 // Options carries the caller's configuration and limits for one ProcessVideo
-// call. The zero value is invalid; use Limits{} and supply at least one
+// call. The zero value is invalid; use MediaLimits{} and supply at least one
 // VideoInput.
 type Options struct {
 	// Limits is the full set of safety, format, and export constraints.
-	Limits Limits
+	Limits MediaLimits
 
 	// AllowedMIMETypes filters the video/* MIME types accepted from Data URLs.
 	// When empty, all video/* types are accepted, but the container and codec
-	// must still pass the Limits allowlists.
+	// must still pass the MediaLimits allowlists.
 	AllowedMIMETypes []string
 }
 

@@ -23,12 +23,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 )
 
 // Stable error codes. They are part of the module contract: the middleware,
 // the admin API and the task log all classify failures by these strings, so
-// existing values must not be renamed.
+// existing values must not be renamed. Upstream fallback must not retry any of
+// them, because switching channels cannot repair a local video failure.
 const (
+	// Rewriter and media engine codes.
 	CodeInvalidRequest       = "video_invalid_request"
 	CodeInvalidDataURL       = "video_invalid_data_url"
 	CodeInvalidBase64        = "video_invalid_base64"
@@ -42,15 +46,27 @@ const (
 	CodeExportFailed         = "video_export_failed"
 	CodeImageLimitExceeded   = "video_image_limit_exceeded"
 	CodeOutputTooLarge       = "video_output_too_large"
-	CodeProcessingTimeout    = "video_processing_timeout"
-	CodeProcessingCanceled   = "video_processing_canceled"
 	CodeStorageFailed        = "video_storage_failed"
-	CodeInvalidConfig        = "video_invalid_config"
 	CodeRewriteFailed        = "video_rewrite_failed"
+	CodeInvalidConfig        = "video_invalid_config"
+
+	// Admission and lifecycle codes.
+	CodeQueueFull        = "video_queue_full"
+	CodeQueueBytes       = "video_queue_bytes_exceeded"
+	CodeUserLimit        = "video_user_queue_limit"
+	CodeEstimatedWait    = "video_estimated_wait_exceeded"
+	CodeStorageExhausted = "video_storage_exhausted"
+	CodeQueueTimeout     = "video_queue_timeout"
+
+	// Shared lifecycle codes.
+	CodeProcessingTimeout  = "video_processing_timeout"
+	CodeProcessingCanceled = "video_processing_canceled"
+	CodeProcessingFailed   = "video_processing_failed"
+	CodeInternal           = "video_processing_internal"
 )
 
-// Error is the typed failure returned by every media and rewriting entry point
-// of this package.
+// Error is the typed failure returned by every media engine and rewriting
+// entry point of this package.
 type Error struct {
 	Code string
 
@@ -71,9 +87,8 @@ func (e *Error) Error() string {
 func (e *Error) Unwrap() error { return e.cause }
 
 // VideoPreprocessCode lets the admission layer's StatusForError and the HTTP
-// mappings classify a media or rewrite failure without importing this
-// package's concrete type — one stable classification entry point for the
-// whole pipeline.
+// mappings classify a media or rewrite failure through one interface, so the
+// whole pipeline has a single classification entry point.
 func (e *Error) VideoPreprocessCode() string { return e.Code }
 
 // VideoPreprocessMessage is the operator-safe counterpart of
@@ -81,18 +96,30 @@ func (e *Error) VideoPreprocessCode() string { return e.Code }
 func (e *Error) VideoPreprocessMessage() string { return e.Message }
 
 // CodeOf reports the stable video preprocessing code carried by err, or an
-// empty string when err did not come from this package. It recognizes the
-// package's own errors and, through the classification interfaces, any error
-// another layer of this package produced, so a single switch in the middleware
-// can classify the whole pipeline.
+// empty string when err did not come from this package. It recognizes every
+// error type of the package — media, rewriting, admission and stage errors —
+// so a single switch in the middleware can classify the whole pipeline.
 func CodeOf(err error) string {
 	var pErr *Error
 	if errors.As(err, &pErr) {
 		return pErr.Code
 	}
-	var coder interface{ VideoPreprocessCode() string }
-	if errors.As(err, &coder) {
-		return coder.VideoPreprocessCode()
+	var admission *AdmissionError
+	if errors.As(err, &admission) {
+		return admission.Code
+	}
+	var stage *StageError
+	if errors.As(err, &stage) {
+		if stage.Code != "" {
+			return stage.Code
+		}
+		if stage.Status == JobStatusCanceled {
+			return CodeProcessingCanceled
+		}
+		if stage.Status == JobStatusTimedOut {
+			return CodeProcessingTimeout
+		}
+		return CodeProcessingFailed
 	}
 	return ""
 }
@@ -105,9 +132,13 @@ func MessageOf(err error) string {
 	if errors.As(err, &pErr) {
 		return pErr.Message
 	}
-	var messager interface{ VideoPreprocessMessage() string }
-	if errors.As(err, &messager) {
-		return messager.VideoPreprocessMessage()
+	var admission *AdmissionError
+	if errors.As(err, &admission) {
+		return admission.Message
+	}
+	var stage *StageError
+	if errors.As(err, &stage) {
+		return stage.Message
 	}
 	return ""
 }
@@ -123,8 +154,8 @@ func wrapError(code, message string, cause error) *Error {
 	return &Error{Code: code, Message: message, cause: cause}
 }
 
-// invalidConfig reports a caller-supplied option that the engine or the
-// rewriter cannot use.
+// invalidConfig reports a caller-supplied option that the engine, the
+// rewriter or the queue cannot use.
 func invalidConfig(format string, args ...any) error {
 	return newError(CodeInvalidConfig, fmt.Sprintf(format, args...))
 }
@@ -141,5 +172,173 @@ func timeoutOrCancel(ctx context.Context) error {
 		return newError(CodeProcessingCanceled, "video preprocessing was canceled")
 	default:
 		return nil
+	}
+}
+
+// AdmissionError is an admission-time rejection. It is a terminal task outcome
+// and carries what the middleware needs to answer the client: a stable code, an
+// HTTP status and a Retry-After hint.
+type AdmissionError struct {
+	Code           string
+	Message        string
+	HTTPStatus     int
+	RetryAfterSecs int64
+}
+
+func (e *AdmissionError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message == "" {
+		return e.Code
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+func newAdmissionError(code, message string, status int, retryAfterSecs int64) *AdmissionError {
+	return &AdmissionError{
+		Code:           code,
+		Message:        message,
+		HTTPStatus:     status,
+		RetryAfterSecs: max(retryAfterSecs, 0),
+	}
+}
+
+// StageError is a pipeline failure. It wraps whatever caused it — a context
+// cancellation, a panic recovered at the stage boundary, or an error returned
+// by the stage handler — and keeps the media error code stable for the
+// integration layer.
+//
+// Status is the terminal job status the producer asserts. It is set explicitly
+// by the producer that knows the cause (the queue sets canceled or timed out;
+// the media layer leaves it empty for an ordinary failure) instead of being
+// inferred from the wrapped error, because a stage may report a sub-operation
+// deadline for a job that is otherwise healthy.
+type StageError struct {
+	Code    string
+	Stage   JobStage
+	Status  JobStatus
+	Err     error
+	Message string
+}
+
+func (e *StageError) Error() string {
+	if e == nil {
+		return ""
+	}
+	stage := string(e.Stage)
+	if stage == "" {
+		stage = "pipeline"
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("video_preprocess %s: %s", stage, e.Message)
+	}
+	return fmt.Sprintf("video_preprocess %s: %s: %v", stage, e.Message, e.Err)
+}
+
+func (e *StageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// StatusForError maps an error to a terminal status and stable code. Media and
+// rewriting errors are recognized through their VideoPreprocessCode interface;
+// errors raised outside this package are classified as processing failures so
+// the caller still gets an auditable code.
+func StatusForError(err error) (JobStatus, string) {
+	if err == nil {
+		return JobStatusSucceeded, ""
+	}
+
+	var admission *AdmissionError
+	if errors.As(err, &admission) {
+		return JobStatusRejected, admission.Code
+	}
+
+	var stage *StageError
+	if errors.As(err, &stage) {
+		status := stage.Status
+		if status == "" {
+			status = JobStatusFailed
+		}
+		if stage.Code != "" {
+			return status, stage.Code
+		}
+		if status == JobStatusCanceled {
+			return status, CodeProcessingCanceled
+		}
+		if status == JobStatusTimedOut {
+			return status, CodeProcessingTimeout
+		}
+		return status, CodeProcessingFailed
+	}
+
+	var coder interface{ VideoPreprocessCode() string }
+	if errors.As(err, &coder) {
+		return JobStatusFailed, coder.VideoPreprocessCode()
+	}
+
+	if errors.Is(err, context.Canceled) {
+		return JobStatusCanceled, CodeProcessingCanceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return JobStatusTimedOut, CodeProcessingTimeout
+	}
+	if strings.TrimSpace(err.Error()) == "" {
+		return JobStatusFailed, CodeInternal
+	}
+	return JobStatusFailed, CodeProcessingFailed
+}
+
+// HTTPStatusForError maps an error to the status the client should receive.
+// Errors that reach the upstream relay are never retried on another channel.
+func HTTPStatusForError(err error) int {
+	var admission *AdmissionError
+	if errors.As(err, &admission) {
+		if admission.HTTPStatus != 0 {
+			return admission.HTTPStatus
+		}
+		return http.StatusTooManyRequests
+	}
+
+	status, _ := StatusForError(err)
+	switch status {
+	case JobStatusCanceled:
+		return 499
+	case JobStatusTimedOut:
+		return http.StatusRequestTimeout
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// RetryAfterForError returns the Retry-After hint of an admission rejection.
+func RetryAfterForError(err error) (int64, bool) {
+	var admission *AdmissionError
+	if !errors.As(err, &admission) {
+		return 0, false
+	}
+	return admission.RetryAfterSecs, admission.RetryAfterSecs > 0
+}
+
+// contextFailure classifies a context error. The job timeout is derived from the
+// caller's context, so a deadline here is always the job timeout, and any other
+// context error is the caller going away.
+func contextFailure(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &StageError{
+			Code:    CodeProcessingTimeout,
+			Status:  JobStatusTimedOut,
+			Err:     err,
+			Message: "processing deadline exceeded",
+		}
+	}
+	return &StageError{
+		Code:    CodeProcessingCanceled,
+		Status:  JobStatusCanceled,
+		Err:     err,
+		Message: "request context canceled",
 	}
 }

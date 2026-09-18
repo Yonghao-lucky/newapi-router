@@ -212,26 +212,6 @@ func TestGenerateUniformTimestamps(t *testing.T) {
 	}
 }
 
-func TestFormatTimestamp(t *testing.T) {
-	tests := []struct {
-		seconds float64
-		want    string
-	}{
-		{0.0, "00:00.000"},
-		{1.5, "00:01.500"},
-		{65.123, "01:05.123"},
-		{125.999, "02:05.999"},
-		{-5.0, "00:00.000"},
-	}
-
-	for _, tt := range tests {
-		got := formatTimestamp(tt.seconds)
-		if got != tt.want {
-			t.Errorf("formatTimestamp(%.3f) = %q, want %q", tt.seconds, got, tt.want)
-		}
-	}
-}
-
 func TestWorkspaceCleanup(t *testing.T) {
 	tempRoot := t.TempDir()
 	ws, err := newWorkspace(tempRoot)
@@ -307,7 +287,7 @@ func TestProcessVideoInvalidConfig(t *testing.T) {
 	}
 
 	opts := Options{
-		Limits: Limits{
+		Limits: MediaLimits{
 			MaxFramesPerRequest: -1, // invalid
 		},
 	}
@@ -375,14 +355,14 @@ func TestSniffContainer(t *testing.T) {
 
 func TestLimitsValidation(t *testing.T) {
 	t.Run("valid defaults", func(t *testing.T) {
-		limits := Limits{}.withDefaults()
+		limits := MediaLimits{}.withDefaults()
 		if err := limits.validate(); err != nil {
 			t.Errorf("default limits failed validation: %v", err)
 		}
 	})
 
 	t.Run("negative max frames", func(t *testing.T) {
-		limits := Limits{MaxFramesPerRequest: -1}.withDefaults()
+		limits := MediaLimits{MaxFramesPerRequest: -1}.withDefaults()
 		err := limits.validate()
 		if CodeOf(err) != CodeInvalidConfig {
 			t.Errorf("expected CodeInvalidConfig, got %v", err)
@@ -390,7 +370,7 @@ func TestLimitsValidation(t *testing.T) {
 	})
 
 	t.Run("quality out of range", func(t *testing.T) {
-		limits := Limits{JPEGQuality: 100}.withDefaults()
+		limits := MediaLimits{JPEGQuality: 100}.withDefaults()
 		err := limits.validate()
 		if CodeOf(err) != CodeInvalidConfig {
 			t.Errorf("expected CodeInvalidConfig for quality>95, got %v", err)
@@ -398,7 +378,7 @@ func TestLimitsValidation(t *testing.T) {
 	})
 
 	t.Run("filesystem root rejected", func(t *testing.T) {
-		limits := Limits{TempRoot: "/"}.withDefaults()
+		limits := MediaLimits{TempRoot: "/"}.withDefaults()
 		err := limits.validate()
 		if CodeOf(err) != CodeInvalidConfig {
 			t.Errorf("expected CodeInvalidConfig for root tempdir, got %v", err)
@@ -452,7 +432,7 @@ func TestProcessVideoIntegration(t *testing.T) {
 	}
 
 	opts := Options{
-		Limits: Limits{
+		Limits: MediaLimits{
 			TempRoot:            tempDir,
 			MaxFramesPerRequest: 10,
 			MinFramesPerVideo:   1,

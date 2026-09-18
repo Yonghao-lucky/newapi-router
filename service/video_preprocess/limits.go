@@ -6,7 +6,7 @@ import (
 )
 
 // Default limits mirror the recommended production values of the development
-// plan. They exist so a caller can start from Limits{} and only override what
+// plan. They exist so a caller can start from MediaLimits{} and only override what
 // it needs; they are not global configuration and are never read from a
 // database or a file by this package.
 const (
@@ -41,13 +41,13 @@ const (
 	minExportQuality  = 32
 )
 
-// Limits carries every constraint the engine enforces. Callers own their own
+// MediaLimits carries every constraint the engine enforces. Callers own their own
 // configuration namespace and map it onto this struct; the engine reads
 // nothing else. Setting a numeric field to zero selects the corresponding
 // Default constant, except for MaxFramesPerRequest, whose zero value means
 // "frames are not budgeted" because the request image hard limit belongs to
 // the caller's admission layer.
-type Limits struct {
+type MediaLimits struct {
 	// Binary paths. Only these two are ever executed, always as argv arrays.
 	FFprobePath string
 	FFmpegPath  string
@@ -90,9 +90,9 @@ type Limits struct {
 }
 
 // withDefaults returns a copy of l with every unset field replaced by its
-// default. It never mutates the receiver, so a caller's Limits value can be
+// default. It never mutates the receiver, so a caller's MediaLimits value can be
 // reused across requests and concurrent engines.
-func (l Limits) withDefaults() Limits {
+func (l MediaLimits) withDefaults() MediaLimits {
 	out := l
 	if out.FFprobePath == "" {
 		out.FFprobePath = DefaultFFprobeBinary
@@ -165,7 +165,7 @@ func (l Limits) withDefaults() Limits {
 
 // validate rejects caller limits that would make the engine unsafe or
 // meaningless. It runs on the defaulted copy so an unset field is valid.
-func (l Limits) validate() error {
+func (l MediaLimits) validate() error {
 	if l.MaxFramesPerRequest < 0 {
 		return invalidConfig("max frames per request must not be negative, got %d", l.MaxFramesPerRequest)
 	}
