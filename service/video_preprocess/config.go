@@ -1,21 +1,32 @@
 package video_preprocess
 
 import (
+	"slices"
 	"time"
 
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 )
 
 // EngineConfig is one request's consistent view of the whole subsystem: the
-// media engine limits, the rewriter budgets, the admission limits and the
-// deployment paths. The Processor takes it from a single settings snapshot, so
-// a hot reload can never hand different stages of one request different
-// contracts, and every value crossing an MB/second/millisecond unit boundary is
-// converted in exactly one place — here.
+// bypass gates, the media engine limits, the rewriter budgets, the admission
+// limits and the deployment paths. The Processor takes it from a single
+// settings snapshot, so a hot reload can never hand different stages of one
+// request different contracts, and every value crossing an
+// MB/second/millisecond unit boundary is converted in exactly one place —
+// here.
 type EngineConfig struct {
 	Media     MediaLimits
 	Rewrite   RewriteLimits
 	Admission AdmissionLimits
+
+	// Enabled is the subsystem's master switch. A request arriving under a
+	// disabled config bypasses without reading the body, entering the queue or
+	// touching media.
+	Enabled bool
+	// TargetModels lists the models routed through video preprocessing. The
+	// slice is a private copy: mutating it never reaches the published
+	// settings.
+	TargetModels []string
 
 	// Allowlist of video/* MIME types accepted from Data URLs. Empty means the
 	// media engine accepts every video/* type, but the container and codec
@@ -52,6 +63,8 @@ func BuildEngineConfig(snapshot video_preprocess_setting.Snapshot, deploy video_
 
 	cfg := EngineConfig{
 		Version:             snapshot.Version,
+		Enabled:             s.Enabled,
+		TargetModels:        slices.Clone(s.TargetModels),
 		StaleTTL:            time.Duration(s.StaleFileTTLMinutes) * time.Minute,
 		MaxVideosPerRequest: s.MaxVideosPerRequest,
 		ReserveImageSlots:   s.ReserveImageSlots,
@@ -115,6 +128,16 @@ func BuildEngineConfig(snapshot video_preprocess_setting.Snapshot, deploy video_
 	}
 
 	return cfg
+}
+
+// IsTargetModel reports whether a model takes the video path under this
+// config. The match is exact, mirroring the settings layer: a model name is a
+// capability identity, not a pattern.
+func (c EngineConfig) IsTargetModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	return slices.Contains(c.TargetModels, model)
 }
 
 // defaultContainers are the container formats ffprobe reports for the MIME

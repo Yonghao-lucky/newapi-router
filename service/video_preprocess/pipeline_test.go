@@ -150,14 +150,182 @@ func TestBuildEngineConfigMapping(t *testing.T) {
 	require.NoError(t, cfg.Media.withDefaults().validate())
 }
 
-func TestProcessorBypassesNonVideoRequest(t *testing.T) {
+// TestProcessorBypassesDisabledSwitch: a video request under a disabled
+// config bypasses with the disabled reason. The queue counters prove the
+// bypass never admits.
+func TestProcessorBypassesDisabledSwitch(t *testing.T) {
+	cfg := testEngineConfig(t)
+	cfg.Enabled = false
+	p, err := NewProcessor(cfg)
+	require.NoError(t, err)
+
+	body := videoBody("kimi-k3", 0, "data:video/mp4;base64,QUFB")
+	result, err := p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Body: []byte(body)})
+	require.NoError(t, err)
+	assert.True(t, result.Bypassed)
+	assert.Equal(t, BypassReasonDisabled, result.BypassReason)
+	assert.Empty(t, result.OriginalModality, "a disabled bypass never reads the body")
+	assert.False(t, result.Installed)
+	assert.Equal(t, 0, p.Snapshot().RunningJobs)
+	assert.Equal(t, 0, p.Snapshot().WaitingJobs)
+}
+
+// TestProcessorBypassesNonTargetModel: a video request whose model is not in
+// target_models bypasses with the model reason, without entering the queue.
+func TestProcessorBypassesNonTargetModel(t *testing.T) {
+	cfg := testEngineConfig(t)
+	p, err := NewProcessor(cfg)
+	require.NoError(t, err)
+
+	body := videoBody("gpt-4o", 0, "data:video/mp4;base64,QUFB")
+	result, err := p.Process(context.Background(), ProcessInput{UserID: 1, Model: "gpt-4o", Body: []byte(body)})
+	require.NoError(t, err)
+	assert.True(t, result.Bypassed)
+	assert.Equal(t, BypassReasonModelNotTarget, result.BypassReason)
+	assert.Empty(t, result.OriginalModality)
+	assert.Equal(t, 0, p.Snapshot().RunningJobs)
+	assert.Equal(t, 0, p.Snapshot().WaitingJobs)
+}
+
+// TestProcessorBypassesTextRequest: a text-only request bypasses with the
+// no-video reason, reports the observed modality and leaves an installed
+// BodyStorage byte-identical and replayable.
+func TestProcessorBypassesTextRequest(t *testing.T) {
 	p, err := NewProcessor(testEngineConfig(t))
 	require.NoError(t, err)
 
 	body := `{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
-	_, err = p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Body: []byte(body)})
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(w)
+	ginCtx.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	storage, err := common.CreateBodyStorage([]byte(body))
+	require.NoError(t, err)
+	ginCtx.Set(common.KeyBodyStorage, storage)
+
+	result, err := p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Ctx: ginCtx})
+	require.NoError(t, err)
+	assert.True(t, result.Bypassed)
+	assert.Equal(t, BypassReasonNoVideo, result.BypassReason)
+	assert.Equal(t, "text", result.OriginalModality)
+	assert.Equal(t, "text", result.EffectiveModality)
+	assert.False(t, result.Installed)
+
+	// The storage must still replay the original body, byte for byte.
+	replayed, err := storage.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, body, string(replayed))
+	storage.Close()
+}
+
+// TestProcessorBypassesImageRequest: an image-only request bypasses the same
+// way as text, keeping its BodyStorage unchanged and replayable.
+func TestProcessorBypassesImageRequest(t *testing.T) {
+	p, err := NewProcessor(testEngineConfig(t))
+	require.NoError(t, err)
+
+	body := `{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBOR"}}]}]}`
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(w)
+	ginCtx.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	storage, err := common.CreateBodyStorage([]byte(body))
+	require.NoError(t, err)
+	ginCtx.Set(common.KeyBodyStorage, storage)
+
+	result, err := p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Ctx: ginCtx})
+	require.NoError(t, err)
+	assert.True(t, result.Bypassed)
+	assert.Equal(t, BypassReasonNoVideo, result.BypassReason)
+	assert.Equal(t, "image", result.OriginalModality)
+	assert.Equal(t, "image", result.EffectiveModality)
+	assert.False(t, result.Installed)
+
+	replayed, err := storage.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, body, string(replayed))
+	storage.Close()
+}
+
+// TestProcessorStillErrorsOnInvalidJSON: a structurally broken request is a
+// real error, never a bypass.
+func TestProcessorStillErrorsOnInvalidJSON(t *testing.T) {
+	p, err := NewProcessor(testEngineConfig(t))
+	require.NoError(t, err)
+
+	_, err = p.Process(context.Background(), ProcessInput{
+		UserID: 1, Model: "kimi-k3", Body: []byte(`{"model":"kimi-k3","messages":[`),
+	})
+	require.Error(t, err)
+	assert.NotEqual(t, "", CodeOf(err))
+	assert.False(t, strings.Contains(err.Error(), "bypass"))
+}
+
+// TestProcessorPreservesStorageReadError: a BodyStorage that fails to read
+// surfaces the real cause (a closed storage reports ErrStorageClosed), not a
+// fabricated "request body is empty".
+func TestProcessorPreservesStorageReadError(t *testing.T) {
+	p, err := NewProcessor(testEngineConfig(t))
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(w)
+	ginCtx.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"kimi-k3"}`))
+	storage, err := common.CreateBodyStorage([]byte(`{"model":"kimi-k3"}`))
+	require.NoError(t, err)
+	require.NoError(t, storage.Close())
+	ginCtx.Set(common.KeyBodyStorage, storage)
+
+	_, err = p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Ctx: ginCtx})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, common.ErrStorageClosed)
+	assert.Equal(t, CodeInvalidRequest, CodeOf(err))
+	assert.Equal(t, 0, p.Snapshot().RunningJobs)
+}
+
+// TestProcessorEmptyBodyStillErrors keeps the empty-body contract on the new
+// resolveBody path: an explicit zero-length body is an error, not a bypass.
+func TestProcessorEmptyBodyStillErrors(t *testing.T) {
+	p, err := NewProcessor(testEngineConfig(t))
+	require.NoError(t, err)
+
+	_, err = p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Body: nil})
 	require.Error(t, err)
 	assert.Equal(t, CodeInvalidRequest, CodeOf(err))
+}
+
+// TestProcessorBypassConfigFromSettings locks the config adapter's gate
+// mapping: Enabled and TargetModels flow from the settings document, and the
+// slice is a private copy — mutating the config never reaches the settings.
+func TestProcessorBypassConfigFromSettings(t *testing.T) {
+	settings := video_preprocess_setting.DefaultSettings()
+	settings.Enabled = true
+	settings.TargetModels = []string{"kimi-k3", "video-pro"}
+	cfg := BuildEngineConfig(
+		video_preprocess_setting.Snapshot{Version: 3, Settings: settings},
+		video_preprocess_setting.DeploymentConfig{TempDir: t.TempDir()},
+	)
+
+	assert.True(t, cfg.Enabled)
+	assert.True(t, cfg.IsTargetModel("kimi-k3"))
+	assert.True(t, cfg.IsTargetModel("video-pro"))
+	assert.False(t, cfg.IsTargetModel("gpt-4o"))
+	assert.False(t, cfg.IsTargetModel(""))
+
+	// The slice is a copy: mutating it must not touch the settings document.
+	cfg.TargetModels[0] = "mutated"
+	assert.Equal(t, "kimi-k3", settings.TargetModels[0])
+
+	// A disabled snapshot maps to a disabled config.
+	settings.Enabled = false
+	disabled := BuildEngineConfig(
+		video_preprocess_setting.Snapshot{Version: 4, Settings: settings},
+		video_preprocess_setting.DeploymentConfig{TempDir: t.TempDir()},
+	)
+	assert.False(t, disabled.Enabled)
 }
 
 func TestProcessorEndToEndRealVideo(t *testing.T) {

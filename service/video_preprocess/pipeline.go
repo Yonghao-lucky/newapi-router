@@ -113,13 +113,52 @@ type ProcessInput struct {
 	Body []byte
 }
 
-// ProcessResult reports what one successful preprocessing did. The middleware
-// publishes it as request context metadata; nothing in it carries media,
-// Base64, prompt text or temporary paths.
+// Bypass reasons carried by a bypassed ProcessResult. They are part of the
+// middleware contract: the caller logs or counts them and routes the original
+// request unchanged.
+const (
+	// BypassReasonDisabled means the subsystem's master switch is off.
+	BypassReasonDisabled = "video_preprocessing_disabled"
+	// BypassReasonModelNotTarget means the request's model is not in
+	// target_models.
+	BypassReasonModelNotTarget = "model_not_target"
+	// BypassReasonNoVideo means the request carries no video_url part.
+	BypassReasonNoVideo = "no_video_content"
+)
+
+// ProcessResult reports what one Process call did. The middleware publishes
+// it as request context metadata; nothing in it carries media, Base64, prompt
+// text or temporary paths.
+//
+// The contract by outcome:
+//
+//   - processed (Bypassed=false): the request carried video and was rewritten.
+//     OriginalModality is "video", EffectiveModality is "image" and the
+//     rewritten body was installed on the gin context when one was supplied.
+//   - bypassed (Bypassed=true): the request did not need video preprocessing —
+//     the switch is off, the model is not a target, or it carries no
+//     video_url part. No queue slot was taken, no media was read, no
+//     BodyStorage was installed and the original body stays replayable.
+//     OriginalModality and EffectiveModality report what was observed, never
+//     an assumed rewrite.
+//   - error: a real failure — invalid JSON, an unreadable body, a media or
+//     budget rejection. Malformed video input is an error, never a bypass.
 type ProcessResult struct {
-	// OriginalModality is what the detector reported before preprocessing.
+	// Bypassed reports whether the request was left untouched because video
+	// preprocessing did not apply to it. Exactly one of Bypassed or a
+	// successful rewrite holds; a bypass never co-occurs with an install.
+	Bypassed bool
+	// BypassReason is one of the BypassReason* constants when Bypassed is
+	// true, and empty otherwise.
+	BypassReason string
+
+	// OriginalModality is what the request was before preprocessing: "video"
+	// when videos were found, "image" for image-only requests and "text"
+	// otherwise. Empty on the bypass-before-scan paths (disabled switch,
+	// non-target model) where the body was deliberately not read.
 	OriginalModality string
-	// EffectiveModality is what the AI Router must route on.
+	// EffectiveModality is what the AI Router must route on: "image" after a
+	// successful rewrite, otherwise the original modality.
 	EffectiveModality string
 
 	// VideoCount, ExistingImages and ExtractedFrames are request totals.
@@ -178,12 +217,15 @@ type probedVideo struct {
 
 // Process runs the whole pipeline for one request:
 //
-//	scan -> admission -> probe all videos -> multi-video budget ->
+//	gate -> scan -> admission -> probe all videos -> multi-video budget ->
 //	export all videos -> rewrite -> install
 //
-// Every failure path leaves the request untouched: no new BodyStorage is
-// installed, the original stays replayable, and every workspace created on the
-// way is cleaned up before the error returns.
+// The gates come first: a disabled switch, a non-target model or a request
+// without video content bypasses with Bypassed=true before any queue, media
+// or BodyStorage work. Every failure path likewise leaves the request
+// untouched: no new BodyStorage is installed, the original stays replayable,
+// and every workspace created on the way is cleaned up before the error
+// returns.
 func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessResult, error) {
 	start := time.Now()
 
@@ -193,7 +235,21 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 	// and callers can inject exact limits.
 	cfg := p.config()
 
-	body, ginCtx, ownGin := resolveBody(input)
+	// Gate 1: the master switch. The body is deliberately not read — a
+	// disabled subsystem must cost a request nothing, not even a storage read.
+	if !cfg.Enabled {
+		return bypassResult(BypassReasonDisabled), nil
+	}
+
+	// Gate 2: the model. Same contract: no body read, no queue, no media.
+	if !cfg.IsTargetModel(input.Model) {
+		return bypassResult(BypassReasonModelNotTarget), nil
+	}
+
+	body, ginCtx, ownGin, err := resolveBody(input)
+	if err != nil {
+		return nil, err
+	}
 	if len(body) == 0 {
 		return nil, newError(CodeInvalidRequest, "request body is empty")
 	}
@@ -204,7 +260,10 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 		return nil, err
 	}
 	if len(layout.Videos) == 0 {
-		return nil, newError(CodeInvalidRequest, "request carries no video content")
+		// A text or image-only request is not an error — it is exactly the
+		// traffic video preprocessing must leave alone. The caller routes it
+		// as usual; the BodyStorage keeps replaying the original body.
+		return bypassResultWithModality(BypassReasonNoVideo, layout), nil
 	}
 
 	// Request-level input limits before queueing.
@@ -321,6 +380,39 @@ func (p *Processor) releaseResult(result *ProcessResult) {
 		_ = ws.Cleanup()
 	}
 	result.workspaces = nil
+}
+
+// bypassResult builds the result for a request video preprocessing did not
+// apply to. The gates that skip the body scan (disabled switch, non-target
+// model) use it: no modality is claimed because the body was not read.
+func bypassResult(reason string) *ProcessResult {
+	return &ProcessResult{Bypassed: true, BypassReason: reason}
+}
+
+// bypassResultWithModality builds the result for a scanned request that turned
+// out to carry no video: the observed modality is reported, the body stays
+// untouched.
+func bypassResultWithModality(reason string, layout *RequestLayout) *ProcessResult {
+	return &ProcessResult{
+		Bypassed:          true,
+		BypassReason:      reason,
+		OriginalModality:  modalityOf(layout),
+		EffectiveModality: modalityOf(layout),
+	}
+}
+
+// modalityOf names what a scanned request carries. The same terms the
+// processed path reports: "video" when videos exist, "image" for image-only
+// content, "text" otherwise.
+func modalityOf(layout *RequestLayout) string {
+	switch {
+	case len(layout.Videos) > 0:
+		return "video"
+	case layout.ExistingImages > 0:
+		return "image"
+	default:
+		return "text"
+	}
 }
 
 // processVideos probes every video, allocates the multi-video frame budget and
@@ -457,19 +549,24 @@ func cleanupProbed(p *Processor, probed []probedVideo) {
 // returned body is the exact bytes the pipeline scans and rewrites; when the
 // caller supplied a gin context, its BodyStorage is read without consuming the
 // stream so the original stays replayable for later attempts.
-func resolveBody(input ProcessInput) ([]byte, *gin.Context, bool) {
+//
+// Storage failures are never swallowed: a closed or unreadable storage and a
+// request body above the gateway's size cap surface as errors the caller can
+// classify (common.IsRequestBodyTooLargeError and the storage sentinel
+// errors). Messages carry no path and no body content.
+func resolveBody(input ProcessInput) ([]byte, *gin.Context, bool, error) {
 	if input.Ctx != nil && input.Ctx.Request != nil {
 		storage, err := common.GetBodyStorage(input.Ctx)
 		if err != nil {
-			return nil, nil, false
+			return nil, nil, false, wrapError(CodeInvalidRequest, "failed to read the request body storage", err)
 		}
 		body, err := storage.Bytes()
 		if err != nil {
-			return nil, nil, false
+			return nil, nil, false, wrapError(CodeInvalidRequest, "failed to read the request body", err)
 		}
-		return body, input.Ctx, true
+		return body, input.Ctx, true, nil
 	}
-	return input.Body, nil, false
+	return input.Body, nil, false, nil
 }
 
 // requestIDOf reports the request id for admission metadata, or an empty
