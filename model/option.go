@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 	"gorm.io/gorm"
 )
 
@@ -223,6 +224,9 @@ func SyncOptions(frequency int) {
 
 func validateOptionValue(key string, value string) error {
 	if err := ai_router_setting.ValidateOption(key, value); err != nil {
+		return err
+	}
+	if err := video_preprocess_setting.ValidateOption(key, value); err != nil {
 		return err
 	}
 	if key == operation_setting.ToolPriceOptionKey {
@@ -674,6 +678,15 @@ func handleConfigUpdate(key, value string) (bool, error) {
 	// 因此必须在未注册配置的提前返回之前处理。
 	if configName == "ai_router" {
 		if err := ai_router_setting.Configure(configMap); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+
+	// video_preprocess 同样不注册在 GlobalConfig 中，整份设置文档存放在单个
+	// Option 行里，由自己的快照机制发布。这里处理启动加载和后台定时重载。
+	if configName == "video_preprocess" {
+		if err := video_preprocess_setting.PublishFromOption(value); err != nil {
 			return true, err
 		}
 		return true, nil

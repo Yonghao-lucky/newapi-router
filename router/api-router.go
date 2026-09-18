@@ -289,6 +289,11 @@ func SetApiRouter(router *gin.Engine) {
 			aiRouterGroup.DELETE("/targets/:id", controller.DeleteAIRouterTargetPolicy)
 			aiRouterGroup.POST("/targets/:id/validate", controller.ValidateAIRouterTargetPolicy)
 
+			// Video Preprocessing control plane (Phase 1: settings only).
+			aiRouterGroup.GET("/video/settings", controller.GetVideoPreprocessSettings)
+			aiRouterGroup.PUT("/video/settings", controller.UpdateVideoPreprocessSettings)
+			aiRouterGroup.POST("/video/settings/validate", controller.ValidateVideoPreprocessSettings)
+
 			aiRouterGroup.GET("/channels", controller.GetAIRouterChannels)
 			aiRouterGroup.PUT("/channels/:id/router", controller.UpdateAIRouterChannelRouter)
 			aiRouterGroup.PUT("/channels/:id/scheduling", controller.UpdateAIRouterChannelScheduling)
