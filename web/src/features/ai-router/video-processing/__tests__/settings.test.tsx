@@ -87,6 +87,113 @@ beforeEach(() => {
 })
 
 describe('video settings workflow', () => {
+  it.each(['edited decimals', 'API decimals'] as const)(
+    'validates, saves and reloads legal %s with native form constraints',
+    async (source) => {
+      const decimalSettings = {
+        ...videoDocument.settings,
+        short_scan_fps: 1.25,
+        medium_scan_fps: 1.375,
+        long_scan_fps: 0.125,
+        scene_weight: 0.405,
+        motion_weight: 0.195,
+        sharpness_weight: 0.155,
+        temporal_weight: 0.245,
+        phash_duplicate_threshold: 0.085,
+        black_frame_threshold: 0.905,
+      }
+      let persisted = structuredClone({
+        ...videoDocument,
+        settings:
+          source === 'API decimals' ? decimalSettings : videoDocument.settings,
+      })
+      vi.mocked(api.put).mockImplementation(async (_url, input) => {
+        persisted = {
+          ...persisted,
+          version: 8,
+          settings: (input as { settings: VideoSettings }).settings,
+        }
+        return { data: { success: true, data: structuredClone(persisted) } }
+      })
+      vi.mocked(api.get).mockImplementation(async () => ({
+        data: { success: true, data: structuredClone(persisted) },
+      }))
+      const user = userEvent.setup()
+      renderSettings(persisted)
+      const duration = await screen.findByLabelText(
+        'Video duration limit (seconds)'
+      )
+      const fields = [
+        ['Short video scan FPS', 1.25],
+        ['Medium video scan FPS', 1.375],
+        ['Long video scan FPS', 0.125],
+        ['Scene change weight', 0.405],
+        ['Motion weight', 0.195],
+        ['Sharpness weight', 0.155],
+        ['Time coverage weight', 0.245],
+        ['Duplicate frame threshold', 0.085],
+        ['Black frame threshold', 0.905],
+      ] as const
+      if (source === 'edited decimals') {
+        for (const [label, value] of fields) {
+          fireEvent.change(screen.getByLabelText(label), {
+            target: { value: String(value) },
+          })
+        }
+      }
+      fireEvent.change(duration, { target: { value: '1200' } })
+      const expected = { ...decimalSettings, max_duration_seconds: 1200 }
+      await user.click(screen.getByRole('button', { name: 'Validate' }))
+      await waitFor(() =>
+        expect(api.post).toHaveBeenCalledWith(
+          '/api/ai-router/video/settings/validate',
+          { settings: expected }
+        )
+      )
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+      )
+      for (const [label] of fields) {
+        const input = screen.getByLabelText<HTMLInputElement>(label)
+        expect(input.validity.stepMismatch, label).toBe(false)
+        expect(input.checkValidity(), label).toBe(true)
+      }
+      expect(
+        screen
+          .getByRole<HTMLFormElement>('form', {
+            name: 'Video processing settings',
+          })
+          .checkValidity()
+      ).toBe(true)
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() =>
+        expect(api.put).toHaveBeenCalledWith('/api/ai-router/video/settings', {
+          expected_version: 7,
+          settings: expected,
+        })
+      )
+      await waitFor(() =>
+        expect(screen.getByText('Configuration version 8')).toBeVisible()
+      )
+      await user.click(screen.getByRole('button', { name: 'Reload' }))
+      const dialog = await screen.findByRole('alertdialog', {
+        name: 'Discard unsaved changes?',
+      })
+      await user.click(within(dialog).getByRole('button', { name: 'Continue' }))
+      await waitFor(() =>
+        expect(api.get).toHaveBeenCalledWith('/api/ai-router/video/settings')
+      )
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Validate' })).toBeEnabled()
+      )
+      expect(duration).toHaveValue(1200)
+      for (const [label, value] of fields) {
+        expect(screen.getByLabelText(label)).toHaveValue(value)
+      }
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    }
+  )
+
   it('restores server defaults as unsaved changes only after confirmation', async () => {
     const user = userEvent.setup()
     renderSettings({

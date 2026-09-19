@@ -213,13 +213,12 @@ func exportJobWithTimestamps(ctx context.Context, limits MediaLimits, videoPath 
 		return err
 	}
 
-	// A very short or low-FPS clip may have fewer source frames than its image
-	// allocation. Clamp sample times to real nominal frame positions and remove
-	// collisions so the sequential exporter never demands non-existent frames.
+	// Analyzed candidates already identify actual frames. Nominal FPS rounding
+	// is only used by the standalone uniform exporter, which has no analysis.
 	normalized := make([]float64, 0, len(timestamps))
 	values := make([]FrameCandidate, 0, len(timestamps))
 	for i, timestamp := range timestamps {
-		if fps := result.Metadata.FPS; isFinitePositive(fps) {
+		if fps := result.Metadata.FPS; len(result.selected) == 0 && isFinitePositive(fps) {
 			timestamp = math.Floor((min(timestamp, max(0, result.Metadata.DurationSeconds-1/fps))+1e-9)*fps) / fps
 		}
 		if len(normalized) > 0 && timestamp <= normalized[len(normalized)-1] {

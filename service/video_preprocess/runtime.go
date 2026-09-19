@@ -22,6 +22,7 @@ var (
 	singleton   *Processor
 	singletonFx error
 	runtimeOnce sync.Once
+	applyMu     sync.Mutex
 )
 
 // GetProcessor returns the process-wide processor, building it from the
@@ -60,6 +61,10 @@ func GetProcessor() *Processor {
 // queue's asymmetric resize semantics: growth opens slots immediately, shrink
 // never kills a running task.
 func ApplyPublishedSettings() {
+	// Serialize snapshot reads with application so a delayed caller cannot
+	// install an older engine configuration after a newer caller finishes.
+	applyMu.Lock()
+	defer applyMu.Unlock()
 	p := GetProcessor()
 	if p == nil {
 		return // build failure already logged; the runtime API reports it

@@ -10,12 +10,125 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestProcessorSparseVFRFramesMatchTimestamps(t *testing.T) {
+	for _, binary := range []string{"ffmpeg", "ffprobe"} {
+		if _, err := exec.LookPath(binary); err != nil {
+			t.Skipf("required media binary unavailable: %s", binary)
+		}
+	}
+	for _, tc := range []struct {
+		name, sampler string
+		startPTS      int
+		colors        [][3]byte
+	}{
+		{"sparse", "adaptive-v1", 0, [][3]byte{{240, 30, 30}, {30, 240, 30}, {30, 30, 240}}},
+		{"nonzero start", "adaptive-v1", 125, [][3]byte{{240, 30, 30}, {30, 240, 30}, {30, 30, 240}}},
+		{"black fallback", "uniform-v1", 0, [][3]byte{{0, 0, 0}, {5, 5, 5}, {10, 10, 10}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const width, height = 96, 64
+			colors := tc.colors
+			var pixels []byte
+			for _, color := range colors {
+				pixels = append(pixels, bytes.Repeat(color[:], width*height)...)
+			}
+			path := filepath.Join(t.TempDir(), "sparse-vfr.mp4")
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error",
+				"-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "96x64", "-r", "25", "-i", "pipe:0",
+				"-vf", fmt.Sprintf("setpts='%d+if(eq(N,0),0,if(eq(N,1),80,210))'", tc.startPTS), "-fps_mode", "vfr",
+				"-filter_threads", "1", "-threads", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", path)
+			cmd.Stdin = bytes.NewReader(pixels)
+			output, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(output))
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			cfg := testEngineConfig(t)
+			cfg.Media.MinFramesPerVideo = 3
+			cfg.DefaultMaxFrames, cfg.HighDetailMaxFrames = 3, 3
+			p, err := NewProcessor(cfg)
+			require.NoError(t, err)
+			url := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(data)
+			result, err := p.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, url))})
+			require.NoError(t, err)
+			assert.Equal(t, tc.sampler, result.SamplerVersion)
+			require.Equal(t, 3, result.ExtractedFrames)
+			content := gjson.GetBytes(result.rewrittenBody, "messages.0.content").Array()
+			wantTimes := []string{"00:00.000", "00:03.200", "00:08.400"}
+			frameIndex := 0
+			for i, part := range content {
+				if part.Get("type").String() != "image_url" {
+					continue
+				}
+				require.Less(t, frameIndex, len(colors))
+				require.Greater(t, i, 0)
+				assert.Contains(t, content[i-1].Get("text").String(), wantTimes[frameIndex])
+				imageURL := part.Get("image_url.url").String()
+				require.Contains(t, imageURL, "data:image/jpeg;base64,")
+				jpegData, err := base64.StdEncoding.DecodeString(imageURL[len("data:image/jpeg;base64,"):])
+				require.NoError(t, err)
+				img, err := jpeg.Decode(bytes.NewReader(jpegData))
+				require.NoError(t, err)
+				r, g, b, _ := img.At(width/2, height/2).RGBA()
+				for channel, value := range []uint32{r, g, b} {
+					assert.InDelta(t, colors[frameIndex][channel], value>>8, 12, "frame %d channel %d", frameIndex, channel)
+				}
+				frameIndex++
+			}
+			assert.Equal(t, 3, frameIndex)
+			assert.Zero(t, p.Snapshot().ActiveFFmpeg)
+			assert.Zero(t, p.Snapshot().TempStorageBytes)
+		})
+	}
+}
+
+func TestAnalysisSourceTimingValidation(t *testing.T) {
+	const prefix = "[showinfo@video_analysis @ 0x123] "
+	for _, tc := range []struct {
+		name, frames string
+		invalid      bool
+	}{
+		{"padded and unpadded PTS", "n:   0 pts:      0 pts_time:0\nn:   1 pts:1114112 pts_time:68\n", false},
+		{"missing PTS", "n:   0 pts:NOPTS pts_time:NOPTS\n", true},
+		{"nonmonotonic PTS", "n:0 pts:10\nn:1 pts:9\n", true},
+		{"candidate overflow", "n:0 pts:0\nn:1 pts:1\nn:2 pts:2\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diagnostics bytes.Buffer
+			writer := &analysisTimingWriter{diagnostics: &limitedWriter{w: &diagnostics, limit: 64}, limit: 2}
+			var lines strings.Builder
+			lines.WriteString(prefix + "config in time_base: 1/16384, frame_rate: 1/1\n")
+			for line := range strings.SplitSeq(strings.TrimSuffix(tc.frames, "\n"), "\n") {
+				lines.WriteString(prefix + line + "\n")
+			}
+			input := lines.String()
+			// Pipe writes need not align with log lines or numeric fields.
+			for offset := 0; offset < len(input); offset += 7 {
+				_, err := writer.Write([]byte(input[offset:min(offset+7, len(input))]))
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.invalid, writer.invalid)
+			assert.LessOrEqual(t, len(writer.pts), 2)
+			if !tc.invalid {
+				assert.Equal(t, []int64{0, 1114112}, writer.pts)
+				assert.Equal(t, 68.0, float64(writer.pts[1])*writer.timeBase)
+			}
+			_, err := writer.Write([]byte(strings.Repeat("diagnostic\n", 100)))
+			require.NoError(t, err)
+			assert.LessOrEqual(t, diagnostics.Len(), 64)
+		})
+	}
+}
 
 // fixtureVideo creates deterministic clips with a known source-frame timeline.
 // No random media, network assets, or timing-sensitive event generation is used.
@@ -179,11 +292,14 @@ func TestAdaptiveScanDurationAndCandidateBounds(t *testing.T) {
 			require.NoError(t, err)
 			require.NotEmpty(t, analysis.Candidates)
 			if duration == 1 {
+				require.Len(t, analysis.Candidates, 1, "analysis must not synthesize duplicate source frames")
+				assert.Zero(t, analysis.Candidates[0].Timestamp)
 				require.NoError(t, NewMediaEngine().ExportUniform(ctx, kept, 8))
 				assert.Len(t, kept.Frames, 1, "a single source frame remains valid below the configured coverage minimum")
+			} else {
+				assert.GreaterOrEqual(t, analysis.Candidates[len(analysis.Candidates)-1].Timestamp, float64(duration)*0.75)
 			}
 			assert.LessOrEqual(t, len(analysis.Candidates), 16)
-			assert.GreaterOrEqual(t, analysis.Candidates[len(analysis.Candidates)-1].Timestamp, float64(duration)*0.75)
 		})
 	}
 	cfg := testEngineConfig(t).Analysis

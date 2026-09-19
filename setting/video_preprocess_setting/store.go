@@ -283,6 +283,11 @@ func PublishFromOption(value string) error {
 
 	saveMu.Lock()
 	defer saveMu.Unlock()
+	// A reload may have read storage before a newer Save completed. Published
+	// generations are immutable; only a newer document can replace one.
+	if current := runtimeSnapshot.Load(); current != nil && snapshot.Version <= current.Version {
+		return nil
+	}
 	publish(settings, snapshot.Version)
 	return nil
 }

@@ -91,6 +91,66 @@ func TestGetProcessorBuildsFromPublishedSettings(t *testing.T) {
 	assert.Equal(t, snapshot.Version, BuildEngineConfig(snapshot, video_preprocess_setting.GetDeploymentConfig()).Version)
 }
 
+func TestDelayedSettingsReloadCannotRollBackProcessor(t *testing.T) {
+	before := video_preprocess_setting.GetSnapshot()
+	singletonMu.Lock()
+	previous, previousErr := singleton, singletonFx
+	singleton, singletonFx = nil, nil
+	singletonMu.Unlock()
+	t.Cleanup(func() {
+		_, err := video_preprocess_setting.Save(before.Settings, video_preprocess_setting.GetSnapshot().Version, func(string) error { return nil })
+		require.NoError(t, err)
+		singletonMu.Lock()
+		singleton, singletonFx = previous, previousErr
+		singletonMu.Unlock()
+	})
+
+	old := video_preprocess_setting.DefaultSettings()
+	old.Enabled = true
+	old.TargetModels = []string{"old-model"}
+	oldDocument, err := video_preprocess_setting.Encode(old, before.Version+1)
+	require.NoError(t, err)
+	require.NoError(t, video_preprocess_setting.PublishFromOption(oldDocument))
+	ApplyPublishedSettings()
+	p := GetProcessor()
+	require.NotNil(t, p)
+	assert.True(t, p.Enabled())
+	delayedDocument := oldDocument // The background reader has already read N.
+
+	next := old
+	next.Enabled = false
+	next.TargetModels = []string{"new-model"}
+	next.MaxRunningJobs = 8
+	next.MaxWaitingJobs = 40
+	next.MaxDecodedVideoMB = 40
+	next.MaxDurationSeconds = 900
+	var stored string
+	saved, err := video_preprocess_setting.Save(next, before.Version+1, func(value string) error {
+		stored = value
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, before.Version+2, saved.Version)
+	ApplyPublishedSettings()
+	wantConfig := BuildEngineConfig(saved, video_preprocess_setting.GetDeploymentConfig())
+	wantConfig.Media = wantConfig.Media.withDefaults()
+
+	require.NoError(t, video_preprocess_setting.PublishFromOption(delayedDocument))
+	ApplyPublishedSettings()
+	assert.Equal(t, saved, video_preprocess_setting.GetSnapshot())
+	assert.Equal(t, wantConfig, p.config())
+	assert.Equal(t, wantConfig.Admission.MaxRunningJobs, p.Snapshot().MaxRunningJobs)
+	assert.Equal(t, wantConfig.Admission.MaxWaitingJobs, p.Snapshot().MaxWaitingJobs)
+	_, err = video_preprocess_setting.Save(old, before.Version+1, func(string) error {
+		t.Error("a stale page must not reach persistence")
+		return nil
+	})
+	require.ErrorIs(t, err, video_preprocess_setting.ErrVersionConflict)
+	decoded, err := video_preprocess_setting.Decode(stored)
+	require.NoError(t, err)
+	assert.Equal(t, saved, decoded)
+}
+
 // statusJSON serializes a RuntimeStatus so tests can assert on the wire shape.
 func statusJSON(t *testing.T, s RuntimeStatus) string {
 	t.Helper()

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -26,6 +27,7 @@ type AnalysisConfig struct {
 
 type FrameCandidate struct {
 	Timestamp, Scene, Motion, Sharpness, BlackRatio, Luma float64
+	SourcePTS                                             int64
 	Hash                                                  uint64
 	Value                                                 float64
 }
@@ -67,19 +69,22 @@ func analyzeVideo(ctx context.Context, kept *ProcessVideoResult, cfg AnalysisCon
 	// the two live grayscale buffers below 2 * analysis_width squared bytes.
 	scale := min(1.0, float64(cfg.Width)/float64(max(width, height)))
 	width, height = max(1, int(float64(width)*scale)), max(1, int(float64(height)*scale))
-	filter := fmt.Sprintf("fps=%.9f:start_time=0:round=up,scale=%d:%d,format=gray", fps, width, height)
+	// Keep the first source frame in each scan interval. The fps filter would
+	// synthesize timestamps (and duplicates) that cannot identify VFR frames.
+	filter := fmt.Sprintf("setpts=PTS-STARTPTS,select=isnan(prev_selected_t)+gt(floor(t*%.9f)\\,floor(prev_selected_t*%.9f)),trim=end_frame=%d,showinfo@video_analysis=checksum=0,scale=%d:%d,format=gray", fps, fps, cfg.CandidateLimit, width, height)
 	cmd := exec.CommandContext(ctx, limits.FFmpegPath,
-		"-nostdin", "-hide_banner", "-v", "error", "-protocol_whitelist", "file,pipe",
+		"-nostdin", "-hide_banner", "-v", "info", "-nostats", "-protocol_whitelist", "file,pipe",
 		"-threads", strconv.Itoa(limits.FFmpegThreads), "-filter_threads", "1",
 		"-max_pixels", strconv.FormatInt(limits.MaxPixels, 10), "-max_alloc", "268435456", "-err_detect", "explode",
 		"-i", kept.workspace.path("video.bin"), "-map", "0:v:0", "-an", "-sn", "-dn",
-		"-vf", filter, "-frames:v", strconv.Itoa(cfg.CandidateLimit), "-threads", "1",
+		"-vf", filter, "-fps_mode", "passthrough", "-frames:v", strconv.Itoa(cfg.CandidateLimit), "-threads", "1",
 		"-f", "rawvideo", "-pix_fmt", "gray", "pipe:1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
 	var stderr bytes.Buffer
-	cmd.Stderr = &limitedWriter{w: &stderr, limit: int64(limits.MaxFFmpegStderrBytes)}
+	timing := &analysisTimingWriter{diagnostics: &limitedWriter{w: &stderr, limit: int64(limits.MaxFFmpegStderrBytes)}, limit: cfg.CandidateLimit}
+	cmd.Stderr = timing
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, wrapError(CodeDecodeFailed, "failed to open video analysis stream", err)
@@ -103,7 +108,6 @@ func analyzeVideo(ctx context.Context, kept *ProcessVideoResult, cfg AnalysisCon
 			break
 		}
 		candidate := scoreFrame(current, previous, width, height)
-		candidate.Timestamp = float64(i) / fps
 		if i == 0 {
 			candidate.Scene, candidate.Motion = 0, 0
 		}
@@ -123,6 +127,13 @@ func analyzeVideo(ctx context.Context, kept *ProcessVideoResult, cfg AnalysisCon
 	if err != nil || len(result.Candidates) == 0 {
 		return nil, newError(CodeUnsupportedFormat, "video analysis produced no complete frames")
 	}
+	if timing.invalid || len(timing.pts) != len(result.Candidates) {
+		return nil, newError(CodeUnsupportedFormat, "video analysis produced invalid source frame timestamps")
+	}
+	for i := range result.Candidates {
+		result.Candidates[i].SourcePTS = timing.pts[i]
+		result.Candidates[i].Timestamp = float64(timing.pts[i]) * timing.timeBase
+	}
 	var changes, sharpness float64
 	for _, candidate := range result.Candidates {
 		changes += min(1, candidate.Scene*3+candidate.Motion*2)
@@ -137,6 +148,74 @@ func analyzeVideo(ctx context.Context, kept *ProcessVideoResult, cfg AnalysisCon
 		}
 	}
 	return result, nil
+}
+
+// analysisTimingWriter pairs showinfo's exact source PTS with the raw frames.
+// Both diagnostics and partial lines are bounded independently of video size.
+// exec owns the writer goroutine; results are read only after cmd.Wait.
+type analysisTimingWriter struct {
+	diagnostics io.Writer
+	limit       int
+	line        []byte
+	discard     bool
+	pts         []int64
+	timeBase    float64
+	invalid     bool
+}
+
+func (w *analysisTimingWriter) Write(data []byte) (int, error) {
+	written := len(data)
+	for len(data) > 0 {
+		part, rest, complete := bytes.Cut(data, []byte{'\n'})
+		if len(w.line)+len(part) > 4096 {
+			w.discard = true
+		}
+		if !w.discard {
+			w.line = append(w.line, part...)
+		}
+		if complete {
+			if !w.discard {
+				w.readLine(string(w.line))
+			}
+			w.line = w.line[:0]
+			w.discard = false
+		}
+		data = rest
+	}
+	return written, nil
+}
+
+func (w *analysisTimingWriter) readLine(line string) {
+	if !strings.HasPrefix(line, "[showinfo@video_analysis @ ") {
+		_, _ = io.WriteString(w.diagnostics, line+"\n")
+		return
+	}
+	_, detail, ok := strings.Cut(line, "] ")
+	if !ok || w.invalid {
+		return
+	}
+	detail = strings.TrimSpace(detail)
+	if strings.HasPrefix(detail, "config in time_base:") {
+		var numerator, denominator int64
+		_, err := fmt.Sscanf(detail, "config in time_base: %d/%d", &numerator, &denominator)
+		if err != nil || numerator <= 0 || denominator <= 0 || len(w.pts) > 0 {
+			w.invalid = true
+			return
+		}
+		w.timeBase = float64(numerator) / float64(denominator)
+		return
+	}
+	if !strings.HasPrefix(detail, "n:") {
+		return
+	}
+	var index int
+	var pts int64
+	_, err := fmt.Sscanf(detail, "n:%d pts:%d", &index, &pts)
+	if err != nil || index != len(w.pts) || len(w.pts) >= w.limit || w.timeBase <= 0 || pts < 0 || (len(w.pts) > 0 && pts <= w.pts[len(w.pts)-1]) {
+		w.invalid = true
+		return
+	}
+	w.pts = append(w.pts, pts)
 }
 
 // scoreFrame measures histogram scene change, pixel motion, Laplacian variance,

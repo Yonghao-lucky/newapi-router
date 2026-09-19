@@ -430,6 +430,15 @@ func TestSavePersistsAndPublishesWholeDocument(t *testing.T) {
 	candidate.MaxRunningJobs = 24
 	candidate.MaxRunningPerUser = 4
 	candidate.RetentionDays = 30
+	candidate.ShortScanFPS = 1.25
+	candidate.MediumScanFPS = 1.375
+	candidate.LongScanFPS = 0.125
+	candidate.SceneWeight = 0.405
+	candidate.MotionWeight = 0.195
+	candidate.SharpnessWeight = 0.155
+	candidate.TemporalWeight = 0.245
+	candidate.PhashDuplicateThreshold = 0.085
+	candidate.BlackFrameThreshold = 0.905
 
 	snapshot, err := Save(candidate, 0, recordingPersist(&stored))
 	require.NoError(t, err)
@@ -609,6 +618,14 @@ func TestPublishFromOption(t *testing.T) {
 	t.Run("a reload of the live document is a no-op", func(t *testing.T) {
 		live := GetSnapshot()
 		require.NoError(t, PublishFromOption(encodeSettings(t, live.Settings, live.Version)))
+		assert.Equal(t, live, GetSnapshot())
+	})
+
+	t.Run("a generation cannot be replaced with different settings", func(t *testing.T) {
+		live := GetSnapshot()
+		conflicting := live.Settings
+		conflicting.Enabled = !conflicting.Enabled
+		require.NoError(t, PublishFromOption(encodeSettings(t, conflicting, live.Version)))
 		assert.Equal(t, live, GetSnapshot())
 	})
 

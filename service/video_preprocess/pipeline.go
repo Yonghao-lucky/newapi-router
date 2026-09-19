@@ -554,25 +554,20 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 			cleanupProbed(p, probed)
 			return err
 		}
-		timestamps := make([]float64, 0, len(kept.selected))
-		for _, candidate := range kept.selected {
-			timestamps = append(timestamps, candidate.Timestamp)
-		}
-		if len(timestamps) == 0 {
+		if len(kept.selected) == 0 {
 			// A successfully decoded clip with no useful visual candidates (for
 			// example an all-black leader) may use the stable coverage baseline.
 			// Decoder errors, limits, cancellation and resource failures never reach
 			// this fallback: they propagate before frame selection.
-			var err error
-			timestamps, err = generateUniformTimestamps(kept.Metadata.DurationSeconds, frames, 1)
-			if err != nil {
-				cleanupProbed(p, probed)
-				return err
-			}
+			kept.selected = selectUniformCandidates(kept.analysis.Candidates, kept.Metadata.DurationSeconds, frames)
 			kept.samplerVersion = "uniform-v1"
 			fallbackCount++
 		} else {
 			kept.samplerVersion = processorVersion
+		}
+		timestamps := make([]float64, 0, len(kept.selected))
+		for _, candidate := range kept.selected {
+			timestamps = append(timestamps, candidate.Timestamp)
 		}
 		result.SelectMS += time.Since(selectStart).Milliseconds()
 		limits := kept.limits

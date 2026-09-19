@@ -270,7 +270,7 @@ export const numericFields = [
     labelKey: 'Short video scan FPS',
     min: 0.1,
     max: 30,
-    step: 0.1,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -278,7 +278,7 @@ export const numericFields = [
     labelKey: 'Medium video scan FPS',
     min: 0.1,
     max: 30,
-    step: 0.1,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -286,7 +286,7 @@ export const numericFields = [
     labelKey: 'Long video scan FPS',
     min: 0.05,
     max: 10,
-    step: 0.05,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -302,7 +302,7 @@ export const numericFields = [
     labelKey: 'Scene change weight',
     min: 0,
     max: 1,
-    step: 0.01,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -310,7 +310,7 @@ export const numericFields = [
     labelKey: 'Motion weight',
     min: 0,
     max: 1,
-    step: 0.01,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -318,7 +318,7 @@ export const numericFields = [
     labelKey: 'Sharpness weight',
     min: 0,
     max: 1,
-    step: 0.01,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -326,7 +326,7 @@ export const numericFields = [
     labelKey: 'Time coverage weight',
     min: 0,
     max: 1,
-    step: 0.01,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -334,7 +334,7 @@ export const numericFields = [
     labelKey: 'Duplicate frame threshold',
     min: 0,
     max: 1,
-    step: 0.01,
+    step: 'any',
     group: 'Advanced sampling',
   },
   {
@@ -342,7 +342,7 @@ export const numericFields = [
     labelKey: 'Black frame threshold',
     min: 0,
     max: 1,
-    step: 0.01,
+    step: 'any',
     group: 'Advanced sampling',
   },
 ] as const

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -360,6 +361,9 @@ func TestVideoHandoffLogsNeverEchoMediaOrPrompt(t *testing.T) {
 }
 
 func TestDecodedVideoWritePropagatesDiskFull(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/dev/full ENOSPC verification requires Linux")
+	}
 	file, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
 	require.NoError(t, err, "Linux ENOSPC test device is required")
 	defer file.Close()
@@ -367,6 +371,7 @@ func TestDecodedVideoWritePropagatesDiskFull(t *testing.T) {
 	require.NoError(t, err)
 	_, err = decodeVideoDataURL(context.Background(), input, file, 3)
 	require.Error(t, err)
+	assert.ErrorIs(t, err, syscall.ENOSPC)
 	assert.Equal(t, CodeStorageFailed, CodeOf(err))
 	assert.Equal(t, 503, HTTPStatusForError(err))
 }

@@ -147,3 +147,27 @@ func candidateFits(candidate FrameCandidate, selected []FrameCandidate, cfg Anal
 	}
 	return true
 }
+
+// selectUniformCandidates keeps fallback on the same source timeline, even
+// when a sparse or single-frame clip has fewer candidates than its budget.
+func selectUniformCandidates(candidates []FrameCandidate, duration float64, budget int) []FrameCandidate {
+	budget = min(budget, len(candidates))
+	selected := make([]FrameCandidate, 0, budget)
+	next := 0
+	for i := range budget {
+		target := (float64(i) + 0.5) * duration / float64(budget)
+		best := next
+		// Leave enough distinct source frames for the remaining targets.
+		last := len(candidates) - (budget - i)
+		for j := next + 1; j <= last; j++ {
+			if math.Abs(candidates[j].Timestamp-target) < math.Abs(candidates[best].Timestamp-target) {
+				best = j
+			}
+		}
+		candidate := candidates[best]
+		candidate.Value = 0
+		selected = append(selected, candidate)
+		next = best + 1
+	}
+	return selected
+}
