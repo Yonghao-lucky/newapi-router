@@ -157,3 +157,28 @@ describe('multi-select batch paste', () => {
     expect(input).toHaveValue('')
   })
 })
+
+describe('multi-select field accessibility', () => {
+  it('connects the label and validation message to the editable combobox', () => {
+    render(
+      <>
+        <label id='video-models-label' htmlFor='video-models'>
+          Target models
+        </label>
+        <MultiSelect
+          aria-labelledby='video-models-label'
+          id='video-models'
+          options={options}
+          selected={[]}
+          onChange={() => undefined}
+          aria-invalid
+          aria-describedby='video-models-error'
+        />
+        <p id='video-models-error'>Choose at least one model</p>
+      </>
+    )
+    const input = screen.getByRole('combobox', { name: 'Target models' })
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription('Choose at least one model')
+  })
+})

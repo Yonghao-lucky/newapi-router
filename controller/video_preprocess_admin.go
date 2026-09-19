@@ -21,6 +21,7 @@ import (
 // that are shown read-only (plan §8.3).
 type videoSettingsResponse struct {
 	Settings video_preprocess_setting.Settings `json:"settings"`
+	Defaults video_preprocess_setting.Settings `json:"defaults"`
 	// Version is the currently published generation. A PUT must echo it back in
 	// expected_version; a mismatch means another admin saved first.
 	Version int64 `json:"version"`
@@ -98,6 +99,7 @@ func currentVideoSettingsResponse() videoSettingsResponse {
 	snapshot := video_preprocess_setting.GetSnapshot()
 	return videoSettingsResponse{
 		Settings:      snapshot.Settings,
+		Defaults:      video_preprocess_setting.DefaultSettings(),
 		Version:       snapshot.Version,
 		ConfigVersion: video_preprocess_setting.ConfigVersion,
 		Deployment:    video_preprocess_setting.GetDeploymentConfig(),
@@ -154,6 +156,7 @@ func UpdateVideoPreprocessSettings(c *gin.Context) {
 
 	common.ApiSuccess(c, videoSettingsResponse{
 		Settings:      snapshot.Settings,
+		Defaults:      video_preprocess_setting.DefaultSettings(),
 		Version:       snapshot.Version,
 		ConfigVersion: video_preprocess_setting.ConfigVersion,
 		Deployment:    video_preprocess_setting.GetDeploymentConfig(),

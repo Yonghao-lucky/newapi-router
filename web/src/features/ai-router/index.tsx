@@ -16,23 +16,36 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useRef, useState } from 'react'
+import { lazy, Suspense, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { SectionPageLayout } from '@/components/layout'
+import { LoadingState } from '@/components/loading-state'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { ChannelConfigTab } from './channel-config'
-import { GlobalConfigTab } from './global-config'
-import { MonitoringTab } from './monitoring'
 import { LogsTable } from './components/logs-table'
 import { TargetsTable } from './components/targets-table'
+import { GlobalConfigTab } from './global-config'
+
+const MonitoringTab = lazy(() =>
+  import('./monitoring').then((module) => ({ default: module.MonitoringTab }))
+)
+
+const VideoProcessingTab = lazy(() =>
+  import('./video-processing').then((module) => ({
+    default: module.VideoProcessingTab,
+  }))
+)
 
 // AIRouterPage is the single admin entry: global config, target policies,
-// channel routing config and monitoring live in four tabs.
+// channel routing config, video processing and monitoring live in five tabs.
 export function AIRouterPage() {
   const { t } = useTranslation()
   const [tab, setTab] = useState('targets')
+  const [videoDirty, setVideoDirty] = useState(false)
+  const [pendingTab, setPendingTab] = useState<string | null>(null)
   // Channel-performance row click: filter the request logs by that channel
   // and scroll them into view. The nonce makes a repeat click on the same
   // channel re-apply the filter.
@@ -54,11 +67,25 @@ export function AIRouterPage() {
     <SectionPageLayout>
       <SectionPageLayout.Title>{t('AI Router')}</SectionPageLayout.Title>
       <SectionPageLayout.Content>
-        <Tabs value={tab} onValueChange={setTab} className='space-y-4'>
-          <TabsList>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => {
+            if (tab === 'video' && videoDirty && value !== 'video') {
+              setPendingTab(value)
+              return
+            }
+            setTab(value)
+          }}
+          className='space-y-4'
+        >
+          <TabsList
+            className='h-auto max-w-full flex-wrap justify-start'
+            aria-label={t('AI Router sections')}
+          >
             <TabsTrigger value='targets'>{t('Target Models')}</TabsTrigger>
             <TabsTrigger value='channels'>{t('Channel Config')}</TabsTrigger>
             <TabsTrigger value='monitoring'>{t('Monitoring')}</TabsTrigger>
+            <TabsTrigger value='video'>{t('Video Processing')}</TabsTrigger>
             <TabsTrigger value='settings'>{t('Global Settings')}</TabsTrigger>
           </TabsList>
           <TabsContent value='targets'>
@@ -68,15 +95,35 @@ export function AIRouterPage() {
             <ChannelConfigTab />
           </TabsContent>
           <TabsContent value='monitoring'>
-            <MonitoringTab onChannelSelect={jumpToLogsForChannel} />
+            <Suspense fallback={<LoadingState />}>
+              <MonitoringTab onChannelSelect={jumpToLogsForChannel} />
+            </Suspense>
             <div className='mt-6' ref={logsRef}>
               <LogsTable channelJump={channelJump} />
             </div>
+          </TabsContent>
+          <TabsContent value='video'>
+            <Suspense fallback={<LoadingState />}>
+              <VideoProcessingTab onDirtyChange={setVideoDirty} />
+            </Suspense>
           </TabsContent>
           <TabsContent value='settings'>
             <GlobalConfigTab />
           </TabsContent>
         </Tabs>
+        <ConfirmDialog
+          open={pendingTab !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingTab(null)
+          }}
+          title={t('Discard unsaved changes?')}
+          desc={t('Your unsaved video settings will be discarded.')}
+          handleConfirm={() => {
+            if (pendingTab) setTab(pendingTab)
+            setPendingTab(null)
+            setVideoDirty(false)
+          }}
+        />
       </SectionPageLayout.Content>
     </SectionPageLayout>
   )
