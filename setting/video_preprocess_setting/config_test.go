@@ -456,6 +456,36 @@ func TestSavePersistsAndPublishesWholeDocument(t *testing.T) {
 	assert.Equal(t, snapshot, GetSnapshot())
 }
 
+func TestDelayedSaveCacheRefreshUsesPublishedGeneration(t *testing.T) {
+	resetStore(t)
+	common.OptionMapRWMutex.Lock()
+	previousMap := common.OptionMap
+	common.OptionMap = map[string]string{}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousMap
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	var stored string
+	// Pause the first save between its persist/publish and cache phases without
+	// relying on scheduler timing. A second complete save overtakes its cache.
+	first, err := saveExclusive(settingsWithModel("first"), 0, recordingPersist(&stored))
+	require.NoError(t, err)
+	second, err := Save(settingsWithModel("second"), first.Version, recordingPersist(&stored))
+	require.NoError(t, err)
+	require.NoError(t, cacheDocument())
+	common.OptionMapRWMutex.RLock()
+	cached := common.OptionMap[SettingsOptionKey]
+	common.OptionMapRWMutex.RUnlock()
+	decoded, err := Decode(cached)
+	require.NoError(t, err)
+	assert.Equal(t, second, decoded)
+	assert.Equal(t, second, GetSnapshot())
+	assert.Equal(t, stored, cached)
+}
+
 // TestFailedSaveLeavesNothingBehind covers the two rejection paths that must not
 // produce a partial write: a candidate with a blocking finding, and a writer
 // that fails. In both cases storage and the snapshot stay as they were.

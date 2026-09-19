@@ -304,20 +304,19 @@ func PublishFromOption(value string) error {
 // point leaves both the stored document and the published snapshot exactly as
 // they were. Nothing is written per field.
 func Save(settings Settings, expectedVersion int64, persist PersistFunc) (Snapshot, error) {
-	encoded, snapshot, err := saveExclusive(settings, expectedVersion, persist)
+	snapshot, err := saveExclusive(settings, expectedVersion, persist)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	// The option-map cache is refreshed after the save lock is released, never
 	// while holding it: the reload path takes the option-map lock and then the
 	// save lock (see cacheDocument).
-	cacheDocument(encoded)
-	return snapshot, nil
+	return snapshot, cacheDocument()
 }
 
-// saveExclusive is Save's critical section. It returns the encoded document so
-// the caller can refresh the option-map cache once the lock is free.
-func saveExclusive(settings Settings, expectedVersion int64, persist PersistFunc) (string, Snapshot, error) {
+// saveExclusive is Save's critical section. Cache refresh must wait until this
+// section releases the save lock.
+func saveExclusive(settings Settings, expectedVersion int64, persist PersistFunc) (Snapshot, error) {
 	saveMu.Lock()
 	defer saveMu.Unlock()
 
@@ -327,43 +326,52 @@ func saveExclusive(settings Settings, expectedVersion int64, persist PersistFunc
 		current = &defaults
 	}
 	if expectedVersion != current.Version {
-		return "", Snapshot{}, fmt.Errorf("%w: expected version %d, current version is %d",
+		return Snapshot{}, fmt.Errorf("%w: expected version %d, current version is %d",
 			ErrVersionConflict, expectedVersion, current.Version)
 	}
 
 	candidate := settings
 	candidate.Normalize()
 	if issues := BlockingIssues(candidate.Validate()); len(issues) > 0 {
-		return "", Snapshot{}, &ValidationIssuesError{Issues: issues}
+		return Snapshot{}, &ValidationIssuesError{Issues: issues}
 	}
 
 	nextVersion := current.Version + 1
 	encoded, err := Encode(candidate, nextVersion)
 	if err != nil {
-		return "", Snapshot{}, err
+		return Snapshot{}, err
 	}
 	if persist == nil {
-		return "", Snapshot{}, errors.New("video preprocessing settings: no persistence writer configured")
+		return Snapshot{}, errors.New("video preprocessing settings: no persistence writer configured")
 	}
 	if err := persist(encoded); err != nil {
-		return "", Snapshot{}, err
+		return Snapshot{}, err
 	}
-	return encoded, publish(candidate, nextVersion), nil
+	return publish(candidate, nextVersion), nil
 }
 
-// cacheDocument keeps the shared option map in step with what was saved.
+// cacheDocument caches the effective generation, which may have advanced since
+// this Save published. Read it after acquiring the map lock so a delayed cache
+// refresh cannot overwrite a newer refresh with its original saved document.
 //
 // Lock order is the point of this function. The option reload path
 // (updateOptionMap) holds common.OptionMapRWMutex and then calls into this
 // package, which takes saveMu. Taking the two locks in the opposite order here
 // would deadlock the two paths against each other, so this runs only after
 // saveMu has been released.
-func cacheDocument(encoded string) {
+func cacheDocument() error {
 	common.OptionMapRWMutex.Lock()
-	if common.OptionMap != nil {
-		common.OptionMap[SettingsOptionKey] = encoded
+	defer common.OptionMapRWMutex.Unlock()
+	if common.OptionMap == nil {
+		return nil
 	}
-	common.OptionMapRWMutex.Unlock()
+	snapshot := GetSnapshot()
+	encoded, err := Encode(snapshot.Settings, snapshot.Version)
+	if err != nil {
+		return err
+	}
+	common.OptionMap[SettingsOptionKey] = encoded
+	return nil
 }
 
 // IsEnabledForModel reports whether the current settings route this model

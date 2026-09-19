@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service/video_preprocess"
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,9 @@ func TestUpdateAIRouterSettingsValidation(t *testing.T) {
 func setupVideoPreprocessControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
+	previousMode := gin.Mode()
+	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
 	gin.SetMode(gin.TestMode)
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	common.RedisEnabled = false
@@ -52,17 +56,29 @@ func setupVideoPreprocessControllerTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(&model.Option{}))
 
 	previousDB, previousLogDB := model.DB, model.LOG_DB
-	previousOptionMap := common.OptionMap
+	previousSettings := video_preprocess_setting.GetSnapshot().Settings
+	previousHook := model.OnVideoPreprocessPublished
+	model.OnVideoPreprocessPublished = video_preprocess.ApplyPublishedSettings
 	model.DB, model.LOG_DB = db, db
 	common.OptionMapRWMutex.Lock()
+	previousOptionMap := common.OptionMap
 	common.OptionMap = map[string]string{}
 	common.OptionMapRWMutex.Unlock()
 
 	t.Cleanup(func() {
+		defer func() { model.OnVideoPreprocessPublished = previousHook }()
 		model.DB, model.LOG_DB = previousDB, previousLogDB
+		gin.SetMode(previousMode)
+		common.SetDatabaseTypes(previousMainType, previousLogType)
+		common.RedisEnabled = previousRedisEnabled
 		common.OptionMapRWMutex.Lock()
 		common.OptionMap = previousOptionMap
 		common.OptionMapRWMutex.Unlock()
+		// Restore settings at a new version after restoring the cache map, so
+		// the next test observes matching cache, snapshot and runtime generations.
+		_, err := video_preprocess_setting.Save(previousSettings, video_preprocess_setting.GetSnapshot().Version, func(string) error { return nil })
+		require.NoError(t, err)
+		video_preprocess.ApplyPublishedSettings()
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()
@@ -118,7 +134,8 @@ func settingsJSONBody(t *testing.T, settings video_preprocess_setting.Settings, 
 // it returns the effective settings, the version an update must quote, and the
 // read-only deployment values.
 func TestVideoSettingsGetReturnsDefaultsAndDeployment(t *testing.T) {
-	resetVideoPreprocessSettings(t)
+	setupVideoPreprocessControllerTestDB(t)
+	initial := resetVideoPreprocessSettings(t)
 
 	recorder := videoSettingsRequest(t, GetVideoPreprocessSettings, http.MethodGet, "")
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -127,7 +144,7 @@ func TestVideoSettingsGetReturnsDefaultsAndDeployment(t *testing.T) {
 	require.True(t, payload.Success)
 	require.Empty(t, payload.Message)
 	assert.Equal(t, video_preprocess_setting.DefaultSettings(), payload.Data.Settings)
-	assert.Equal(t, int64(0), payload.Data.Version)
+	assert.Equal(t, initial.Version, payload.Data.Version)
 	assert.Equal(t, video_preprocess_setting.ConfigVersion, payload.Data.ConfigVersion)
 	// Deployment values are present but never writable through this API.
 	assert.NotEmpty(t, payload.Data.Deployment.TempDir)
@@ -138,7 +155,7 @@ func TestVideoSettingsGetReturnsDefaultsAndDeployment(t *testing.T) {
 // the version advances and the persisted document matches what was published.
 func TestVideoSettingsPutPersistsWholeDocument(t *testing.T) {
 	db := setupVideoPreprocessControllerTestDB(t)
-	resetVideoPreprocessSettings(t)
+	initial := resetVideoPreprocessSettings(t)
 
 	candidate := video_preprocess_setting.DefaultSettings()
 	candidate.Enabled = true
@@ -148,12 +165,12 @@ func TestVideoSettingsPutPersistsWholeDocument(t *testing.T) {
 	candidate.RetentionDays = 30
 
 	recorder := videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut,
-		settingsJSONBody(t, candidate, 0))
+		settingsJSONBody(t, candidate, initial.Version))
 	require.Equal(t, http.StatusOK, recorder.Code)
 
 	payload := decodeVideoSettingsResponse(t, recorder)
 	require.True(t, payload.Success)
-	assert.Equal(t, int64(1), payload.Data.Version)
+	assert.Equal(t, initial.Version+1, payload.Data.Version)
 	assert.True(t, payload.Data.Settings.Enabled)
 	assert.Equal(t, []string{"kimi-k3", "gpt-4o"}, payload.Data.Settings.TargetModels)
 
@@ -165,7 +182,7 @@ func TestVideoSettingsPutPersistsWholeDocument(t *testing.T) {
 	require.NoError(t, db.First(&stored, "key = ?", video_preprocess_setting.SettingsOptionKey).Error)
 	decoded, err := video_preprocess_setting.Decode(stored.Value)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), decoded.Version)
+	assert.Equal(t, initial.Version+1, decoded.Version)
 	assert.Equal(t, payload.Data.Settings, decoded.Settings)
 
 	getRecorder := videoSettingsRequest(t, GetVideoPreprocessSettings, http.MethodGet, "")
@@ -179,12 +196,12 @@ func TestVideoSettingsPutPersistsWholeDocument(t *testing.T) {
 // storage and the published snapshot exactly as they were.
 func TestVideoSettingsPutRejectsInvalidCandidateWithoutWriting(t *testing.T) {
 	db := setupVideoPreprocessControllerTestDB(t)
-	resetVideoPreprocessSettings(t)
+	initial := resetVideoPreprocessSettings(t)
 
 	valid := video_preprocess_setting.DefaultSettings()
 	valid.TargetModels = []string{"kimi-k3"}
 	require.Equal(t, http.StatusOK,
-		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, valid, 0)).Code)
+		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, valid, initial.Version)).Code)
 
 	before := video_preprocess_setting.GetSnapshot()
 	var storedBefore model.Option
@@ -197,7 +214,7 @@ func TestVideoSettingsPutRejectsInvalidCandidateWithoutWriting(t *testing.T) {
 	invalid.JPEGQuality = 99
 
 	recorder := videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut,
-		settingsJSONBody(t, invalid, 1))
+		settingsJSONBody(t, invalid, before.Version))
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 
 	var payload struct {
@@ -218,24 +235,28 @@ func TestVideoSettingsPutRejectsInvalidCandidateWithoutWriting(t *testing.T) {
 	var storedAfter model.Option
 	require.NoError(t, db.First(&storedAfter, "key = ?", video_preprocess_setting.SettingsOptionKey).Error)
 	assert.Equal(t, storedBefore.Value, storedAfter.Value)
-	assert.Equal(t, int64(1), before.Version)
+	assert.Equal(t, initial.Version+1, before.Version)
 }
 
 // TestVideoSettingsPutVersionConflict covers the optimistic concurrency
 // contract at the HTTP layer: a stale expected_version is a 409, and the
 // winning save is the one that quoted the current version.
 func TestVideoSettingsPutVersionConflict(t *testing.T) {
-	setupVideoPreprocessControllerTestDB(t)
-	resetVideoPreprocessSettings(t)
+	db := setupVideoPreprocessControllerTestDB(t)
+	initial := resetVideoPreprocessSettings(t)
 
 	candidate := video_preprocess_setting.DefaultSettings()
 	candidate.RetentionDays = 14
 	require.Equal(t, http.StatusOK,
-		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, candidate, 0)).Code)
+		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, candidate, initial.Version)).Code)
+	before := video_preprocess_setting.GetSnapshot()
+	var storedBefore model.Option
+	require.NoError(t, db.First(&storedBefore, "key = ?", video_preprocess_setting.SettingsOptionKey).Error)
 
-	// A second page still holding version 0 is refused.
+	// A second page still holding the initial version is refused.
+	candidate.RetentionDays = 21
 	recorder := videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut,
-		settingsJSONBody(t, candidate, 0))
+		settingsJSONBody(t, candidate, initial.Version))
 	require.Equal(t, http.StatusConflict, recorder.Code)
 
 	var payload struct {
@@ -245,12 +266,15 @@ func TestVideoSettingsPutVersionConflict(t *testing.T) {
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
 	assert.False(t, payload.Success)
 	assert.Equal(t, "video_settings_version_conflict", payload.Code)
-	assert.Equal(t, int64(1), video_preprocess_setting.GetSnapshot().Version)
+	assert.Equal(t, before, video_preprocess_setting.GetSnapshot())
+	var storedAfter model.Option
+	require.NoError(t, db.First(&storedAfter, "key = ?", video_preprocess_setting.SettingsOptionKey).Error)
+	assert.Equal(t, storedBefore, storedAfter)
 
 	// Re-reading and retrying with the current version succeeds.
 	require.Equal(t, http.StatusOK,
-		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, candidate, 1)).Code)
-	assert.Equal(t, int64(2), video_preprocess_setting.GetSnapshot().Version)
+		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, candidate, before.Version)).Code)
+	assert.Equal(t, initial.Version+2, video_preprocess_setting.GetSnapshot().Version)
 }
 
 // TestVideoSettingsPutRejectsMalformedBodies covers the request contract: a
@@ -382,58 +406,94 @@ func TestVideoSettingsValidateHasNoSideEffects(t *testing.T) {
 // republishes, so a restarted or long-running node converges on it.
 func TestVideoSettingsPersistThroughOptionReload(t *testing.T) {
 	db := setupVideoPreprocessControllerTestDB(t)
-	resetVideoPreprocessSettings(t)
+	initial := resetVideoPreprocessSettings(t)
 
 	candidate := video_preprocess_setting.DefaultSettings()
 	candidate.Enabled = true
 	candidate.MaxJobSeconds = 240
 	require.Equal(t, http.StatusOK,
-		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, candidate, 0)).Code)
+		videoSettingsRequest(t, UpdateVideoPreprocessSettings, http.MethodPut, settingsJSONBody(t, candidate, initial.Version)).Code)
 	published := video_preprocess_setting.GetSnapshot()
 
-	// Force the snapshot back to the defaults, as a process restart would, then
-	// reload it through the Option pipeline exactly as model.SyncOptions does.
-	resetVideoPreprocessSettings(t)
-	require.Equal(t, video_preprocess_setting.DefaultSettings(), video_preprocess_setting.GetSettings())
+	// Simulate another writer storing a newer generation without publishing it
+	// in this process. Reload must actually advance the current snapshot.
+	candidate.Enabled = false
+	candidate.TargetModels = []string{"new-model"}
+	candidate.MaxRunningJobs = 6
+	candidate.MaxWaitingJobs = 30
+	candidate.MaxJobSeconds = 300
+	nextDocument, err := video_preprocess_setting.Encode(candidate, published.Version+1)
+	require.NoError(t, err)
+	require.NoError(t, model.SaveVideoPreprocessSettingsDocument(nextDocument))
+	require.Equal(t, published, video_preprocess_setting.GetSnapshot())
 
 	var stored model.Option
 	require.NoError(t, db.First(&stored, "key = ?", video_preprocess_setting.SettingsOptionKey).Error)
 	require.NoError(t, model.UpdateOption(stored.Key, stored.Value))
 
-	assert.Equal(t, published, video_preprocess_setting.GetSnapshot())
-	assert.True(t, video_preprocess_setting.GetSettings().Enabled)
+	want := video_preprocess_setting.Snapshot{Version: published.Version + 1, Settings: candidate}
+	assert.Equal(t, want, video_preprocess_setting.GetSnapshot())
+
+	// UpdateOption enters the same updateOptionMap publication/cache path as a
+	// background reload. An older document must not roll back the generic GET
+	// response, even though the legacy option writer accepts it into storage.
+	delayedDocument, err := video_preprocess_setting.Encode(published.Settings, published.Version)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateOption(stored.Key, delayedDocument))
+	assert.Equal(t, want, video_preprocess_setting.GetSnapshot())
+	options := videoSettingsRequest(t, GetOptions, http.MethodGet, "")
+	require.Equal(t, http.StatusOK, options.Code)
+	var response struct {
+		Success bool           `json:"success"`
+		Data    []model.Option `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(options.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	var cached string
+	for _, option := range response.Data {
+		if option.Key == stored.Key {
+			cached = option.Value
+		}
+	}
+	decoded, err := video_preprocess_setting.Decode(cached)
+	require.NoError(t, err)
+	assert.Equal(t, want, decoded)
+	runtime := video_preprocess.GetRuntimeStatus()
+	require.True(t, runtime.Available)
+	assert.Equal(t, want.Version, runtime.Version)
+	assert.Equal(t, want.Settings.Enabled, runtime.Enabled)
+	assert.Equal(t, want.Settings.MaxRunningJobs, runtime.Queue.MaxRunningJobs)
+	assert.Equal(t, want.Settings.MaxWaitingJobs, runtime.Queue.MaxWaitingJobs)
 }
 
 // TestVideoSettingsOptionUpdateRejectsInvalidDocument covers the Option-table
 // guard directly: a document that would not pass the settings API cannot be
 // smuggled in through model.UpdateOption either.
 func TestVideoSettingsOptionUpdateRejectsInvalidDocument(t *testing.T) {
-	setupVideoPreprocessControllerTestDB(t)
-	resetVideoPreprocessSettings(t)
+	db := setupVideoPreprocessControllerTestDB(t)
+	initial := resetVideoPreprocessSettings(t)
 
 	invalid := video_preprocess_setting.DefaultSettings()
 	invalid.MaxLongSide = 1
-	encoded, err := video_preprocess_setting.Encode(invalid, 1)
+	encoded, err := video_preprocess_setting.Encode(invalid, initial.Version+1)
 	require.NoError(t, err)
 
 	require.Error(t, model.UpdateOption(video_preprocess_setting.SettingsOptionKey, encoded))
-	assert.Equal(t, video_preprocess_setting.DefaultSettings(), video_preprocess_setting.GetSettings())
-	assert.Equal(t, int64(0), video_preprocess_setting.GetSnapshot().Version)
+	assert.Equal(t, initial, video_preprocess_setting.GetSnapshot())
+	var count int64
+	require.NoError(t, db.Model(&model.Option{}).Count(&count).Error)
+	assert.Zero(t, count)
 }
 
-// resetVideoPreprocessSettings restores the package snapshot to the defaults
-// and registers the same restore as cleanup, so tests that share the
-// process-wide snapshot do not leak into one another.
-func resetVideoPreprocessSettings(t *testing.T) {
+// resetVideoPreprocessSettings starts a fresh generation with defaults. The DB
+// fixture restores the previous settings on cleanup. Versions remain monotonic
+// across tests; the no-op writer leaves their DB fixtures empty.
+func resetVideoPreprocessSettings(t *testing.T) video_preprocess_setting.Snapshot {
 	t.Helper()
 
-	restore := func() {
-		document := video_preprocess_setting.DefaultSettings()
-		document.Normalize()
-		encoded, err := video_preprocess_setting.Encode(document, 0)
-		require.NoError(t, err)
-		require.NoError(t, video_preprocess_setting.PublishFromOption(encoded))
-	}
-	restore()
-	t.Cleanup(restore)
+	previous := video_preprocess_setting.GetSnapshot()
+	snapshot, err := video_preprocess_setting.Save(video_preprocess_setting.DefaultSettings(), previous.Version, func(string) error { return nil })
+	require.NoError(t, err)
+	video_preprocess.ApplyPublishedSettings()
+	return snapshot
 }

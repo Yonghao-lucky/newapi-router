@@ -322,7 +322,11 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
-	common.OptionMap[key] = value
+	// Video documents must first pass the monotonic publication guard. Their
+	// cache entry is populated from the effective snapshot in handleConfigUpdate.
+	if key != video_preprocess_setting.SettingsOptionKey {
+		common.OptionMap[key] = value
+	}
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handled, err := handleConfigUpdate(key, value); err != nil {
@@ -689,6 +693,15 @@ func handleConfigUpdate(key, value string) (bool, error) {
 		if err := video_preprocess_setting.PublishFromOption(value); err != nil {
 			return true, err
 		}
+		// The incoming document may have lost to a newer save. Read the effective
+		// generation while updateOptionMap still holds the cache lock, just like
+		// Save's cache refresh, so neither writer can put an older value back.
+		snapshot := video_preprocess_setting.GetSnapshot()
+		encoded, err := video_preprocess_setting.Encode(snapshot.Settings, snapshot.Version)
+		if err != nil {
+			return true, err
+		}
+		common.OptionMap[video_preprocess_setting.SettingsOptionKey] = encoded
 		// 发布成功后把新配置推给本节点的视频预处理器：队列限制按 D 的
 		// 非对称缩放语义生效，媒体/改写限制随下一次请求的配置代际生效。
 		// 通过函数变量注入，避免 model -> service/video_preprocess 的依赖环。
