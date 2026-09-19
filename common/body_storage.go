@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -42,11 +43,13 @@ var ErrStorageClosed = fmt.Errorf("body storage is closed")
 
 // memoryStorage 内存存储实现
 type memoryStorage struct {
-	data   []byte
-	reader *bytes.Reader
-	size   int64
-	closed int32
-	mu     sync.Mutex
+	data    []byte
+	reader  *bytes.Reader
+	size    int64
+	closed  int32
+	mu      sync.Mutex
+	disk    *diskStorage
+	onClose func()
 }
 
 func newMemoryStorage(data []byte) *memoryStorage {
@@ -65,6 +68,9 @@ func (m *memoryStorage) Read(p []byte) (n int, err error) {
 	if atomic.LoadInt32(&m.closed) == 1 {
 		return 0, ErrStorageClosed
 	}
+	if m.disk != nil {
+		return m.disk.Read(p)
+	}
 	return m.reader.Read(p)
 }
 
@@ -74,6 +80,9 @@ func (m *memoryStorage) Seek(offset int64, whence int) (int64, error) {
 	if atomic.LoadInt32(&m.closed) == 1 {
 		return 0, ErrStorageClosed
 	}
+	if m.disk != nil {
+		return m.disk.Seek(offset, whence)
+	}
 	return m.reader.Seek(offset, whence)
 }
 
@@ -81,7 +90,15 @@ func (m *memoryStorage) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if atomic.CompareAndSwapInt32(&m.closed, 0, 1) {
-		DecrementMemoryBuffers(m.size)
+		if m.disk != nil {
+			_ = m.disk.Close()
+			if m.onClose != nil {
+				m.onClose()
+			}
+		} else {
+			DecrementMemoryBuffers(m.size)
+		}
+		m.data, m.reader = nil, nil
 	}
 	return nil
 }
@@ -92,6 +109,9 @@ func (m *memoryStorage) Bytes() ([]byte, error) {
 	if atomic.LoadInt32(&m.closed) == 1 {
 		return nil, ErrStorageClosed
 	}
+	if m.disk != nil {
+		return m.disk.Bytes()
+	}
 	return m.data, nil
 }
 
@@ -100,6 +120,9 @@ func (m *memoryStorage) NewReader() (io.ReadCloser, error) {
 	defer m.mu.Unlock()
 	if atomic.LoadInt32(&m.closed) == 1 {
 		return nil, ErrStorageClosed
+	}
+	if m.disk != nil {
+		return m.disk.NewReader()
 	}
 	// A fresh bytes.Reader over the shared immutable backing array: an
 	// independent cursor at zero copy cost. NopCloser keeps Close a no-op, so
@@ -112,7 +135,113 @@ func (m *memoryStorage) Size() int64 {
 }
 
 func (m *memoryStorage) IsDisk() bool {
-	return false
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.disk != nil
+}
+
+// SpillBodyStorage moves a request to a private file without
+// replacing its handle or changing its seek position. Failure leaves it intact.
+// onClose transfers only on success and runs after the backing file is removed.
+// Existing independent readers must be released by the caller before spilling.
+func SpillBodyStorage(ctx context.Context, storage BodyStorage, directory string, onClose func()) error {
+	// Existing gateway cache files also move under the caller's lifecycle. A
+	// long video queue must not depend on the general cache's shorter janitor TTL.
+	if disk, ok := storage.(*diskStorage); ok {
+		disk.mu.Lock()
+		defer disk.mu.Unlock()
+		if atomic.LoadInt32(&disk.closed) == 1 {
+			return ErrStorageClosed
+		}
+		file, err := os.CreateTemp(directory, "body-")
+		if err != nil {
+			return err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = file.Close()
+				_ = os.Remove(file.Name())
+			}
+		}()
+		reader := io.NewSectionReader(disk.file, 0, disk.size)
+		buffer := make([]byte, 256*1024)
+		for remaining := disk.size; remaining > 0; {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			n, err := io.ReadFull(reader, buffer[:min(int64(len(buffer)), remaining)])
+			if err != nil {
+				return err
+			}
+			if _, err := file.Write(buffer[:n]); err != nil {
+				return err
+			}
+			remaining -= int64(n)
+		}
+		position, err := disk.file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return err
+		}
+		if _, err := file.Seek(position, io.SeekStart); err != nil {
+			return err
+		}
+		_ = disk.file.Close()
+		_ = os.Remove(disk.filePath)
+		if disk.onClose != nil {
+			disk.onClose()
+		}
+		disk.file, disk.filePath, disk.onClose = file, file.Name(), onClose
+		committed = true
+		return nil
+	}
+	m, ok := storage.(*memoryStorage)
+	if !ok {
+		return fmt.Errorf("body storage cannot be spilled")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if atomic.LoadInt32(&m.closed) == 1 {
+		return ErrStorageClosed
+	}
+	if m.disk != nil {
+		return fmt.Errorf("body storage already spilled")
+	}
+	file, err := os.CreateTemp(directory, "body-")
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		}
+	}()
+	for offset := 0; offset < len(m.data); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		end := min(offset+256*1024, len(m.data))
+		if _, err := file.Write(m.data[offset:end]); err != nil {
+			return err
+		}
+		offset = end
+	}
+	position, err := m.reader.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Seek(position, io.SeekStart); err != nil {
+		return err
+	}
+	m.disk = &diskStorage{file: file, filePath: file.Name(), size: m.size}
+	m.data, m.reader = nil, nil
+	m.onClose = onClose
+	DecrementMemoryBuffers(m.size)
+	IncrementDiskFiles(m.size)
+	committed = true
+	return nil
 }
 
 // diskStorage 磁盘存储实现
@@ -122,6 +251,7 @@ type diskStorage struct {
 	size     int64
 	closed   int32
 	mu       sync.Mutex
+	onClose  func()
 }
 
 func newDiskStorage(data []byte, cachePath string) (*diskStorage, error) {
@@ -218,6 +348,9 @@ func (d *diskStorage) Close() error {
 		d.file.Close()
 		os.Remove(d.filePath)
 		DecrementDiskFiles(d.size)
+		if d.onClose != nil {
+			d.onClose()
+		}
 	}
 	return nil
 }

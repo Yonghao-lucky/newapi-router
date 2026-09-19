@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type workspace struct {
 	closed bool
 	files  int64
 	bytes  int64
+	lock   *os.File
 }
 
 // newWorkspace creates a private request-scoped directory under root. The
@@ -48,7 +50,18 @@ func newWorkspace(root string) (*workspace, error) {
 		_ = os.RemoveAll(dir)
 		return nil, wrapError(CodeStorageFailed, "failed to secure the video preprocessing workspace", err)
 	}
-	return &workspace{dir: dir}, nil
+	lock, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err == nil {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	}
+	if err != nil {
+		if lock != nil {
+			_ = lock.Close()
+		}
+		_ = os.RemoveAll(dir)
+		return nil, wrapError(CodeStorageFailed, "failed to lock video workspace", err)
+	}
+	return &workspace{dir: dir, lock: lock}, nil
 }
 
 // path returns an absolute path inside the workspace. The suffix is always a
@@ -117,9 +130,12 @@ func (w *workspace) Cleanup() error {
 	if w.closed {
 		return nil
 	}
-	w.closed = true
 	if err := os.RemoveAll(w.dir); err != nil {
 		return wrapError(CodeStorageFailed, "failed to remove the video preprocessing workspace", err)
+	}
+	w.closed = true
+	if w.lock != nil {
+		_ = w.lock.Close()
 	}
 	return nil
 }
@@ -160,7 +176,15 @@ func CleanupStale(root string, ttl time.Duration) error {
 		if info.ModTime().After(cutoff) {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		dir := filepath.Join(root, entry.Name())
+		lock, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			continue
+		}
+		if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+			_ = os.RemoveAll(dir)
+		}
+		_ = lock.Close()
 	}
 	return nil
 }

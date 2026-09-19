@@ -2,6 +2,8 @@ package ai_router
 
 import (
 	"errors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"io"
 	"strings"
 	"sync"
@@ -285,5 +287,36 @@ func BenchmarkDetectRequestVideo(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_, _ = DetectRequest(detectorChatPath, strings.NewReader(body))
+	}
+}
+
+func TestInspectChatRequestValidatesSkippedPayloadsAndCountsEveryVideo(t *testing.T) {
+	body := `{"messages":[{"content":[{"video_url":{"url":"data:video/mp4;base64,` + strings.Repeat("AAAA", 1<<15) + `"},"type":"video_url"},{"type":"image_url","image_url":{"url":"image"}},{"type":"video_url","video_url":"second"}]}],"model":"kimi-k3","extra":{"escaped":"\\\"\u4e2d","number":-2.5e+12,"list":[null,true,false,{}]}}`
+	result, err := InspectChatRequest(strings.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t, "kimi-k3", result.Demand.Model)
+	assert.Equal(t, 2, result.VideoCount)
+	assert.Equal(t, 1, result.ExistingImages)
+	assert.Equal(t, ModalityVideo, result.Demand.Modality)
+	for _, bad := range []string{
+		`{"model":"a","model":"b"}`,
+		`{"model":42}`,
+		`{"model":"a","extra":"bad\q"}`,
+		`{"model":"a","extra":"bad\u000x"}`,
+		`{"model":"a","extra":[1,]}`,
+		`{"model":"a","extra":{"trailing":true,}}`,
+		`{"model":"a","extra":01}`,
+		`{"model":"a","extra":-.2}`,
+		`{"model":"a","extra":1.}`,
+		`{"model":"a","extra":1e+}`,
+		`{"model":"a","extra":trueX}`,
+		`{"model":"a","extra":{"unclosed":true}`,
+		`{"model":"a"} {}`,
+		`{"model":"a","messages":[],"messages":[]}`,
+		`{"model":"a","messages":[{"content":[],"content":[]}]}`,
+		`{"model":"a","messages":[{"content":[{"type":"video_url","type":"text"}]}]}`,
+	} {
+		_, err := InspectChatRequest(strings.NewReader(bad))
+		require.Error(t, err, bad)
 	}
 }

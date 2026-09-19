@@ -34,7 +34,7 @@ type VideoMetadata struct {
 }
 
 // probeVideo spawns ffprobe against path, parses its JSON output and enforces
-// limits. The subprocess is never passed through a shell, uses -nostdin, runs
+// limits. The subprocess is never passed through a shell, has closed stdin, runs
 // under ctx and has its stderr capped at limits.MaxProbeStderrBytes.
 //
 // On cancellation, the entire process group is killed.
@@ -46,8 +46,9 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 	args := []string{
 		"-v", "error",
 		"-protocol_whitelist", "file,pipe",
-		"-show_format",
-		"-show_streams",
+		"-threads", strconv.Itoa(limits.FFmpegThreads),
+		"-max_pixels", strconv.FormatInt(limits.MaxPixels, 10), "-max_alloc", "268435456", "-max_streams", "16",
+		"-show_entries", "format=format_name,duration:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration:stream_tags=rotate:stream_side_data=side_data_type,rotation",
 		"-of", "json",
 		path,
 	}
@@ -61,7 +62,14 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 	cmd.Stdout = &limitedWriter{w: &stdout, limit: 1 << 20}
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: int64(limits.MaxProbeStderrBytes)}
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return nil, mediaCommandError(CodeProbeFailed, err, "")
+	}
+	if limits.probeChanged != nil {
+		limits.probeChanged(1)
+		defer limits.probeChanged(-1)
+	}
+	if err := cmd.Wait(); err != nil {
 		if ctxErr := timeoutOrCancel(ctx); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -87,11 +95,8 @@ type ffprobeOutput struct {
 }
 
 type ffprobeFormat struct {
-	Filename       string            `json:"filename"`
-	FormatName     string            `json:"format_name"`
-	FormatLongName string            `json:"format_long_name"`
-	Duration       string            `json:"duration"`
-	Tags           map[string]string `json:"tags"`
+	FormatName string `json:"format_name"`
+	Duration   string `json:"duration"`
 }
 
 type ffprobeStream struct {
@@ -152,7 +157,7 @@ func parseProbeOutput(data []byte) (*VideoMetadata, error) {
 			if meta.FPS == 0 {
 				meta.FPS = parseFPS(stream.RFrameRate, stream.AvgFrameRate)
 			}
-			if meta.DurationSeconds == 0 && stream.Duration != "" {
+			if meta.VideoStreamCount == 1 && stream.Duration != "" {
 				if d, err := strconv.ParseFloat(stream.Duration, 64); err == nil {
 					meta.DurationSeconds = d
 				}
@@ -189,6 +194,9 @@ func parseProbeOutput(data []byte) (*VideoMetadata, error) {
 		return nil, newError(CodeUnsupportedFormat, "video frame rate could not be determined safely")
 	}
 
+	if int64(meta.Width) > math.MaxInt64/int64(meta.Height) {
+		return nil, newError(CodeResolutionExceeded, "video pixel count exceeds integer bounds")
+	}
 	meta.Pixels = int64(meta.Width) * int64(meta.Height)
 
 	if meta.FPS > 0 && meta.DurationSeconds > 0 {
@@ -228,11 +236,17 @@ func parseRational(s string) float64 {
 }
 
 func validateMetadata(meta *VideoMetadata, limits MediaLimits) error {
+	if meta.RotationDegrees%90 != 0 {
+		return newError(CodeUnsupportedFormat, "video rotation must be a right angle")
+	}
+	if meta.VideoStreamCount != 1 || meta.AudioStreamCount > 1 {
+		return newError(CodeUnsupportedFormat, "only one video and at most one audio stream are supported")
+	}
 	if len(limits.AllowedContainerFormats) > 0 && !containsFold(limits.AllowedContainerFormats, meta.Container) {
-		return newError(CodeUnsupportedFormat, "container format "+meta.Container+" is not enabled")
+		return newError(CodeUnsupportedFormat, "video container format is not enabled")
 	}
 	if len(limits.AllowedVideoCodecs) > 0 && !containsFold(limits.AllowedVideoCodecs, meta.VideoCodec) {
-		return newError(CodeUnsupportedFormat, "video codec "+meta.VideoCodec+" is not enabled")
+		return newError(CodeUnsupportedFormat, "video codec is not enabled")
 	}
 	if meta.DurationSeconds > limits.MaxDurationSeconds {
 		return newError(CodeTooLong, fmt.Sprintf("video duration %.1fs exceeds limit %.1fs",

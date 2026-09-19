@@ -46,6 +46,7 @@ func TestVideoPreprocessBypassAndInputErrors(t *testing.T) {
 		status           int
 	}{
 		{"disabled", `{"model":"kimi-k3","messages":[{"content":[{"type":"video_url","video_url":{"url":"invalid"}}]}]}`, "", false, 204},
+		{"disabled malformed JSON", `{"broken":`, "", false, 204},
 		{"non-target", `{"model":"other","messages":[{"content":[{"type":"video_url","video_url":{"url":"invalid"}}]}]}`, "", true, 204},
 		{"text", `{"model":"kimi-k3","messages":[{"role":"user","content":"hello"}]}`, "", true, 204},
 		{"image", `{"model":"kimi-k3","messages":[{"content":[{"type":"image_url","image_url":{"url":"image"}}]}]}`, "", true, 204},

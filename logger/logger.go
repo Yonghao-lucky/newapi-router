@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -89,6 +90,11 @@ func LogError(ctx context.Context, msg string) {
 }
 
 func LogDebug(ctx context.Context, msg string, args ...any) {
+	// Provider debug messages may contain full requests and responses. Video
+	// handoffs contain customer frames and prompts, which must never be logged.
+	if ctx != nil && ctx.Value(string(constant.ContextKeyVideoPreprocessed)) == true {
+		return
+	}
 	if common.DebugEnabled {
 		if len(args) > 0 {
 			msg = fmt.Sprintf(msg, args...)
@@ -100,6 +106,11 @@ func LogDebug(ctx context.Context, msg string, args ...any) {
 func logHelper(ctx context.Context, level string, msg string) {
 	var id any = "SYSTEM"
 	if ctx != nil {
+		// Upstream errors and sensitive-word checks can echo a prompt even
+		// outside debug mode. Retain correlation and severity, never that text.
+		if ctx.Value(string(constant.ContextKeyVideoPreprocessed)) == true {
+			msg = "video request diagnostic omitted; see structured request logs"
+		}
 		if requestID := ctx.Value(common.RequestIdKey); requestID != nil {
 			id = requestID
 		}

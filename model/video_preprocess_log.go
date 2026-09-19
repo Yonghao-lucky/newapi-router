@@ -84,19 +84,19 @@ type VideoPreprocessLogFilter struct {
 	ErrorCode     string `form:"error_code"`
 	Codec         string `form:"codec"`
 	MinDurationMS int64  `form:"min_duration_ms"`
-	MaxDurationMS int64  `form:"max_duration_ms"`
+	MaxDurationMS *int64 `form:"max_duration_ms"`
 	MinFrames     int    `form:"min_frames"`
-	MaxFrames     int    `form:"max_frames"`
+	MaxFrames     *int   `form:"max_frames"`
 }
 
 func (f VideoPreprocessLogFilter) Validate() error {
 	if f.StartTime < 1 || f.EndTime < f.StartTime || f.EndTime-f.StartTime > 90*24*3600 {
 		return errors.New("time range must be ordered and no longer than 90 days")
 	}
-	if f.UserID < 0 || f.MinDurationMS < 0 || f.MaxDurationMS < 0 || f.MinFrames < 0 || f.MaxFrames < 0 {
+	if f.UserID < 0 || f.MinDurationMS < 0 || (f.MaxDurationMS != nil && *f.MaxDurationMS < 0) || f.MinFrames < 0 || (f.MaxFrames != nil && *f.MaxFrames < 0) {
 		return errors.New("filter quantities must not be negative")
 	}
-	if f.MaxDurationMS > 0 && f.MinDurationMS > f.MaxDurationMS || f.MaxFrames > 0 && f.MinFrames > f.MaxFrames {
+	if f.MaxDurationMS != nil && f.MinDurationMS > *f.MaxDurationMS || f.MaxFrames != nil && f.MinFrames > *f.MaxFrames {
 		return errors.New("filter minimum must not exceed maximum")
 	}
 	if f.Status != "" && !slices.Contains([]string{"succeeded", "failed", "timed_out", "canceled", "rejected"}, f.Status) {
@@ -134,13 +134,13 @@ func videoPreprocessScope(ctx context.Context, f VideoPreprocessLogFilter) *gorm
 	if f.MinDurationMS > 0 {
 		tx = tx.Where("video_duration_ms >= ?", f.MinDurationMS)
 	}
-	if f.MaxDurationMS > 0 {
+	if f.MaxDurationMS != nil {
 		tx = tx.Where("video_duration_ms <= ?", f.MaxDurationMS)
 	}
 	if f.MinFrames > 0 {
 		tx = tx.Where("extracted_frames >= ?", f.MinFrames)
 	}
-	if f.MaxFrames > 0 {
+	if f.MaxFrames != nil {
 		tx = tx.Where("extracted_frames <= ?", f.MaxFrames)
 	}
 	return tx

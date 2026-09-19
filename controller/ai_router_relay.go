@@ -167,6 +167,12 @@ func runAIRouterRelay(
 	} else if routeCtx.StreamInterrupted {
 		errMsg = "stream interrupted"
 	}
+	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) {
+		if finalErr != nil {
+			errMsg = fmt.Sprintf("video relay failed with HTTP status %d", finalErr.StatusCode)
+		}
+		routeCtx.Demand.UnknownContentTypes = nil
+	}
 	ai_router.RecordTelemetry(routeCtx, relayInfo.UserId, group, success, errMsg)
 }
 

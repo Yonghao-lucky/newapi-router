@@ -67,10 +67,11 @@ func analyzeVideo(ctx context.Context, kept *ProcessVideoResult, cfg AnalysisCon
 	// the two live grayscale buffers below 2 * analysis_width squared bytes.
 	scale := min(1.0, float64(cfg.Width)/float64(max(width, height)))
 	width, height = max(1, int(float64(width)*scale)), max(1, int(float64(height)*scale))
-	filter := fmt.Sprintf("fps=%.9f:start_time=0,scale=%d:%d,format=gray", fps, width, height)
+	filter := fmt.Sprintf("fps=%.9f:start_time=0:round=up,scale=%d:%d,format=gray", fps, width, height)
 	cmd := exec.CommandContext(ctx, limits.FFmpegPath,
 		"-nostdin", "-hide_banner", "-v", "error", "-protocol_whitelist", "file,pipe",
 		"-threads", strconv.Itoa(limits.FFmpegThreads), "-filter_threads", "1",
+		"-max_pixels", strconv.FormatInt(limits.MaxPixels, 10), "-max_alloc", "268435456", "-err_detect", "explode",
 		"-i", kept.workspace.path("video.bin"), "-map", "0:v:0", "-an", "-sn", "-dn",
 		"-vf", filter, "-frames:v", strconv.Itoa(cfg.CandidateLimit), "-threads", "1",
 		"-f", "rawvideo", "-pix_fmt", "gray", "pipe:1")

@@ -87,6 +87,12 @@ func TestVideoPreprocessDatabase(t *testing.T) {
 			require.NoError(t, err)
 			assert.EqualValues(t, 2, total)
 			filter.UserID = 0
+			filter.MaxFrames = common.GetPointer(0)
+			filter.MaxDurationMS = common.GetPointer(int64(0))
+			_, total, err = GetVideoPreprocessLogs(context.Background(), filter, 1, 20)
+			require.NoError(t, err)
+			assert.EqualValues(t, 2, total, "explicit zero selects requests with no output frames or decoded duration")
+			filter.MaxFrames, filter.MaxDurationMS = nil, nil
 			detail, err := GetVideoPreprocessLog(context.Background(), rows[0].Id)
 			require.NoError(t, err)
 			assert.Equal(t, rows[0].Videos, detail.Videos)

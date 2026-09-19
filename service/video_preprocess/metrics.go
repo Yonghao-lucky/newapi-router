@@ -11,11 +11,12 @@ import (
 // layer reported. It carries no media health verdict — only the layer that runs
 // FFmpeg and ffprobe can make that claim, so the queue does not invent one.
 type RuntimeSnapshot struct {
-	RunningJobs      int   `json:"running_jobs"`
-	WaitingJobs      int   `json:"waiting_jobs"`
-	WaitingBytes     int64 `json:"waiting_bytes"`
-	ActiveFFmpeg     int   `json:"active_ffmpeg"`
-	TempStorageBytes int64 `json:"temp_storage_bytes"`
+	RunningJobs          int   `json:"running_jobs"`
+	WaitingJobs          int   `json:"waiting_jobs"`
+	WaitingBytes         int64 `json:"waiting_bytes"`
+	ActiveFFmpeg         int   `json:"active_ffmpeg"`
+	ActiveMediaProcesses int   `json:"active_media_processes"`
+	TempStorageBytes     int64 `json:"temp_storage_bytes"`
 	// TempStorageLimit is the caller-reported budget; zero means unreported.
 	TempStorageLimit int64 `json:"temp_storage_limit_bytes"`
 	// OldestWaitMillis is the age of the request at the head of the queue.

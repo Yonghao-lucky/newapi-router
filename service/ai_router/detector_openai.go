@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // detectorState accumulates modality evidence for a single request. It is
@@ -16,6 +18,9 @@ type detectorState struct {
 	unknownTypeSeen     map[string]struct{}
 	modelSeen           bool
 	videoFound          bool
+	inspectAll          bool
+	videoCount          int
+	imageCount          int
 }
 
 func newDetectorState() *detectorState {
@@ -30,7 +35,34 @@ func newDetectorState() *detectorState {
 // reached when the model name has not been seen yet, so the scan normally ends
 // at the video discriminator without touching the payload that follows it.
 func (state *detectorState) stop() bool {
-	return state.videoFound && state.modelSeen
+	return !state.inspectAll && state.videoFound && state.modelSeen
+}
+
+// ChatInspection retains routing metadata and media counts only. The full scan
+// is used before video admission; it validates model ambiguity and trailing JSON
+// while sharing the router's content vocabulary and traversal.
+type ChatInspection struct {
+	Demand         RouteDemand
+	VideoCount     int
+	ExistingImages int
+}
+
+func InspectChatRequest(body io.Reader) (ChatInspection, error) {
+	if body == nil {
+		return ChatInspection{}, errNilBody
+	}
+	state := newDetectorState()
+	state.inspectAll = true
+	decoder := common.NewJSONTokenDecoder(body)
+	if err := scanChatRequest(decoder, state); err != nil {
+		return ChatInspection{}, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return ChatInspection{}, fmt.Errorf("unexpected data after request")
+	}
+	demand := state.routeDemand()
+	demand.UnknownContentTypes = nil
+	return ChatInspection{Demand: demand, VideoCount: state.videoCount, ExistingImages: state.imageCount}, nil
 }
 
 // detectOpenAIChat scans a Chat Completions request and reports the routing
@@ -47,7 +79,7 @@ func detectOpenAIChat(body io.Reader) (RouteDemand, error) {
 	}
 
 	state := newDetectorState()
-	if err := scanChatRequest(json.NewDecoder(body), state); err != nil {
+	if err := scanChatRequest(common.NewJSONTokenDecoder(body), state); err != nil {
 		return RouteDemand{}, fmt.Errorf("invalid OpenAI Chat request: %w", err)
 	}
 	return state.routeDemand(), nil
@@ -55,7 +87,7 @@ func detectOpenAIChat(body io.Reader) (RouteDemand, error) {
 
 // scanChatRequest walks the top-level object. It returns as soon as the stop
 // condition holds, leaving any remainder of the body unread.
-func scanChatRequest(decoder *json.Decoder, state *detectorState) error {
+func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) error {
 	opening, err := decoder.Token()
 	if err != nil {
 		return err
@@ -64,6 +96,7 @@ func scanChatRequest(decoder *json.Decoder, state *detectorState) error {
 		return fmt.Errorf("expected top-level object")
 	}
 
+	messagesSeen := false
 	for decoder.More() {
 		key, err := decodeKey(decoder)
 		if err != nil {
@@ -71,6 +104,9 @@ func scanChatRequest(decoder *json.Decoder, state *detectorState) error {
 		}
 		switch key {
 		case "model":
+			if state.inspectAll && state.modelSeen {
+				return fmt.Errorf("model must be provided once")
+			}
 			value, err := decoder.Token()
 			if err != nil {
 				return err
@@ -78,6 +114,8 @@ func scanChatRequest(decoder *json.Decoder, state *detectorState) error {
 			if name, ok := value.(string); ok {
 				state.model = name
 				state.modelSeen = true
+			} else if state.inspectAll {
+				return fmt.Errorf("model must be a string")
 			}
 			if err := skipRemainder(decoder, value); err != nil {
 				return err
@@ -89,6 +127,10 @@ func scanChatRequest(decoder *json.Decoder, state *detectorState) error {
 			}
 			state.hasTools = state.hasTools || hasTools
 		case "messages":
+			if state.inspectAll && messagesSeen {
+				return fmt.Errorf("messages must be provided once")
+			}
+			messagesSeen = true
 			stopped, err := scanMessages(decoder, state)
 			if err != nil {
 				return err
@@ -109,7 +151,7 @@ func scanChatRequest(decoder *json.Decoder, state *detectorState) error {
 	return err
 }
 
-func scanMessages(decoder *json.Decoder, state *detectorState) (bool, error) {
+func scanMessages(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
 	opening, err := decoder.Token()
 	if err != nil {
 		return false, err
@@ -147,7 +189,8 @@ func scanMessages(decoder *json.Decoder, state *detectorState) (bool, error) {
 	return false, nil
 }
 
-func scanMessage(decoder *json.Decoder, state *detectorState) (bool, error) {
+func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
+	contentSeen := false
 	for decoder.More() {
 		key, err := decodeKey(decoder)
 		if err != nil {
@@ -155,6 +198,10 @@ func scanMessage(decoder *json.Decoder, state *detectorState) (bool, error) {
 		}
 		switch key {
 		case "content":
+			if state.inspectAll && contentSeen {
+				return false, fmt.Errorf("content must be provided once")
+			}
+			contentSeen = true
 			stopped, err := scanContent(decoder, state)
 			if err != nil {
 				return false, err
@@ -183,7 +230,7 @@ func scanMessage(decoder *json.Decoder, state *detectorState) (bool, error) {
 // scanContent inspects a message content value without retaining it. A plain
 // string is the text baseline; a list is walked part by part; anything else is
 // conservatively unknown.
-func scanContent(decoder *json.Decoder, state *detectorState) (bool, error) {
+func scanContent(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
 	value, err := decoder.Token()
 	if err != nil {
 		return false, err
@@ -206,7 +253,7 @@ func scanContent(decoder *json.Decoder, state *detectorState) (bool, error) {
 	}
 }
 
-func scanContentParts(decoder *json.Decoder, state *detectorState) (bool, error) {
+func scanContentParts(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
 	for decoder.More() {
 		part, err := decoder.Token()
 		if err != nil {
@@ -237,7 +284,7 @@ func scanContentParts(decoder *json.Decoder, state *detectorState) (bool, error)
 // scanContentPart reads only the discriminator field, so sibling fields such
 // as a base64 payload are not read unless the scan must continue to find the
 // model name. It reports whether the whole request scan can stop.
-func scanContentPart(decoder *json.Decoder, state *detectorState) (bool, error) {
+func scanContentPart(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
 	typeSeen := false
 	for decoder.More() {
 		key, err := decodeKey(decoder)
@@ -249,6 +296,9 @@ func scanContentPart(decoder *json.Decoder, state *detectorState) (bool, error) 
 				return false, err
 			}
 			continue
+		}
+		if state.inspectAll && typeSeen {
+			return false, fmt.Errorf("content type must be provided once")
 		}
 		typeSeen = true
 		value, err := decoder.Token()
@@ -263,7 +313,9 @@ func scanContentPart(decoder *json.Decoder, state *detectorState) (bool, error) 
 			// The model name is still unknown, so the scan must continue. Drain
 			// the rest of this part before moving on, otherwise the decoder
 			// would be left positioned inside the part.
-			return false, drainObject(decoder)
+			if !state.inspectAll {
+				return false, drainObject(decoder)
+			}
 		}
 		if err := skipRemainder(decoder, value); err != nil {
 			return false, err
@@ -280,7 +332,7 @@ func scanContentPart(decoder *json.Decoder, state *detectorState) (bool, error) 
 
 // scanTools reports whether a tools value is a non-empty array. Tool
 // definitions are skipped, never materialized.
-func scanTools(decoder *json.Decoder) (bool, error) {
+func scanTools(decoder *common.JSONTokenDecoder) (bool, error) {
 	value, err := decoder.Token()
 	if err != nil {
 		return false, err
@@ -304,7 +356,7 @@ func scanTools(decoder *json.Decoder) (bool, error) {
 	return hasTools, nil
 }
 
-func decodeKey(decoder *json.Decoder) (string, error) {
+func decodeKey(decoder *common.JSONTokenDecoder) (string, error) {
 	token, err := decoder.Token()
 	if err != nil {
 		return "", err
@@ -315,7 +367,7 @@ func decodeKey(decoder *json.Decoder) (string, error) {
 
 // drainObject consumes the remaining members and the closing brace of an
 // object whose opening brace has already been read.
-func drainObject(decoder *json.Decoder) error {
+func drainObject(decoder *common.JSONTokenDecoder) error {
 	for decoder.More() {
 		if err := skipValue(decoder); err != nil {
 			return err
@@ -326,17 +378,13 @@ func drainObject(decoder *json.Decoder) error {
 }
 
 // skipValue discards one complete JSON value.
-func skipValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	return skipRemainder(decoder, token)
+func skipValue(decoder *common.JSONTokenDecoder) error {
+	return decoder.Skip()
 }
 
 // skipRemainder discards the rest of a value whose first token has already been
 // consumed. Scalar first tokens are complete and need no further work.
-func skipRemainder(decoder *json.Decoder, first json.Token) error {
+func skipRemainder(decoder *common.JSONTokenDecoder, first json.Token) error {
 	if _, ok := first.(json.Delim); !ok {
 		return nil
 	}
@@ -363,10 +411,12 @@ func skipRemainder(decoder *json.Decoder, first json.Token) error {
 func (state *detectorState) observeContentType(contentType string) bool {
 	switch contentType {
 	case contentTypeVideoURL:
+		state.videoCount++
 		state.modality = ModalityVideo
 		state.videoFound = true
 		return true
 	case contentTypeImageURL, contentTypeImage, contentTypeInputImage:
+		state.imageCount++
 		if !state.videoFound {
 			state.modality = ModalityImage
 		}

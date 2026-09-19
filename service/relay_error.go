@@ -52,9 +52,14 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	if err == nil {
 		return
 	}
-	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode())))
+	description := err.MaskSensitiveErrorWithStatusCode()
+	videoRequest := common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed)
+	if videoRequest {
+		description = fmt.Sprintf("video relay failed with HTTP status %d", err.StatusCode)
+	}
+	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(description)))
 	if ShouldDisableChannel(err) && channelError.AutoBan {
-		reason := err.MaskSensitiveErrorWithStatusCode()
+		reason := description
 		gopool.Go(func() {
 			DisableChannel(channelError, reason)
 		})
@@ -72,6 +77,10 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		}
 		other.SetPublic("error_type", err.GetErrorType())
 		other.SetPublic("error_code", err.GetErrorCode())
+		if videoRequest {
+			other.SetPublic("error_type", "video_relay_error")
+			other.SetPublic("error_code", "upstream_error")
+		}
 		other.SetPublic("status_code", err.StatusCode)
 		AppendRelayLogAdminInfo(c, relayInfo, other)
 		AppendTaskPluginContextAuditInfo(c, other)
@@ -80,6 +89,6 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, description, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 }

@@ -3,6 +3,7 @@ package video_preprocess
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service/ai_router"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -41,18 +43,22 @@ type Processor struct {
 
 	// activeFFmpeg is the media layer's real-time subprocess gauge, merged
 	// into the queue's runtime snapshot.
-	activeFFmpeg atomic.Int64
+	activeFFmpeg  atomic.Int64
+	activeFFprobe atomic.Int64
 
 	// liveWorkspaces are the retained per-video workspaces of requests in
 	// flight, guarded by mu. They drive the temp storage gauge.
-	mu             sync.Mutex
-	liveWorkspaces map[*workspace]struct{}
+	mu                   sync.Mutex
+	liveWorkspaces       map[*workspace]struct{}
+	resourceMu           sync.Mutex
+	reservedStorageBytes int64
 }
 
 // NewProcessor builds the process-wide processor from the current settings.
 // Call SetConfig to publish a new settings generation; a running task keeps
 // the limits it was admitted with.
 func NewProcessor(cfg EngineConfig) (*Processor, error) {
+	cfg.Media = cfg.Media.withDefaults()
 	queue, err := NewQueue(cfg.Admission)
 	if err != nil {
 		return nil, err
@@ -69,6 +75,7 @@ func NewProcessor(cfg EngineConfig) (*Processor, error) {
 // asymmetric resize semantics: growth opens slots immediately, shrink never
 // kills a running task.
 func (p *Processor) SetConfig(cfg EngineConfig) error {
+	cfg.Media = cfg.Media.withDefaults()
 	if err := p.queue.SetLimits(cfg.Admission); err != nil {
 		return err
 	}
@@ -87,8 +94,14 @@ func (p *Processor) config() EngineConfig {
 
 // Snapshot returns the merged runtime snapshot of queue and media layer.
 func (p *Processor) Snapshot() RuntimeSnapshot {
-	return p.queue.Snapshot()
+	snapshot := p.queue.Snapshot()
+	snapshot.TempStorageBytes = p.actualTempBytes(p.config().Media.TempRoot)
+	snapshot.ActiveFFmpeg = int(p.activeFFmpeg.Load())
+	snapshot.ActiveMediaProcesses = snapshot.ActiveFFmpeg + int(p.activeFFprobe.Load())
+	return snapshot
 }
+
+func (p *Processor) Enabled() bool { return p.config().Enabled }
 
 // publishMediaCounters pushes the media layer's real-time counters into the
 // queue so a snapshot is one consistent view.
@@ -118,8 +131,9 @@ type ProcessInput struct {
 
 	// Ctx is the gin context whose body storage carries the request. When nil,
 	// Body is processed without any HTTP side effects (no BodyStorage install).
-	Ctx  *gin.Context
-	Body []byte
+	Ctx        *gin.Context
+	Body       []byte
+	Inspection *ai_router.ChatInspection
 }
 
 // Bypass reasons carried by a bypassed ProcessResult. They are part of the
@@ -250,6 +264,7 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 	// and callers can inject exact limits.
 	cfg := p.config()
 	cfg.Media.processChanged = p.recordFFmpeg
+	cfg.Media.probeChanged = func(delta int) { p.activeFFprobe.Add(int64(delta)) }
 
 	// Gate 1: the master switch. The body is deliberately not read — a
 	// disabled subsystem must cost a request nothing, not even a storage read.
@@ -262,33 +277,51 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 		return bypassResult(BypassReasonModelNotTarget), nil
 	}
 
-	body, ginCtx, ownGin, err := resolveBody(input)
-	if err != nil {
-		return nil, err
+	ginCtx := input.Ctx
+	var storage common.BodyStorage
+	var err error
+	if ginCtx != nil {
+		storage, err = common.GetBodyStorage(ginCtx)
+	} else {
+		storage, err = common.CreateBodyStorage(input.Body)
+		if err == nil {
+			defer storage.Close()
+		}
 	}
-	if len(body) == 0 {
+	input.Body = nil
+	if err != nil {
+		return nil, wrapError(CodeInvalidRequest, "failed to read request storage", err)
+	}
+	if storage.Size() == 0 {
 		return nil, newError(CodeInvalidRequest, "request body is empty")
 	}
-
-	// Stage 1: scan. Positions only, no payload retained.
-	layout, err := ScanChatRequest(body)
-	if err != nil {
-		return nil, err
+	inspection := input.Inspection
+	if inspection == nil {
+		reader, err := storage.NewReader()
+		if err != nil {
+			return nil, wrapError(CodeInvalidRequest, "failed to inspect request", err)
+		}
+		observed, scanErr := ai_router.InspectChatRequest(reader)
+		_ = reader.Close()
+		if scanErr != nil {
+			return nil, wrapError(CodeInvalidRequest, "invalid chat request", scanErr)
+		}
+		inspection = &observed
 	}
-	if len(layout.Videos) == 0 {
+	if inspection.VideoCount == 0 {
 		// A text or image-only request is not an error — it is exactly the
 		// traffic video preprocessing must leave alone. The caller routes it
 		// as usual; the BodyStorage keeps replaying the original body.
-		return bypassResultWithModality(BypassReasonNoVideo, layout), nil
+		return &ProcessResult{Bypassed: true, BypassReason: BypassReasonNoVideo, OriginalModality: string(inspection.Demand.Modality), EffectiveModality: string(inspection.Demand.Modality)}, nil
 	}
 
 	result := &ProcessResult{
 		OriginalModality:  "video",
 		EffectiveModality: "image",
-		VideoCount:        len(layout.Videos),
-		ExistingImages:    layout.ExistingImages,
+		VideoCount:        inspection.VideoCount,
+		ExistingImages:    inspection.ExistingImages,
 		SamplerVersion:    processorVersion,
-		OriginalBodyBytes: int64(len(body)),
+		OriginalBodyBytes: storage.Size(),
 	}
 
 	defer func() {
@@ -297,17 +330,25 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 	}()
 
 	// Request-level input limits before queueing.
-	if max := cfg.MaxVideosPerRequest; max > 0 && len(layout.Videos) > max {
+	if max := cfg.MaxVideosPerRequest; max > 0 && result.VideoCount > max {
 		return nil, newError(CodeTooLarge,
 			fmt.Sprintf("request carries %d videos, above the configured limit of %d",
-				len(layout.Videos), max))
+				result.VideoCount, max))
 	}
-	if max := cfg.Rewrite.MaxRequestBytes; max > 0 && int64(len(body)) > max {
+	if max := cfg.Rewrite.MaxRequestBytes; max > 0 && storage.Size() > max {
 		return nil, newError(CodeTooLarge, "request body exceeds the configured video preprocessing limit")
 	}
 
-	if cfg.Rewrite.MaxImagesPerRequest-layout.ExistingImages-cfg.ReserveImageSlots < len(layout.Videos)*cfg.Media.MinFramesPerVideo {
+	if cfg.Rewrite.MaxImagesPerRequest-result.ExistingImages-cfg.ReserveImageSlots < result.VideoCount*cfg.Media.MinFramesPerVideo {
 		return nil, newError(CodeImageLimitExceeded, "request does not leave the minimum image allowance for each video")
+	}
+	if err := p.spoolVideoBody(ctx, cfg, storage); err != nil {
+		return nil, err
+	}
+	if ginCtx != nil {
+		ginCtx.Set(common.KeyRequestBody, nil)
+		ginCtx.Request.Body = io.NopCloser(storage)
+		ginCtx.Request.GetBody = storage.NewReader
 	}
 
 	// Stage 2: admission. The queue parks metadata and the body handle only;
@@ -318,8 +359,8 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 		RequestID: requestIDOf(ginCtx),
 		UserID:    input.UserID,
 		Model:     input.Model,
-		BodyBytes: int64(len(body)),
-	}, body)
+		BodyBytes: storage.Size(),
+	}, storage)
 	result.QueueMS = time.Since(queueStart).Milliseconds()
 	if admitErr != nil {
 		return nil, admitErr
@@ -340,8 +381,29 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 	// Stages 3..6 run under the lease via Execute, which classifies stage
 	// failures, enforces the snapshotted job timeout and contains panics.
 	var rewriteResult *RewriteResult
+	var body []byte
+	var layout *RequestLayout
+	var releaseStorage func()
+	defer func() {
+		if releaseStorage != nil {
+			releaseStorage()
+		}
+	}()
 	execErr := p.queue.Execute(ctx, lease, func(stageCtx context.Context, stage JobStage) error {
 		switch stage {
+		case JobStageDecoding:
+			// Decoded bytes cannot exceed their original JSON body; all videos
+			// share the output budget. Reserve before creating any media files.
+			releaseStorage, err = p.reserveStorage(cfg, min(storage.Size(), int64(result.VideoCount)*cfg.Media.MaxDecodedVideoBytes)+cfg.Rewrite.MaxOutputImageBytes+cfg.Rewrite.MaxRewrittenBodyBytes)
+			if err != nil {
+				return err
+			}
+			body, err = storage.Bytes()
+			if err != nil {
+				return wrapError(CodeInvalidRequest, "failed to read admitted request", err)
+			}
+			layout, err = ScanChatRequest(body)
+			return err
 		case JobStageExporting:
 			if err := p.processVideos(stageCtx, cfg, layout, body, result); err != nil {
 				return err
@@ -371,7 +433,7 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 
 	// Stage 7: install. Building and validating the new storage happens before
 	// the swap, so a failure here leaves the original body replayable.
-	if ownGin {
+	if ginCtx != nil {
 		if _, err := InstallRewrittenBody(ginCtx, rewriteResult.Body); err != nil {
 			return nil, err
 		}
@@ -408,32 +470,6 @@ func (p *Processor) releaseResult(result *ProcessResult) {
 // model) use it: no modality is claimed because the body was not read.
 func bypassResult(reason string) *ProcessResult {
 	return &ProcessResult{Bypassed: true, BypassReason: reason}
-}
-
-// bypassResultWithModality builds the result for a scanned request that turned
-// out to carry no video: the observed modality is reported, the body stays
-// untouched.
-func bypassResultWithModality(reason string, layout *RequestLayout) *ProcessResult {
-	return &ProcessResult{
-		Bypassed:          true,
-		BypassReason:      reason,
-		OriginalModality:  modalityOf(layout),
-		EffectiveModality: modalityOf(layout),
-	}
-}
-
-// modalityOf names what a scanned request carries. The same terms the
-// processed path reports: "video" when videos exist, "image" for image-only
-// content, "text" otherwise.
-func modalityOf(layout *RequestLayout) string {
-	switch {
-	case len(layout.Videos) > 0:
-		return "video"
-	case layout.ExistingImages > 0:
-		return "image"
-	default:
-		return "text"
-	}
 }
 
 // processVideos probes every video, allocates the multi-video frame budget and
@@ -639,30 +675,6 @@ func cleanupProbed(p *Processor, probed []probedVideo) {
 		p.trackWorkspace(v.result.workspace, false)
 		_ = v.result.Cleanup()
 	}
-}
-
-// resolveBody extracts the request body and gin context from the input. The
-// returned body is the exact bytes the pipeline scans and rewrites; when the
-// caller supplied a gin context, its BodyStorage is read without consuming the
-// stream so the original stays replayable for later attempts.
-//
-// Storage failures are never swallowed: a closed or unreadable storage and a
-// request body above the gateway's size cap surface as errors the caller can
-// classify (common.IsRequestBodyTooLargeError and the storage sentinel
-// errors). Messages carry no path and no body content.
-func resolveBody(input ProcessInput) ([]byte, *gin.Context, bool, error) {
-	if input.Ctx != nil && input.Ctx.Request != nil {
-		storage, err := common.GetBodyStorage(input.Ctx)
-		if err != nil {
-			return nil, nil, false, wrapError(CodeInvalidRequest, "failed to read the request body storage", err)
-		}
-		body, err := storage.Bytes()
-		if err != nil {
-			return nil, nil, false, wrapError(CodeInvalidRequest, "failed to read the request body", err)
-		}
-		return body, input.Ctx, true, nil
-	}
-	return input.Body, nil, false, nil
 }
 
 // requestIDOf reports the request id for admission metadata, or an empty

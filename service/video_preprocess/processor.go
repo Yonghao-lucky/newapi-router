@@ -142,7 +142,7 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	if err != nil {
 		return result, err
 	}
-	result.DecodedBytes, err = decodeVideoDataURL(dataURL, videoFile, limits.MaxDecodedVideoBytes)
+	result.DecodedBytes, err = decodeVideoDataURL(ctx, dataURL, videoFile, limits.MaxDecodedVideoBytes)
 	if closeErr := videoFile.Close(); closeErr != nil && err == nil {
 		err = wrapError(CodeStorageFailed, "failed to close decoded video file", closeErr)
 	}
@@ -161,6 +161,9 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	sniffed := sniffContainer(head)
 	if sniffed == "" {
 		return result, newError(CodeUnsupportedFormat, "decoded video has no recognizable container magic")
+	}
+	if ((dataURL.mime == "video/mp4" || dataURL.mime == "video/quicktime") && sniffed != "mov") || (dataURL.mime == "video/webm" && sniffed != "matroska") {
+		return result, newError(CodeUnsupportedFormat, "video MIME type contradicts its container")
 	}
 
 	// Stage 3: Probe with ffprobe

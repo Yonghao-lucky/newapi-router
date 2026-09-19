@@ -144,8 +144,9 @@ func setupRelayRouterTestDB(t *testing.T) {
 // Uses the real router, authentication, distributor, Relay retry loops and
 // OpenAI adapter against two local HTTP upstreams. No relay hooks are mocked.
 func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
-	for _, aiRouter := range []bool{false, true} {
-		t.Run(fmt.Sprintf("ai_router=%t", aiRouter), func(t *testing.T) {
+	for _, tc := range []struct{ aiRouter, stream, fail bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false}, {false, false, true}, {true, false, true}} {
+		aiRouter := tc.aiRouter
+		t.Run(fmt.Sprintf("ai_router=%t/stream=%t/fail=%t", aiRouter, tc.stream, tc.fail), func(t *testing.T) {
 			for _, binary := range []string{"ffmpeg", "ffprobe"} {
 				if _, err := exec.LookPath(binary); err != nil {
 					t.Skipf("required media binary unavailable: %s", binary)
@@ -153,19 +154,32 @@ func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
 			}
 			setupRelayRouterTestDB(t)
 			require.NoError(t, i18n.Init())
-			require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Log{}, &model.UserSubscription{}))
+			require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Log{}, &model.UserSubscription{}, &model.AIRouterLog{}, &model.AIRouterAttemptLog{}))
 			previousCache, previousRetry := common.MemoryCacheEnabled, common.RetryTimes
 			previousPrice := ratio_setting.ModelPrice2JSONString()
 			previousPolicy := ai_router.GetTargetPolicySnapshot()
 			previousRouter := ai_router_setting.GetSettings()
 			previousLog := common.LogConsumeEnabled
-			common.LogConsumeEnabled = false
+			previousErrorLog := constant.ErrorLogEnabled
+			constant.ErrorLogEnabled = true
+			previousStreamingTimeout := constant.StreamingTimeout
+			constant.StreamingTimeout = 30
+			previousBatch, previousQuota := common.BatchUpdateEnabled, common.QuotaPerUnit
+			common.BatchUpdateEnabled, common.QuotaPerUnit = false, 500000
+			groups, err := common.Marshal(ratio_setting.GetGroupRatioCopy())
+			require.NoError(t, err)
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+			common.LogConsumeEnabled = true
 			common.MemoryCacheEnabled, common.RetryTimes = true, 1
-			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"kimi-k3":0}`))
-			require.NoError(t, ai_router_setting.Configure(map[string]string{"enabled": fmt.Sprint(aiRouter), "telemetry_enabled": "false", "max_attempts": "2"}))
+			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"kimi-k3":0.001}`))
+			require.NoError(t, ai_router_setting.Configure(map[string]string{"enabled": fmt.Sprint(aiRouter), "telemetry_enabled": "true", "max_attempts": "2"}))
 			service.InitHttpClient()
 			t.Cleanup(func() {
 				common.MemoryCacheEnabled, common.RetryTimes, common.LogConsumeEnabled = previousCache, previousRetry, previousLog
+				common.BatchUpdateEnabled, common.QuotaPerUnit = previousBatch, previousQuota
+				constant.StreamingTimeout = previousStreamingTimeout
+				constant.ErrorLogEnabled = previousErrorLog
+				require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(string(groups)))
 				require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrice))
 				ai_router.PublishTargetPolicySnapshot(previousPolicy)
 				require.NoError(t, ai_router_setting.Configure(map[string]string{"enabled": fmt.Sprint(previousRouter.Enabled), "telemetry_enabled": fmt.Sprint(previousRouter.TelemetryEnabled), "max_attempts": fmt.Sprint(previousRouter.MaxAttempts)}))
@@ -195,15 +209,22 @@ func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
 			data, err := os.ReadFile(videoPath)
 			require.NoError(t, err)
 			body := `{"model":"kimi-k3","max_tokens":10,"messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":"data:video/mp4;base64,` + base64.StdEncoding.EncodeToString(data) + `"}}]}]}`
+			if tc.stream {
+				body = strings.Replace(body, `"max_tokens":10`, `"max_tokens":10,"stream":true,"stream_options":{"include_usage":true}`, 1)
+			}
 			user := model.User{Username: "video-relay", Status: common.UserStatusEnabled, Group: "default", Quota: 1000000}
 			require.NoError(t, model.DB.Create(&user).Error)
-			require.NoError(t, model.DB.Create(&model.Token{UserId: user.Id, Key: "videorelaykey", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true}).Error)
+			token := model.Token{UserId: user.Id, Key: "videorelaykey", Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 1000000}
+			require.NoError(t, model.DB.Create(&token).Error)
 			var mu sync.Mutex
 			var bodies [][]byte
 			var channels []int
 			var candidates []ai_router.TargetPolicyCandidate
 			for index := range 2 {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var during model.User
+					assert.NoError(t, model.DB.First(&during, user.Id).Error)
+					assert.Equal(t, 999500, during.Quota, "one paid reservation shared by all attempts")
 					received, err := io.ReadAll(r.Body)
 					assert.NoError(t, err)
 					mu.Lock()
@@ -211,9 +232,15 @@ func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
 					channels = append(channels, index)
 					mu.Unlock()
 					w.Header().Set("Content-Type", "application/json")
-					if index == 0 {
+					if index == 0 || tc.fail {
 						w.WriteHeader(http.StatusTooManyRequests)
-						_, _ = io.WriteString(w, `{"error":{"message":"retry another channel","type":"rate_limit_error","code":"rate_limit"}}`)
+						_, _ = io.WriteString(w, `{"error":{"message":"SECRET_PROMPT data:image/jpeg;base64,SECRET_MEDIA","type":"SECRET_PROMPT","code":"SECRET_MEDIA"}}`)
+						return
+					}
+					if tc.stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-video\",\"object\":\"chat.completion.chunk\",\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"frames received\"},\"finish_reason\":null}]}\n\n")
+						_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-video\",\"object\":\"chat.completion.chunk\",\"model\":\"kimi-k3\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}\n\ndata: [DONE]\n\n")
 						return
 					}
 					_, _ = io.WriteString(w, `{"id":"chatcmpl-video","object":"chat.completion","model":"kimi-k3","choices":[{"index":0,"message":{"role":"assistant","content":"frames received"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`)
@@ -249,9 +276,46 @@ func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer videorelaykey")
 			req.Header.Set("Content-Type", "application/json")
 			engine.ServeHTTP(w, req)
-			require.Equal(t, 200, w.Code, w.Body.String())
-			assert.Contains(t, w.Body.String(), "frames received")
-			assert.Contains(t, w.Body.String(), `"total_tokens":15`)
+			if tc.fail {
+				require.Equal(t, 429, w.Code, w.Body.String())
+			} else {
+				require.Equal(t, 200, w.Code, w.Body.String())
+				assert.Contains(t, w.Body.String(), "frames received")
+				assert.Contains(t, w.Body.String(), `"total_tokens":15`)
+				if tc.stream {
+					assert.Contains(t, w.Header().Get("Content-Type"), "text/event-stream")
+					assert.Contains(t, w.Body.String(), "data: [DONE]")
+				}
+			}
+			expectedQuota, expectedUsed, expectedCount := 999500, 500, 1
+			if tc.fail {
+				expectedQuota, expectedUsed, expectedCount = 1000000, 0, 0
+			}
+			require.Eventually(t, func() bool {
+				var final model.User
+				var finalToken model.Token
+				return model.DB.First(&final, user.Id).Error == nil && model.DB.First(&finalToken, token.Id).Error == nil && final.Quota == expectedQuota && finalToken.RemainQuota == expectedQuota
+			}, 5*time.Second, time.Millisecond, "settlement or final-failure refund restores the exact wallet and token balances")
+			var final model.User
+			require.NoError(t, model.DB.First(&final, user.Id).Error)
+			assert.Equal(t, expectedUsed, final.UsedQuota)
+			assert.Equal(t, expectedCount, final.RequestCount)
+			var relayLogs []model.Log
+			require.NoError(t, model.LOG_DB.Where("user_id = ?", user.Id).Find(&relayLogs).Error)
+			require.Len(t, relayLogs, 2)
+			logJSON, err := common.Marshal(relayLogs)
+			require.NoError(t, err)
+			assert.NotContains(t, string(logJSON), "SECRET_")
+			if aiRouter {
+				var logs []model.AIRouterLog
+				require.Eventually(t, func() bool { return model.DB.Where("user_id = ?", user.Id).Find(&logs).Error == nil && len(logs) == 1 }, 5*time.Second, time.Millisecond)
+				assert.NotContains(t, logs[0].ErrorMessage, "SECRET_")
+				var attempts int64
+				require.Eventually(t, func() bool {
+					return model.DB.Model(&model.AIRouterAttemptLog{}).Where("request_log_id = ?", logs[0].Id).Count(&attempts).Error == nil && attempts == 2
+				}, 5*time.Second, time.Millisecond)
+			}
+
 			mu.Lock()
 			defer mu.Unlock()
 			require.Equal(t, []int{0, 1}, channels)

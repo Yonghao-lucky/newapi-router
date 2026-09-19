@@ -2,6 +2,8 @@ package video_preprocess
 
 import (
 	"io"
+	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -82,6 +84,13 @@ func InstallRewrittenBody(c *gin.Context, body []byte) (*InstalledBody, error) {
 	c.Set(common.KeyRequestBody, nil)
 	c.Request.Body = io.NopCloser(newStorage)
 	c.Request.ContentLength = size
+	c.Request.GetBody = newStorage.NewReader
+	c.Request.TransferEncoding = nil
+	if c.Request.Header == nil {
+		c.Request.Header = make(http.Header)
+	}
+	c.Request.Header.Del("Transfer-Encoding")
+	c.Request.Header.Set("Content-Length", strconv.FormatInt(size, 10))
 
 	if hasPrevious && previous != newStorage {
 		_ = previous.Close()

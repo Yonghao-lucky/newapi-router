@@ -1,6 +1,7 @@
 package video_preprocess
 
 import (
+	"context"
 	"encoding/base64"
 	"io"
 	"os"
@@ -37,7 +38,8 @@ type videoDataURL struct {
 // decoding anything.
 func (u videoDataURL) SizeHint() int64 {
 	if u.padded {
-		return int64(base64.StdEncoding.DecodedLen(len(u.payload)))
+		padding := len(u.payload) - len(strings.TrimRight(u.payload, "="))
+		return int64(base64.StdEncoding.DecodedLen(len(u.payload)) - padding)
 	}
 	return int64(base64.StdEncoding.WithPadding(base64.NoPadding).DecodedLen(len(u.payload)))
 }
@@ -58,10 +60,6 @@ func parseVideoDataURL(raw string, allowedMIMEs []string) (videoDataURL, int64, 
 		return videoDataURL{}, 0, newError(CodeInvalidDataURL, "video url is empty")
 	}
 	if !strings.HasPrefix(raw, "data:") {
-		if idx := strings.Index(raw, ":"); idx > 0 && !strings.ContainsAny(raw[:idx], "/ \t\n\"'") {
-			return videoDataURL{}, 0, newError(CodeInvalidDataURL,
-				"only base64 data URLs are supported, got scheme "+strings.ToLower(raw[:idx]))
-		}
 		return videoDataURL{}, 0, newError(CodeInvalidDataURL, "video url is not a data URL")
 	}
 
@@ -102,7 +100,7 @@ func parseVideoDataURL(raw string, allowedMIMEs []string) (videoDataURL, int64, 
 	// A non-base64 parameter such as "charset=utf-8" on a video data URL is a
 	// sign the payload is not what it claims to be.
 	if parameter != "" {
-		return videoDataURL{}, 0, newError(CodeInvalidDataURL, "unsupported data URL parameter "+parameter)
+		return videoDataURL{}, 0, newError(CodeInvalidDataURL, "unsupported data URL parameter")
 	}
 
 	mime := strings.ToLower(strings.TrimSpace(mediaType))
@@ -114,7 +112,7 @@ func parseVideoDataURL(raw string, allowedMIMEs []string) (videoDataURL, int64, 
 		return videoDataURL{}, 0, newError(CodeUnsupportedFormat, "data URL media type is not a video type")
 	}
 	if len(allowedMIMEs) > 0 && !containsFold(allowedMIMEs, mime) {
-		return videoDataURL{}, 0, newError(CodeUnsupportedFormat, "video type "+mime+" is not enabled")
+		return videoDataURL{}, 0, newError(CodeUnsupportedFormat, "video MIME type is not enabled")
 	}
 
 	u := videoDataURL{mime: mime, parameter: parameter, payload: payload}
@@ -139,7 +137,7 @@ func parseVideoDataURL(raw string, allowedMIMEs []string) (videoDataURL, int64, 
 //
 // It returns video_too_large as soon as the bound is crossed, before the
 // offending block is written.
-func decodeVideoDataURL(u videoDataURL, dst io.Writer, maxBytes int64) (int64, error) {
+func decodeVideoDataURL(ctx context.Context, u videoDataURL, dst io.Writer, maxBytes int64) (int64, error) {
 	if hint := u.SizeHint(); hint > maxBytes {
 		return 0, newError(CodeTooLarge, "decoded video exceeds the decoded size limit")
 	}
@@ -152,6 +150,9 @@ func decodeVideoDataURL(u videoDataURL, dst io.Writer, maxBytes int64) (int64, e
 		buf     = make([]byte, base64.StdEncoding.DecodedLen(blockChars)+4)
 	)
 	for len(payload) > 0 {
+		if err := timeoutOrCancel(ctx); err != nil {
+			return written, err
+		}
 		take := min(blockChars, len(payload))
 		// Never split a base64 quantum across blocks.
 		if take < len(payload) && take%4 != 0 {
@@ -169,9 +170,12 @@ func decodeVideoDataURL(u videoDataURL, dst io.Writer, maxBytes int64) (int64, e
 			return written, newError(CodeInvalidBase64, "base64 padding appears before the end of the payload")
 		}
 
-		decoder := base64.StdEncoding.WithPadding(base64.NoPadding)
-		if len(payload) == 0 {
-			decoder = base64.StdEncoding
+		if strings.ContainsAny(chunk, "\r\n") {
+			return written, newError(CodeInvalidBase64, "video payload is not canonical base64")
+		}
+		decoder := base64.RawStdEncoding.Strict()
+		if len(payload) == 0 && u.padded {
+			decoder = base64.StdEncoding.Strict()
 		}
 		n, err := decoder.Decode(buf, []byte(chunk))
 		if err != nil {
@@ -180,7 +184,11 @@ func decodeVideoDataURL(u videoDataURL, dst io.Writer, maxBytes int64) (int64, e
 		if written+int64(n) > maxBytes {
 			return written, newError(CodeTooLarge, "decoded video exceeds the decoded size limit")
 		}
-		if _, err := dst.Write(buf[:n]); err != nil {
+		count, err := dst.Write(buf[:n])
+		if err == nil && count != n {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
 			return written, wrapError(CodeStorageFailed, "failed to write the decoded video", err)
 		}
 		written += int64(n)

@@ -2,11 +2,13 @@ package middleware
 
 import (
 	"errors"
+	"io"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/service/video_preprocess"
 
 	"github.com/gin-gonic/gin"
@@ -29,11 +31,14 @@ func VideoPreprocess() gin.HandlerFunc {
 			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidConfig})
 			return
 		}
+		if !processor.Enabled() {
+			return
+		}
 
 		// Extract model from request body. This must happen before calling
 		// Processor, because no middleware before VideoPreprocess sets
 		// ContextKeyOriginalModel.
-		modelRequest, err := getModelFromJSONBody(c)
+		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			code := video_preprocess.CodeInvalidRequest
 			if errors.Is(err, common.ErrRequestBodyTooLarge) || common.IsRequestBodyTooLargeError(err) {
@@ -42,22 +47,26 @@ func VideoPreprocess() gin.HandlerFunc {
 			handleVideoPreprocessError(c, &video_preprocess.Error{Code: code})
 			return
 		}
-		model := ""
-		if modelRequest != nil {
-			model = modelRequest.Model
-		}
-
-		if model == "" {
+		reader, err := storage.NewReader()
+		if err != nil {
 			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidRequest})
 			return
 		}
+		inspection, err := ai_router.InspectChatRequest(reader)
+		_ = reader.Close()
+		if err != nil || inspection.Demand.Model == "" {
+			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidRequest})
+			return
+		}
+		c.Request.Body = io.NopCloser(storage)
 
 		userID := c.GetInt(string(constant.ContextKeyUserId))
 
 		result, err := processor.Process(c.Request.Context(), video_preprocess.ProcessInput{
-			UserID: userID,
-			Model:  model,
-			Ctx:    c,
+			UserID:     userID,
+			Model:      inspection.Demand.Model,
+			Ctx:        c,
+			Inspection: &inspection,
 		})
 
 		if err != nil {

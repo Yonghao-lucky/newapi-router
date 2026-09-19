@@ -368,6 +368,8 @@ func TestInstallRewrittenBodyReplacesStorage(t *testing.T) {
 		original, err := common.GetBodyStorage(c)
 		require.NoError(t, err)
 
+		c.Request.TransferEncoding = []string{"chunked"}
+		c.Request.Header.Set("Transfer-Encoding", "chunked")
 		rewritten := rewriteBody(t, textAndVideoBody, []FrameSet{frameSet(1, frame(0, jpegBytes("A")))})
 
 		installed, err := InstallRewrittenBody(c, rewritten.Body)
@@ -382,13 +384,16 @@ func TestInstallRewrittenBodyReplacesStorage(t *testing.T) {
 		// Every subsequent read goes through the installed storage: the AI
 		// Router detector, the relays and provider attempts all replay it.
 		for i := range 3 {
-			reader, readerErr := installed.Storage().NewReader()
+			reader, readerErr := c.Request.GetBody()
 			require.NoError(t, readerErr)
 			raw, readErr := io.ReadAll(reader)
 			require.NoError(t, readErr)
 			reader.Close()
 			assert.Equal(t, rewritten.Body, raw, "replay %d", i)
 		}
+		assert.Empty(t, c.Request.TransferEncoding)
+		assert.Empty(t, c.Request.Header.Get("Transfer-Encoding"))
+		assert.Equal(t, strconv.Itoa(len(rewritten.Body)), c.Request.Header.Get("Content-Length"))
 
 		stored, err := common.GetBodyStorage(c)
 		require.NoError(t, err)

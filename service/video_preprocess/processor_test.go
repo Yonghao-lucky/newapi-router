@@ -118,7 +118,7 @@ func TestDecodeVideoDataURL(t *testing.T) {
 
 	t.Run("decode within limit", func(t *testing.T) {
 		var buf strings.Builder
-		written, err := decodeVideoDataURL(dataURL, &buf, 1024)
+		written, err := decodeVideoDataURL(context.Background(), dataURL, &buf, 1024)
 		if err != nil {
 			t.Fatalf("decode failed: %v", err)
 		}
@@ -132,7 +132,7 @@ func TestDecodeVideoDataURL(t *testing.T) {
 
 	t.Run("reject oversized payload", func(t *testing.T) {
 		var buf strings.Builder
-		_, err := decodeVideoDataURL(dataURL, &buf, 10)
+		_, err := decodeVideoDataURL(context.Background(), dataURL, &buf, 10)
 		if CodeOf(err) != CodeTooLarge {
 			t.Errorf("got error %v, want CodeTooLarge", err)
 		}
@@ -257,6 +257,8 @@ func TestCleanupStale(t *testing.T) {
 	defer ws1.Cleanup()
 	defer ws2.Cleanup()
 
+	// Simulate a crashed owner; a live workspace remains locked.
+	_ = ws1.lock.Close()
 	// Age one workspace
 	oldTime := time.Now().Add(-2 * time.Hour)
 	_ = os.Chtimes(ws1.dir, oldTime, oldTime)
