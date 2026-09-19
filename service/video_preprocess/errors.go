@@ -311,14 +311,51 @@ func HTTPStatusForError(err error) int {
 		return http.StatusTooManyRequests
 	}
 
-	status, _ := StatusForError(err)
-	switch status {
-	case JobStatusCanceled:
-		return 499
-	case JobStatusTimedOut:
+	// Map by stable error code for all non-admission errors
+	code := CodeOf(err)
+	switch code {
+	// 400 Bad Request: client input errors
+	case CodeInvalidRequest, CodeInvalidDataURL, CodeInvalidBase64,
+		CodeUnsupportedFormat, CodeInvalidConfig:
+		return http.StatusBadRequest
+
+	// 413 Request Entity Too Large: size/length limits
+	case CodeTooLarge, CodeTooLong, CodeResolutionExceeded,
+		CodeImageLimitExceeded, CodeOutputTooLarge:
+		return http.StatusRequestEntityTooLarge
+
+	// 429 Too Many Requests: queue admission rejections
+	case CodeQueueFull, CodeQueueBytes, CodeUserLimit, CodeEstimatedWait:
+		return http.StatusTooManyRequests
+
+	// 503 Service Unavailable: temporary resource exhaustion
+	case CodeStorageExhausted, CodeDiskStorageExhausted:
+		return http.StatusServiceUnavailable
+
+	// 408 Request Timeout: job timed out
+	case CodeProcessingTimeout, CodeQueueTimeout:
 		return http.StatusRequestTimeout
-	default:
+
+	// 499 Client Closed Request: canceled by caller
+	case CodeProcessingCanceled:
+		return 499
+
+	// 500 Internal Server Error: media pipeline failures
+	case CodeProbeFailed, CodeDecodeFailed, CodeExportFailed,
+		CodeStorageFailed, CodeRewriteFailed, CodeProcessingFailed, CodeInternal:
 		return http.StatusInternalServerError
+
+	default:
+		// Fallback based on job status for unknown codes
+		status, _ := StatusForError(err)
+		switch status {
+		case JobStatusCanceled:
+			return 499
+		case JobStatusTimedOut:
+			return http.StatusRequestTimeout
+		default:
+			return http.StatusInternalServerError
+		}
 	}
 }
 
