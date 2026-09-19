@@ -70,3 +70,17 @@ func TestTelemetryErrorLog(t *testing.T) {
 		t.Errorf("ttft_ms = %d, want 0 for non-streaming", log.TTFTMs)
 	}
 }
+
+func TestTelemetryUsesIndependentLogModality(t *testing.T) {
+	rc := NewRouteContext(RouteDemand{Model: "m", Modality: ModalityImage}, 1)
+	rc.LogModality = ModalityVideo
+
+	log := buildLogEntry(rc, 1, "default", true, "")
+
+	if rc.Demand.Modality != ModalityImage {
+		t.Errorf("routing modality = %s, want image", rc.Demand.Modality)
+	}
+	if log.Modality != "video" {
+		t.Errorf("log modality = %s, want video", log.Modality)
+	}
+}

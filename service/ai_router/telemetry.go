@@ -57,7 +57,7 @@ func buildLogEntry(rc *RouteContext, userID int, group string, success bool, err
 		UserId:           userID,
 		GroupId:          group,
 		Model:            rc.Demand.Model,
-		Modality:         string(rc.Demand.Modality),
+		Modality:         string(rc.LogModality),
 		HasTools:         rc.Demand.HasTools,
 		UnknownTypes:     string(unknownTypesJSON),
 		Attempts:         rc.CurrentAttempt,

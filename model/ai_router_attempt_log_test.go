@@ -42,7 +42,7 @@ func TestAIRouterAttemptChannelStatsGroupsByCategory(t *testing.T) {
 	}
 	require.NoError(t, InsertAIRouterAttemptLogs(logs))
 
-	stats, err := GetAIRouterAttemptChannelStats(0, 0, "", "")
+	stats, err := GetAIRouterAttemptChannelStats(0, 0, "", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, stats, 2)
 
@@ -62,7 +62,7 @@ func TestAIRouterAttemptChannelStatsGroupsByCategory(t *testing.T) {
 	require.Equal(t, int64(150), s5.TotalDurationMs)
 
 	// Time-window filtering excludes everything before start.
-	limited, err := GetAIRouterAttemptChannelStats(1726500002, 0, "", "")
+	limited, err := GetAIRouterAttemptChannelStats(1726500002, 0, "", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, limited, 1)
 	require.Equal(t, int64(2), limited[5].Attempts)
@@ -93,7 +93,6 @@ func int64Ptr(v int64) *int64 {
 	return &v
 }
 
-
 // Narrowing the dashboard to one model must narrow the per-attempt channel
 // aggregates too: channel 7 only ever appears under model m2.
 func TestGetAIRouterAttemptChannelStatsScopesByModelAndGroup(t *testing.T) {
@@ -110,24 +109,24 @@ func TestGetAIRouterAttemptChannelStatsScopesByModelAndGroup(t *testing.T) {
 		{RequestLogId: m2.Id, ChannelId: 7, ErrorCategory: AttemptErrorCategory5xx, DurationMs: 50, CreatedAt: 1726500002},
 	}))
 
-	all, err := GetAIRouterAttemptChannelStats(0, 0, "", "")
+	all, err := GetAIRouterAttemptChannelStats(0, 0, "", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, all, 3)
 
-	m1Channels, err := GetAIRouterAttemptChannelStats(0, 0, "m1", "")
+	m1Channels, err := GetAIRouterAttemptChannelStats(0, 0, "m1", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, m1Channels, 2, "only m1 attempt rows are in scope")
 	require.Nil(t, m1Channels[7])
 	require.Equal(t, int64(1), m1Channels[4].Count429)
 	require.Equal(t, int64(1), m1Channels[5].SuccessCount)
 
-	g2Channels, err := GetAIRouterAttemptChannelStats(0, 0, "", "g2")
+	g2Channels, err := GetAIRouterAttemptChannelStats(0, 0, "", "g2", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, g2Channels, 1)
 	require.Equal(t, int64(1), g2Channels[7].Count5xx)
 
 	// Time bounds still apply alongside the model filter.
-	late, err := GetAIRouterAttemptChannelStats(1726500002, 0, "m1", "")
+	late, err := GetAIRouterAttemptChannelStats(1726500002, 0, "m1", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Empty(t, late)
 }

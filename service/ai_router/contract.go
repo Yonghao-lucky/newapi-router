@@ -81,8 +81,11 @@ type AttemptRecord struct {
 // RouteContext carries per-request routing state.
 // It must never be shared across requests.
 type RouteContext struct {
-	RequestID         string
-	Demand            RouteDemand
+	RequestID string
+	Demand    RouteDemand
+	// LogModality is the client-visible modality persisted by telemetry.
+	// Routing continues to use Demand.Modality independently.
+	LogModality       Modality
 	Constraints       ChannelRouteConstraints
 	MaxAttempts       int
 	AttemptedChannels map[int]bool
@@ -111,6 +114,7 @@ func NewRouteContext(demand RouteDemand, maxAttempts int) *RouteContext {
 	}
 	return &RouteContext{
 		Demand:            demand,
+		LogModality:       demand.Modality,
 		MaxAttempts:       maxAttempts,
 		AttemptedChannels: make(map[int]bool),
 		StartedAt:         timeNowUnixNano(),

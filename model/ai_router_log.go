@@ -193,9 +193,37 @@ type AIRouterChannelStat struct {
 	TTFTSamples    int64   `json:"-"`
 }
 
+type AIRouterRequestCategory string
+
+const (
+	AIRouterRequestCategoryAll       AIRouterRequestCategory = "all"
+	AIRouterRequestCategoryVideo     AIRouterRequestCategory = "video"
+	AIRouterRequestCategoryTextImage AIRouterRequestCategory = "text_image"
+)
+
+func (category AIRouterRequestCategory) Valid() bool {
+	switch category {
+	case AIRouterRequestCategoryAll, AIRouterRequestCategoryVideo, AIRouterRequestCategoryTextImage:
+		return true
+	default:
+		return false
+	}
+}
+
+func applyAIRouterRequestCategory(tx *gorm.DB, category AIRouterRequestCategory) *gorm.DB {
+	switch category {
+	case AIRouterRequestCategoryVideo:
+		return tx.Where("modality = ?", "video")
+	case AIRouterRequestCategoryTextImage:
+		return tx.Where("modality IN ?", []string{"text", "image"})
+	default:
+		return tx
+	}
+}
+
 // airRouterLogScope builds a fresh query with the shared time/model/group
 // filters applied.
-func airRouterLogScope(startTime, endTime int64, modelName, groupID string) *gorm.DB {
+func airRouterLogScope(startTime, endTime int64, modelName, groupID string, requestCategory AIRouterRequestCategory) *gorm.DB {
 	tx := DB.Model(&AIRouterLog{})
 	if startTime > 0 {
 		tx = tx.Where("created_at >= ?", startTime)
@@ -209,7 +237,7 @@ func airRouterLogScope(startTime, endTime int64, modelName, groupID string) *gor
 	if groupID != "" {
 		tx = tx.Where("group_id = ?", groupID)
 	}
-	return tx
+	return applyAIRouterRequestCategory(tx, requestCategory)
 }
 
 // timeBucketSeconds picks a bucket size that keeps the trend chart at a few
@@ -232,20 +260,8 @@ func timeBucketSeconds(startTime, endTime int64) int64 {
 }
 
 // GetAIRouterStats computes basic aggregate statistics for a time range.
-func GetAIRouterStats(startTime, endTime int64, modelName, groupID string) (*AIRouterStats, error) {
-	tx := DB.Model(&AIRouterLog{})
-	if startTime > 0 {
-		tx = tx.Where("created_at >= ?", startTime)
-	}
-	if endTime > 0 {
-		tx = tx.Where("created_at <= ?", endTime)
-	}
-	if modelName != "" {
-		tx = tx.Where("model = ?", modelName)
-	}
-	if groupID != "" {
-		tx = tx.Where("group_id = ?", groupID)
-	}
+func GetAIRouterStats(startTime, endTime int64, modelName, groupID string, requestCategory AIRouterRequestCategory) (*AIRouterStats, error) {
+	tx := airRouterLogScope(startTime, endTime, modelName, groupID, requestCategory)
 
 	var stats AIRouterStats
 	stats.ByModality = make(map[string]int64)
@@ -300,13 +316,13 @@ func GetAIRouterStats(startTime, endTime int64, modelName, groupID string) (*AIR
 // success/failure trend chart. Bucketing happens in Go: integer division on
 // created_at is portable, but MySQL's `/` yields a DECIMAL while SQLite's is
 // an integer, so SQL-side bucketing diverges between dialects.
-func GetAIRouterTrend(startTime, endTime int64, modelName, groupID string) ([]AIRouterTrendPoint, error) {
+func GetAIRouterTrend(startTime, endTime int64, modelName, groupID string, requestCategory AIRouterRequestCategory) ([]AIRouterTrendPoint, error) {
 	bucket := timeBucketSeconds(startTime, endTime)
 	var rows []struct {
 		CreatedAt int64 `json:"created_at"`
 		Success   bool  `json:"success"`
 	}
-	if err := airRouterLogScope(startTime, endTime, modelName, groupID).
+	if err := airRouterLogScope(startTime, endTime, modelName, groupID, requestCategory).
 		Select("created_at, success").
 		Order("created_at ASC").
 		Scan(&rows).Error; err != nil {
@@ -336,9 +352,9 @@ func GetAIRouterTrend(startTime, endTime int64, modelName, groupID string) ([]AI
 // chains. Channels are read from the selected_channels JSON arrays; final
 // attribution comes from final_channel_id. The per-channel aggregates are
 // computed in Go because portable SQL cannot parse the JSON array portably.
-func GetAIRouterChannelStats(startTime, endTime int64, modelName, groupID string) ([]AIRouterChannelStat, error) {
+func GetAIRouterChannelStats(startTime, endTime int64, modelName, groupID string, requestCategory AIRouterRequestCategory) ([]AIRouterChannelStat, error) {
 	var rows []AIRouterLog
-	if err := airRouterLogScope(startTime, endTime, modelName, groupID).
+	if err := airRouterLogScope(startTime, endTime, modelName, groupID, requestCategory).
 		Select("selected_channels, final_channel_id, success, total_duration_ms, ttft_ms").
 		Find(&rows).Error; err != nil {
 		return nil, err

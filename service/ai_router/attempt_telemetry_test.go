@@ -109,6 +109,34 @@ func TestAttemptRecordsFallbackAcrossChannels(t *testing.T) {
 	}
 }
 
+func TestAttemptRecordsUseIndependentLogModality(t *testing.T) {
+	chs := []RouterChannel{
+		{ID: 1, Priority: 100, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsImage: ptr(true)}},
+	}
+	settings := ai_router_setting.DefaultSettings()
+	settings.MaxAttempts = 1
+	rc := NewRouteContext(RouteDemand{Model: "kimi-k3", Modality: ModalityImage}, settings.MaxAttempts)
+	rc.LogModality = ModalityVideo
+
+	relayErr := RunFallbackLoop(rc, chs, "default", settings, func() *types.NewAPIError {
+		rc.LastCall = &AttemptCall{ChannelName: "image-channel", DurationMs: 10}
+		return nil
+	})
+
+	if relayErr != nil {
+		t.Fatalf("image routing failed: %v", relayErr)
+	}
+	if rc.Demand.Modality != ModalityImage {
+		t.Errorf("routing modality = %s, want image", rc.Demand.Modality)
+	}
+	if len(rc.AttemptRecords) != 1 {
+		t.Fatalf("attempt records = %d, want 1", len(rc.AttemptRecords))
+	}
+	if rc.AttemptRecords[0].Modality != "video" {
+		t.Errorf("attempt modality = %s, want video", rc.AttemptRecords[0].Modality)
+	}
+}
+
 // First event arrived, then the stream died: the call is classified as
 // stream_interrupted with success=false — even when the relay returned nil
 // (interrupted flag from StreamStatus) and even when the transport error

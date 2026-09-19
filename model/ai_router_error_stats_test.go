@@ -27,7 +27,7 @@ func TestGetAIRouterErrorDistribution(t *testing.T) {
 		{RequestLogId: summary2.Id, ChannelId: 7, ErrorCategory: AttemptErrorCategory5xx, HttpStatusCode: intPtrM(500), DurationMs: 50, CreatedAt: 1726500004},
 	}))
 
-	all, err := GetAIRouterErrorDistribution(0, 0, "", "")
+	all, err := GetAIRouterErrorDistribution(0, 0, "", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Equal(t, []AIRouterErrorCategoryStat{
 		{ErrorCategory: AttemptErrorCategory5xx, Count: 2},
@@ -40,7 +40,7 @@ func TestGetAIRouterErrorDistribution(t *testing.T) {
 		{HttpStatusCode: 503, Count: 1},
 	}, all.ByStatusCode, "status chart orders ascending and skips NULL statuses")
 
-	scoped, err := GetAIRouterErrorDistribution(0, 0, "m1", "")
+	scoped, err := GetAIRouterErrorDistribution(0, 0, "m1", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Equal(t, []AIRouterErrorCategoryStat{
 		{ErrorCategory: AttemptErrorCategory429, Count: 1},
@@ -52,19 +52,19 @@ func TestGetAIRouterErrorDistribution(t *testing.T) {
 		{HttpStatusCode: 503, Count: 1},
 	}, scoped.ByStatusCode)
 
-	byGroup, err := GetAIRouterErrorDistribution(0, 0, "", "g2")
+	byGroup, err := GetAIRouterErrorDistribution(0, 0, "", "g2", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Equal(t, []AIRouterErrorCategoryStat{{ErrorCategory: AttemptErrorCategory5xx, Count: 1}}, byGroup.ByCategory)
 
 	// Unknown model: no bars, no error.
-	none, err := GetAIRouterErrorDistribution(0, 0, "nope", "")
+	none, err := GetAIRouterErrorDistribution(0, 0, "nope", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Empty(t, none.ByCategory)
 	require.Empty(t, none.ByStatusCode)
 
 	// The same scope must apply to the channel table: channel 7 only exists
 	// under m2, so an m1-filtered aggregate cannot see it.
-	m1Channels, err := GetAIRouterAttemptChannelStats(0, 0, "m1", "")
+	m1Channels, err := GetAIRouterAttemptChannelStats(0, 0, "m1", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, m1Channels, 3)
 	require.Nil(t, m1Channels[7])

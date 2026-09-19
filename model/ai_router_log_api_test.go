@@ -148,14 +148,14 @@ func TestAIRouterStatsFallbackRateAndAttemptConsistency(t *testing.T) {
 	})
 	_ = logB
 
-	stats, err := GetAIRouterStats(0, 0, "", "")
+	stats, err := GetAIRouterStats(0, 0, "", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), stats.TotalRequests)
 	require.Equal(t, int64(1), stats.FallbackCount)
 	require.InDelta(t, 0.5, stats.FallbackRate, 0.0001)
 
 	// Attempt ledger is self-consistent: per-channel sums equal totals.
-	attemptStats, err := GetAIRouterAttemptChannelStats(0, 0, "", "")
+	attemptStats, err := GetAIRouterAttemptChannelStats(0, 0, "", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	var totalAttempts, sumByChannel int64
 	for _, s := range attemptStats {

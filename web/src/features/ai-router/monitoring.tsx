@@ -18,27 +18,34 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { VChart } from '@visactor/react-vchart'
+import dayjs from 'dayjs'
 import { CheckCircle2, RefreshCw, Timer } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import dayjs from 'dayjs'
 
+import { StaticDataTable } from '@/components/data-table'
 import { ErrorState } from '@/components/error-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { StaticDataTable } from '@/components/data-table'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { StatCard } from '@/features/dashboard/components/ui/stat-card'
+import { CompactDateTimeRangePicker } from '@/features/usage-logs/components/compact-date-time-range-picker'
 import { useChartTheme } from '@/lib/use-chart-theme'
 import { VCHART_OPTION } from '@/lib/vchart'
 
-import { getAIRouterChannelStats, getAIRouterErrorStats, getAIRouterStats, getAIRouterTrend } from './api'
+import {
+  getAIRouterChannelStats,
+  getAIRouterErrorStats,
+  getAIRouterStats,
+  getAIRouterTrend,
+  type AIRouterRequestCategory,
+} from './api'
+import { ErrorCharts } from './components/error-charts'
 import { AI_ROUTER_QUERY_KEYS } from './constants'
 import type { AIRouterChannelStat, AIRouterTrendPoint } from './types'
-import { ErrorCharts } from './components/error-charts'
-import { CompactDateTimeRangePicker } from '@/features/usage-logs/components/compact-date-time-range-picker'
 
 // Time-range filter state shared by the stat cards and both charts.
 interface MonitoringRange {
@@ -51,8 +58,7 @@ interface MonitoringTabProps {
   onChannelSelect?: (channelId: number) => void
 }
 
-const formatPercent = (value: number): string =>
-  `${(value * 100).toFixed(1)}%`
+const formatPercent = (value: number): string => `${(value * 100).toFixed(1)}%`
 
 const formatMs = (value: number): string => {
   if (value >= 1000) return `${(value / 1000).toFixed(1)}s`
@@ -72,6 +78,8 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
   })
   const [model, setModel] = useState('')
   const [groupId, setGroupId] = useState('')
+  const [requestCategory, setRequestCategory] =
+    useState<AIRouterRequestCategory>('all')
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
 
   const params = useMemo(() => {
@@ -82,8 +90,9 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
       end_time: Math.floor(end.getTime() / 1000),
       model: model || undefined,
       group_id: groupId || undefined,
+      request_category: requestCategory,
     }
-  }, [range, model, groupId])
+  }, [range, model, groupId, requestCategory])
 
   const statsQuery = useQuery({
     queryKey: [...AI_ROUTER_QUERY_KEYS.stats, params],
@@ -143,8 +152,22 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
     return {
       type: 'common' as const,
       data: [
-        { id: 'success', values: trendData.map((d) => ({ time: d.time, type: t('Success'), count: d.success })) },
-        { id: 'failure', values: trendData.map((d) => ({ time: d.time, type: t('Failed'), count: d.failure })) },
+        {
+          id: 'success',
+          values: trendData.map((d) => ({
+            time: d.time,
+            type: t('Success'),
+            count: d.success,
+          })),
+        },
+        {
+          id: 'failure',
+          values: trendData.map((d) => ({
+            time: d.time,
+            type: t('Failed'),
+            count: d.failure,
+          })),
+        },
       ],
       series: [
         {
@@ -176,18 +199,30 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
   }, [trendData, t])
 
   const channelChartSpec = useMemo(() => {
-    const data = channelStats
-      .slice(0, 10)
-      .map((stat: AIRouterChannelStat) => ({
-        channel: `#${stat.channel_id}`,
-        Attempts: stat.attempts,
-        Finals: stat.finals,
-      }))
+    const data = channelStats.slice(0, 10).map((stat: AIRouterChannelStat) => ({
+      channel: `#${stat.channel_id}`,
+      Attempts: stat.attempts,
+      Finals: stat.finals,
+    }))
     return {
       type: 'common' as const,
       data: [
-        { id: 'attempts', values: data.map((d) => ({ channel: d.channel, Metric: t('Attempts'), Count: d.Attempts })) },
-        { id: 'finals', values: data.map((d) => ({ channel: d.channel, Metric: t('Final selections'), Count: d.Finals })) },
+        {
+          id: 'attempts',
+          values: data.map((d) => ({
+            channel: d.channel,
+            Metric: t('Attempts'),
+            Count: d.Attempts,
+          })),
+        },
+        {
+          id: 'finals',
+          values: data.map((d) => ({
+            channel: d.channel,
+            Metric: t('Final selections'),
+            Count: d.Finals,
+          })),
+        },
       ],
       series: [
         {
@@ -221,6 +256,31 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
   return (
     <div className='space-y-4'>
       <div className='flex flex-wrap items-center gap-2'>
+        <div className='w-full overflow-x-auto sm:w-auto'>
+          <ToggleGroup
+            className='min-w-max'
+            value={[requestCategory]}
+            onValueChange={(values) => {
+              const value = values[0]
+              if (
+                value === 'all' ||
+                value === 'video' ||
+                value === 'text_image'
+              ) {
+                setRequestCategory(value)
+              }
+            }}
+            variant='outline'
+            size='sm'
+            aria-label={t('Request category')}
+          >
+            <ToggleGroupItem value='all'>{t('All')}</ToggleGroupItem>
+            <ToggleGroupItem value='video'>{t('Video')}</ToggleGroupItem>
+            <ToggleGroupItem value='text_image'>
+              {t('Text and images')}
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
         <CompactDateTimeRangePicker
           start={range.start}
           end={range.end}
@@ -331,9 +391,7 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
       />
 
       <Card className='p-4'>
-        <p className='mb-3 text-sm font-medium'>
-          {t('Channel breakdown')}
-        </p>
+        <p className='mb-3 text-sm font-medium'>{t('Channel breakdown')}</p>
         {channelStats.length === 0 ? (
           <p className='text-muted-foreground rounded-lg border border-dashed p-4 text-center text-sm'>
             {t('No channel activity in the selected range.')}
@@ -366,19 +424,23 @@ export function MonitoringTab({ onChannelSelect }: MonitoringTabProps = {}) {
                 className: 'text-right',
                 cellClassName: 'text-right',
                 cell: (row) => (
-                  <Badge variant={row.success_rate >= 0.9 ? 'secondary' : 'outline'}>
+                  <Badge
+                    variant={row.success_rate >= 0.9 ? 'secondary' : 'outline'}
+                  >
                     {formatPercent(row.success_rate)}
                   </Badge>
                 ),
               },
-              ...([
-                ['count_429', '429'],
-                ['count_5xx', '5xx'],
-                ['count_timeout', 'timeout'],
-                ['count_connection', 'connection'],
-                ['count_stream_interrupted', 'Stream interrupted'],
-                ['count_other', 'Other'],
-              ] as const).map(([field, label]) => ({
+              ...(
+                [
+                  ['count_429', '429'],
+                  ['count_5xx', '5xx'],
+                  ['count_timeout', 'timeout'],
+                  ['count_connection', 'connection'],
+                  ['count_stream_interrupted', 'Stream interrupted'],
+                  ['count_other', 'Other'],
+                ] as const
+              ).map(([field, label]) => ({
                 id: field,
                 header: t(label),
                 className: 'text-right',

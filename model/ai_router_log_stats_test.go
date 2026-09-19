@@ -1,10 +1,16 @@
 package model
 
 import (
+	"os"
+	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func insertAIRouterLog(t *testing.T, log *AIRouterLog) {
@@ -56,14 +62,14 @@ func TestGetAIRouterStatsFallbackAndTrend(t *testing.T) {
 	insertAIRouterLog(t, &AIRouterLog{RequestId: "b", Model: "m", Attempts: 2, SelectedChannels: "[4,9]", FinalChannelId: 9, Success: true, CreatedAt: start + 20})
 	insertAIRouterLog(t, &AIRouterLog{RequestId: "c", Model: "m", Attempts: 2, SelectedChannels: "[4,9]", FinalChannelId: 9, Success: false, CreatedAt: start + 3600 + 30})
 
-	stats, err := GetAIRouterStats(start, start+7200, "m", "")
+	stats, err := GetAIRouterStats(start, start+7200, "m", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), stats.TotalRequests)
 	assert.Equal(t, int64(2), stats.FallbackCount)
 	assert.InDelta(t, 2.0/3.0, stats.FallbackRate, 0.0001)
 	assert.InDelta(t, 2.0/3.0, stats.SuccessRate, 0.0001)
 
-	trend, err := GetAIRouterTrend(start, start+7200, "m", "")
+	trend, err := GetAIRouterTrend(start, start+7200, "m", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	require.Len(t, trend, 2)
 	assert.Equal(t, int64(2), trend[0].Total)
@@ -72,7 +78,7 @@ func TestGetAIRouterStatsFallbackAndTrend(t *testing.T) {
 	assert.Zero(t, trend[1].Success)
 	assert.Equal(t, start, trend[0].Time)
 
-	empty, err := GetAIRouterTrend(start+7200, start+14400, "m", "")
+	empty, err := GetAIRouterTrend(start+7200, start+14400, "m", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
@@ -91,7 +97,7 @@ func TestGetAIRouterChannelStatsAggregates(t *testing.T) {
 	insertAIRouterLog(t, mk("c", "[4]", 4, true, 300, 100))
 	insertAIRouterLog(t, mk("d", "[8]", 8, true, 500, 0))
 
-	stats, err := GetAIRouterChannelStats(start, start+3600, "m", "")
+	stats, err := GetAIRouterChannelStats(start, start+3600, "m", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	byID := map[int]AIRouterChannelStat{}
 	for _, s := range stats {
@@ -118,11 +124,110 @@ func TestGetAIRouterChannelStatsAggregates(t *testing.T) {
 	// Model scoping excludes other models' chains.
 	other := &AIRouterLog{RequestId: "x", Model: "other", SelectedChannels: "[4]", FinalChannelId: 4, Success: true, CreatedAt: start}
 	insertAIRouterLog(t, other)
-	scoped, err := GetAIRouterChannelStats(start, start+3600, "m", "")
+	scoped, err := GetAIRouterChannelStats(start, start+3600, "m", "", AIRouterRequestCategoryAll)
 	require.NoError(t, err)
 	scopedByID := map[int]AIRouterChannelStat{}
 	for _, s := range scoped {
 		scopedByID[s.ChannelId] = s
 	}
 	assert.Equal(t, int64(3), scopedByID[4].Attempts, "the other-model chain must not be counted under model=m")
+}
+
+func TestAIRouterMonitoringRequestCategory(t *testing.T) {
+	truncateTables(t)
+	verifyAIRouterMonitoringRequestCategory(t)
+}
+
+func verifyAIRouterMonitoringRequestCategory(t *testing.T) {
+	t.Helper()
+	start := int64(1758000000)
+	logs := []*AIRouterLog{
+		{RequestId: "video-ok", Model: "m", GroupId: "g", Modality: "video", Attempts: 1, SelectedChannels: "[1]", FinalChannelId: 1, Success: true, TotalDurationMs: 100, TTFTMs: 50, CreatedAt: start + 1},
+		{RequestId: "video-fail", Model: "m", GroupId: "g", Modality: "video", Attempts: 3, SelectedChannels: "[1,2]", FinalChannelId: 2, Success: false, TotalDurationMs: 300, CreatedAt: start + 2},
+		{RequestId: "text-ok", Model: "m", GroupId: "g", Modality: "text", Attempts: 1, SelectedChannels: "[3]", FinalChannelId: 3, Success: true, TotalDurationMs: 500, TTFTMs: 150, CreatedAt: start + 3},
+		{RequestId: "image-ok", Model: "m", GroupId: "g", Modality: "image", Attempts: 1, SelectedChannels: "[4]", FinalChannelId: 4, Success: true, TotalDurationMs: 700, CreatedAt: start + 4},
+		{RequestId: "unknown", Model: "m", GroupId: "g", Modality: "unknown", Attempts: 1, SelectedChannels: "[5]", FinalChannelId: 5, Success: false, TotalDurationMs: 900, CreatedAt: start + 5},
+	}
+	for _, log := range logs {
+		insertAIRouterLog(t, log)
+	}
+	require.NoError(t, InsertAIRouterAttemptLogs([]*AIRouterAttemptLog{
+		{RequestLogId: logs[0].Id, ChannelId: 1, Modality: "video", ErrorCategory: AttemptErrorCategorySuccess, Success: true, DurationMs: 100, CreatedAt: start + 1},
+		{RequestLogId: logs[1].Id, ChannelId: 1, Modality: "video", ErrorCategory: AttemptErrorCategory429, HttpStatusCode: intPtrM(429), DurationMs: 100, CreatedAt: start + 2},
+		{RequestLogId: logs[1].Id, ChannelId: 1, Modality: "video", ErrorCategory: AttemptErrorCategory429, HttpStatusCode: intPtrM(429), DurationMs: 100, CreatedAt: start + 2},
+		{RequestLogId: logs[1].Id, ChannelId: 2, Modality: "video", ErrorCategory: AttemptErrorCategory5xx, HttpStatusCode: intPtrM(503), DurationMs: 200, CreatedAt: start + 2},
+		{RequestLogId: logs[2].Id, ChannelId: 3, Modality: "text", ErrorCategory: AttemptErrorCategorySuccess, Success: true, DurationMs: 500, CreatedAt: start + 3},
+		{RequestLogId: logs[3].Id, ChannelId: 4, Modality: "image", ErrorCategory: AttemptErrorCategoryOther, DurationMs: 700, CreatedAt: start + 4},
+		{RequestLogId: logs[4].Id, ChannelId: 5, Modality: "unknown", ErrorCategory: AttemptErrorCategoryConnection, DurationMs: 900, CreatedAt: start + 5},
+	}))
+
+	stats, err := GetAIRouterStats(start, start+10, "m", "g", AIRouterRequestCategoryVideo)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), stats.TotalRequests)
+	assert.Equal(t, int64(1), stats.SuccessCount)
+	assert.InDelta(t, 0.5, stats.SuccessRate, 0.0001)
+	assert.InDelta(t, 200, stats.AvgDurationMs, 0.0001)
+	assert.InDelta(t, 50, stats.AvgTTFTMs, 0.0001)
+	assert.InDelta(t, 2, stats.AvgAttempts, 0.0001)
+
+	trend, err := GetAIRouterTrend(start, start+10, "m", "g", AIRouterRequestCategoryVideo)
+	require.NoError(t, err)
+	require.Len(t, trend, 1)
+	assert.Equal(t, int64(2), trend[0].Total)
+	assert.Equal(t, int64(1), trend[0].Success)
+
+	channels, err := GetAIRouterChannelStats(start, start+10, "m", "g", AIRouterRequestCategoryVideo)
+	require.NoError(t, err)
+	require.Len(t, channels, 2)
+	attempts, err := GetAIRouterAttemptChannelStats(start, start+10, "m", "g", AIRouterRequestCategoryVideo)
+	require.NoError(t, err)
+	require.Len(t, attempts, 2)
+	assert.Nil(t, attempts[3], "text attempts must not enter the video aggregate")
+
+	errors, err := GetAIRouterErrorDistribution(start, start+10, "m", "g", AIRouterRequestCategoryVideo)
+	require.NoError(t, err)
+	assert.Equal(t, []AIRouterErrorCategoryStat{{ErrorCategory: AttemptErrorCategory429, Count: 2}, {ErrorCategory: AttemptErrorCategory5xx, Count: 1}}, errors.ByCategory)
+
+	textImage, err := GetAIRouterStats(start, start+10, "m", "g", AIRouterRequestCategoryTextImage)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), textImage.TotalRequests)
+	assert.Equal(t, int64(2), textImage.SuccessCount)
+	assert.NotContains(t, textImage.ByModality, "unknown")
+}
+
+func TestAIRouterMonitoringRequestCategoryDatabaseMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		dsn       string
+		dbType    common.DatabaseType
+		dialector func(string) gorm.Dialector
+	}{
+		{name: "mysql", dsn: os.Getenv("AI_ROUTER_TEST_MYSQL_DSN"), dbType: common.DatabaseTypeMySQL, dialector: func(dsn string) gorm.Dialector { return mysql.Open(dsn) }},
+		{name: "postgres", dsn: os.Getenv("AI_ROUTER_TEST_POSTGRES_DSN"), dbType: common.DatabaseTypePostgreSQL, dialector: func(dsn string) gorm.Dialector { return postgres.Open(dsn) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dsn := strings.TrimSpace(test.dsn)
+			if dsn == "" {
+				t.Skipf("AI Router %s test DSN is not configured", test.name)
+			}
+			db, err := gorm.Open(test.dialector(dsn), &gorm.Config{})
+			require.NoError(t, err)
+			require.NoError(t, db.AutoMigrate(&AIRouterLog{}, &AIRouterAttemptLog{}))
+
+			previousDB, previousLogDB := DB, LOG_DB
+			previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+			DB, LOG_DB = db, db
+			common.SetDatabaseTypes(test.dbType, test.dbType)
+			defer func() {
+				DB, LOG_DB = previousDB, previousLogDB
+				common.SetDatabaseTypes(previousMainType, previousLogType)
+				sqlDB, sqlErr := db.DB()
+				if sqlErr == nil {
+					require.NoError(t, sqlDB.Close())
+				}
+			}()
+
+			verifyAIRouterMonitoringRequestCategory(t)
+		})
+	}
 }

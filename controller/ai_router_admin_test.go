@@ -36,6 +36,33 @@ func TestUpdateAIRouterSettingsValidation(t *testing.T) {
 	}
 }
 
+func TestAIRouterStatsEndpointsRejectInvalidRequestCategory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for name, handler := range map[string]gin.HandlerFunc{
+		"stats":    GetAIRouterStats,
+		"trend":    GetAIRouterTrend,
+		"channels": GetAIRouterChannelStats,
+		"errors":   GetAIRouterErrorStats,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			context.Request = httptest.NewRequest(http.MethodGet, "/?start_time=1&end_time=2&request_category=invalid", nil)
+
+			handler(context)
+
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var payload struct {
+				Success bool   `json:"success"`
+				Message string `json:"message"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+			assert.False(t, payload.Success)
+			assert.Contains(t, payload.Message, "request_category")
+		})
+	}
+}
+
 // setupVideoPreprocessControllerTestDB gives the settings endpoints a real
 // SQLite database with the Option table, so the whole loop the admin API
 // exercises — decode, validate, persist, publish — runs against real storage

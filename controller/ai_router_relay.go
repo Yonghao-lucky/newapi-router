@@ -62,6 +62,10 @@ func runAIRouterRelay(
 	allChannels := collectPolicyChannels(group, relayInfo.OriginModelName, filters, settings.MaxAttempts)
 
 	routeCtx := ai_router.NewRouteContext(demand, policyMaxAttempts(group, relayInfo.OriginModelName, settings.MaxAttempts))
+	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) &&
+		common.GetContextKeyString(c, constant.ContextKeyVideoOriginalModality) == string(ai_router.ModalityVideo) {
+		routeCtx.LogModality = ai_router.ModalityVideo
+	}
 	routeCtx.RequestID = c.GetString(common.RequestIdKey)
 	common.SetContextKey(c, constant.ContextKeyAIRouterContext, routeCtx)
 

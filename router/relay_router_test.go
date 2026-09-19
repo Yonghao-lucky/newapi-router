@@ -268,6 +268,7 @@ func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
 					route, ok := common.GetContextKey(c, constant.ContextKeyAIRouterContext)
 					require.True(t, ok)
 					assert.Equal(t, ai_router.ModalityImage, route.(*ai_router.RouteContext).Demand.Modality)
+					assert.Equal(t, ai_router.ModalityVideo, route.(*ai_router.RouteContext).LogModality)
 				}
 			})
 			SetRelayRouter(engine)
@@ -310,10 +311,13 @@ func TestVideoRelayRetryAndAIRouterFallback(t *testing.T) {
 				var logs []model.AIRouterLog
 				require.Eventually(t, func() bool { return model.DB.Where("user_id = ?", user.Id).Find(&logs).Error == nil && len(logs) == 1 }, 5*time.Second, time.Millisecond)
 				assert.NotContains(t, logs[0].ErrorMessage, "SECRET_")
-				var attempts int64
+				assert.Equal(t, "video", logs[0].Modality)
+				var attempts []model.AIRouterAttemptLog
 				require.Eventually(t, func() bool {
-					return model.DB.Model(&model.AIRouterAttemptLog{}).Where("request_log_id = ?", logs[0].Id).Count(&attempts).Error == nil && attempts == 2
+					return model.DB.Where("request_log_id = ?", logs[0].Id).Order("id").Find(&attempts).Error == nil && len(attempts) == 2
 				}, 5*time.Second, time.Millisecond)
+				assert.Equal(t, "video", attempts[0].Modality)
+				assert.Equal(t, "video", attempts[1].Modality)
 			}
 
 			mu.Lock()

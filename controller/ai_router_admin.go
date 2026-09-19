@@ -172,8 +172,12 @@ func GetAIRouterStats(c *gin.Context) {
 	}
 	modelName := c.Query("model")
 	groupID := c.Query("group_id")
+	requestCategory, ok := parseAIRouterRequestCategory(c)
+	if !ok {
+		return
+	}
 
-	stats, err := model.GetAIRouterStats(startTime, endTime, modelName, groupID)
+	stats, err := model.GetAIRouterStats(startTime, endTime, modelName, groupID, requestCategory)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -194,7 +198,11 @@ func GetAIRouterTrend(c *gin.Context) {
 		common.ApiErrorMsg(c, "end_time is required")
 		return
 	}
-	points, err := model.GetAIRouterTrend(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	requestCategory, ok := parseAIRouterRequestCategory(c)
+	if !ok {
+		return
+	}
+	points, err := model.GetAIRouterTrend(startTime, endTime, c.Query("model"), c.Query("group_id"), requestCategory)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -215,7 +223,11 @@ func GetAIRouterChannelStats(c *gin.Context) {
 		common.ApiErrorMsg(c, "end_time is required")
 		return
 	}
-	stats, err := model.GetAIRouterChannelStats(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	requestCategory, ok := parseAIRouterRequestCategory(c)
+	if !ok {
+		return
+	}
+	stats, err := model.GetAIRouterChannelStats(startTime, endTime, c.Query("model"), c.Query("group_id"), requestCategory)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -227,7 +239,7 @@ func GetAIRouterChannelStats(c *gin.Context) {
 	// counts and their summary-derived success rate. The same model/group
 	// filter applies to both aggregates so the row stays internally
 	// consistent.
-	attemptStats, err := model.GetAIRouterAttemptChannelStats(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	attemptStats, err := model.GetAIRouterAttemptChannelStats(startTime, endTime, c.Query("model"), c.Query("group_id"), requestCategory)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -269,12 +281,29 @@ func GetAIRouterErrorStats(c *gin.Context) {
 		common.ApiErrorMsg(c, "end_time is required")
 		return
 	}
-	dist, err := model.GetAIRouterErrorDistribution(startTime, endTime, c.Query("model"), c.Query("group_id"))
+	requestCategory, ok := parseAIRouterRequestCategory(c)
+	if !ok {
+		return
+	}
+	dist, err := model.GetAIRouterErrorDistribution(startTime, endTime, c.Query("model"), c.Query("group_id"), requestCategory)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, dist)
+}
+
+func parseAIRouterRequestCategory(c *gin.Context) (model.AIRouterRequestCategory, bool) {
+	value := c.Query("request_category")
+	if value == "" {
+		value = string(model.AIRouterRequestCategoryAll)
+	}
+	category := model.AIRouterRequestCategory(value)
+	if !category.Valid() {
+		common.ApiErrorMsg(c, "request_category must be one of: all, video, text_image")
+		return "", false
+	}
+	return category, true
 }
 
 // aiRouterChannelStatView extends the V1.5 channel stat with the Phase 3
@@ -286,11 +315,11 @@ type aiRouterChannelStatView struct {
 	// and the table falls back to "#id".
 	ChannelName      string `json:"channel_name"`
 	Count429         int64  `json:"count_429"`
-	Count5xx         int64 `json:"count_5xx"`
-	CountTimeout     int64 `json:"count_timeout"`
-	CountConnection  int64 `json:"count_connection"`
-	CountInterrupted int64 `json:"count_stream_interrupted"`
-	CountOther       int64 `json:"count_other"`
+	Count5xx         int64  `json:"count_5xx"`
+	CountTimeout     int64  `json:"count_timeout"`
+	CountConnection  int64  `json:"count_connection"`
+	CountInterrupted int64  `json:"count_stream_interrupted"`
+	CountOther       int64  `json:"count_other"`
 }
 
 // aiRouterCandidateView is one candidate row in the policy list response.

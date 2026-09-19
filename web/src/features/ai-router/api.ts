@@ -158,11 +158,7 @@ export async function updateAIRouterChannelRouter(
   const response = await api.put<{
     success: boolean
     data: { id: number; router: ChannelRoutingProfile | null }
-  }>(
-    `/api/ai-router/channels/${id}/router`,
-    { router },
-    mutationConfig()
-  )
+  }>(`/api/ai-router/channels/${id}/router`, { router }, mutationConfig())
   return requireServerSuccess(response.data).data
 }
 
@@ -173,11 +169,7 @@ export async function updateAIRouterChannelScheduling(
   const response = await api.put<{
     success: boolean
     data: { id: number; group: string; priority: number; weight: number }
-  }>(
-    `/api/ai-router/channels/${id}/scheduling`,
-    input,
-    mutationConfig()
-  )
+  }>(`/api/ai-router/channels/${id}/scheduling`, input, mutationConfig())
   return requireServerSuccess(response.data).data
 }
 
@@ -185,11 +177,14 @@ export async function updateAIRouterChannelScheduling(
 // Monitoring: stats, trend, per-channel stats, logs
 // ---------------------------------------------------------------------------
 
+export type AIRouterRequestCategory = 'all' | 'video' | 'text_image'
+
 export interface AIRouterStatsParams {
   start_time: number
   end_time: number
   model?: string
   group_id?: string
+  request_category?: AIRouterRequestCategory
 }
 
 export async function getAIRouterStats(

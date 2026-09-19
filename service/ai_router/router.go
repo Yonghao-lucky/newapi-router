@@ -172,7 +172,7 @@ func settleAttemptRecord(rc *RouteContext, call *AttemptCall, relayErr *types.Ne
 		ChannelRetryNo: rc.ChannelRetryNo,
 		ChannelId:      rc.Decision.ChannelID,
 		ChannelName:    call.ChannelName,
-		Modality:       string(rc.Demand.Modality),
+		Modality:       string(rc.LogModality),
 		HttpStatusCode: status,
 		ErrorCategory:  category,
 		Retryable:      retryable,
