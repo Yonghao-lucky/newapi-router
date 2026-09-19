@@ -85,6 +85,15 @@ func SetRelayRouter(router *gin.Engine) {
 		})
 	}
 	{
+		// Chat completions route with video preprocessing.
+		// Order: ModelRequestRateLimit -> VideoPreprocess -> Distribute -> Relay
+		chatRouter := relayV1Router.Group("")
+		chatRouter.Use(middleware.VideoPreprocess())
+		chatRouter.Use(middleware.Distribute())
+		chatRouter.POST("/chat/completions", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatOpenAI)
+		})
+
 		//http router
 		httpRouter := relayV1Router.Group("")
 		httpRouter.Use(middleware.Distribute())
@@ -98,9 +107,6 @@ func SetRelayRouter(router *gin.Engine) {
 
 		// chat related routes
 		httpRouter.POST("/completions", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAI)
-		})
-		httpRouter.POST("/chat/completions", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAI)
 		})
 
