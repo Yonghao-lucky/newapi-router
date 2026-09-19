@@ -48,6 +48,7 @@ const (
 // "frames are not budgeted" because the request image hard limit belongs to
 // the caller's admission layer.
 type MediaLimits struct {
+	processChanged func(int)
 	// Binary paths. Only these two are ever executed, always as argv arrays.
 	FFprobePath string
 	FFmpegPath  string

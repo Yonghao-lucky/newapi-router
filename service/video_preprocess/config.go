@@ -15,9 +15,11 @@ import (
 // MB/second/millisecond unit boundary is converted in exactly one place —
 // here.
 type EngineConfig struct {
-	Media     MediaLimits
-	Rewrite   RewriteLimits
-	Admission AdmissionLimits
+	Media               MediaLimits
+	Analysis            AnalysisConfig
+	HighDetailMaxFrames int
+	Rewrite             RewriteLimits
+	Admission           AdmissionLimits
 
 	// Enabled is the subsystem's master switch. A request arriving under a
 	// disabled config bypasses without reading the body, entering the queue or
@@ -69,7 +71,16 @@ func BuildEngineConfig(snapshot video_preprocess_setting.Snapshot, deploy video_
 		MaxVideosPerRequest: s.MaxVideosPerRequest,
 		ReserveImageSlots:   s.ReserveImageSlots,
 		DefaultMaxFrames:    s.DefaultMaxFrames,
+		HighDetailMaxFrames: s.HighDetailMaxFrames,
 		IncludeTimestamps:   s.IncludeTimestamps,
+	}
+
+	cfg.Analysis = AnalysisConfig{
+		Width: s.AnalysisWidth, CandidateLimit: s.CandidateLimit,
+		ShortFPS: s.ShortScanFPS, MediumFPS: s.MediumScanFPS, LongFPS: s.LongScanFPS,
+		MinGapSeconds: float64(s.MinSelectedGapMS) / 1000,
+		SceneWeight:   s.SceneWeight, MotionWeight: s.MotionWeight, SharpnessWeight: s.SharpnessWeight, TemporalWeight: s.TemporalWeight,
+		DuplicateThreshold: s.PhashDuplicateThreshold, BlackThreshold: s.BlackFrameThreshold,
 	}
 
 	cfg.AllowedMIMETypes = append([]string(nil), s.AllowedMimeTypes...)

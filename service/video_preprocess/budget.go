@@ -50,6 +50,8 @@ func (e *FrameBudgetError) VideoPreprocessMessage() string { return e.Message }
 type VideoBudgetInput struct {
 	VideoIndex      int
 	DurationSeconds float64
+	Complexity      float64
+	MaxFrames       int
 }
 
 // allocateFrameBudget distributes the request's remaining image capacity over
@@ -107,77 +109,42 @@ func allocateFrameBudget(
 		return budget, nil
 	}
 
-	// Phase 2: split the rest by sqrt(duration) weight, capped by the
-	// default per-video target. A video whose duration is unknown (probe
-	// failed earlier in a different request shape) gets the minimum weight, so
-	// it never starves its siblings.
+	// Allocate by sqrt(duration) * complexity. Per-video caps participate in
+	// apportionment, so a capped short clip returns unused capacity to siblings.
 	weights := make([]float64, len(videos))
-	weightSum := 0.0
-	for i := range videos {
-		duration := max(videos[i].DurationSeconds, 0)
-		weight := math.Sqrt(duration)
-		if !isFinitePositive(weight) {
-			weight = 1
+	ceilings := make([]int, len(videos))
+	for i, video := range videos {
+		complexity := video.Complexity
+		if !isFinitePositive(complexity) {
+			complexity = 1
 		}
-		weights[i] = weight
-		weightSum += weight
-	}
-	if weightSum <= 0 {
-		for i := range weights {
-			weights[i] = 1
-			weightSum++
+		weights[i] = math.Sqrt(max(video.DurationSeconds, 1)) * complexity
+		ceiling := defaultMaxFrames
+		if video.MaxFrames > 0 {
+			ceiling = video.MaxFrames
 		}
+		ceilings[i] = max(minFramesPerVideo, min(ceiling, frameBudgetForDuration(video.DurationSeconds)*int(math.Ceil(complexity))))
 	}
-
-	// Integer largest-remainder apportionment: the proportional share is
-	// floored, then the still-unassigned frames go to the videos with the
-	// largest fractional leftovers. Deterministic and sums exactly to
-	// `remaining`.
-	extra := make([]int, len(videos))
-	leftovers := make([]float64, len(videos))
-	assigned := 0
-	for i := range videos {
-		share := float64(remaining) * weights[i] / weightSum
-		extra[i] = int(math.Floor(share))
-		leftovers[i] = share - float64(extra[i])
-		assigned += extra[i]
-	}
-	order := make([]int, len(videos))
-	for i := range order {
-		order[i] = i
-	}
-	// Sort by fractional leftover descending, index ascending as the tiebreak.
-	for a := 1; a < len(order); a++ {
-		for b := a; b > 0; b-- {
-			x, y := order[b-1], order[b]
-			if leftovers[x] > leftovers[y] || (leftovers[x] == leftovers[y] && x < y) {
-				order[b-1], order[b] = y, x
+	for remaining > 0 {
+		best := -1
+		bestShare := -1.0
+		for i := range videos {
+			if budget.Videos[i].Frames >= ceilings[i] {
 				continue
 			}
+			share := weights[i] / float64(budget.Videos[i].Frames-minFramesPerVideo+1)
+			if share > bestShare {
+				best, bestShare = i, share
+			}
+		}
+		if best < 0 {
 			break
 		}
+		budget.Videos[best].Frames++
+		budget.TotalFrames++
+		remaining--
 	}
 
-	left := remaining - assigned
-	for _, i := range order {
-		if left == 0 {
-			break
-		}
-		// Cap the combined budget at the default per-video target so one long
-		// video cannot take every remaining slot; the hard request limit is
-		// already enforced through `available`.
-		cap := max(defaultMaxFrames-minFramesPerVideo, 0)
-		take := min(left, cap)
-		if take > 0 {
-			extra[i] += take
-			left -= take
-		}
-	}
-
-	for i := range budget.Videos {
-		budget.Videos[i].Frames += extra[i]
-		budget.TotalFrames += extra[i]
-	}
 	return budget, nil
 }
 

@@ -31,8 +31,9 @@ const (
 	ConfigVersion = 1
 )
 
-// ModeAlwaysFrames is the only sampler mode in V1. The enum exists so a future
-// adaptive mode is an addition to a validated set rather than a schema change.
+// ModeAlwaysFrames replaces every accepted video with frames. The sampler is
+// adaptive-v1, with uniform-v1 coverage only when decoded visual evidence is
+// insufficient (for example an entirely black clip).
 const ModeAlwaysFrames = "always_frames"
 
 // bytesPerMB and bytesPerGB convert the MB/GB limits administrators edit into

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -180,8 +181,12 @@ func parseProbeOutput(data []byte) (*VideoMetadata, error) {
 	if meta.Width <= 0 || meta.Height <= 0 {
 		return nil, newError(CodeUnsupportedFormat, "video dimensions could not be determined")
 	}
-	if meta.DurationSeconds <= 0 {
+	if !isFinitePositive(meta.DurationSeconds) {
 		return nil, newError(CodeUnsupportedFormat, "video duration could not be determined")
+	}
+
+	if !isFinitePositive(meta.FPS) || meta.FPS*meta.DurationSeconds >= float64(math.MaxInt64) {
+		return nil, newError(CodeUnsupportedFormat, "video frame rate could not be determined safely")
 	}
 
 	meta.Pixels = int64(meta.Width) * int64(meta.Height)

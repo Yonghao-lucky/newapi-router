@@ -109,6 +109,8 @@ func publishVideoMetadata(c *gin.Context, result *video_preprocess.ProcessResult
 	common.SetContextKey(c, constant.ContextKeyVideoExtractedFrames, result.ExtractedFrames)
 	common.SetContextKey(c, constant.ContextKeyVideoDecodeMS, result.DecodeMS)
 	common.SetContextKey(c, constant.ContextKeyVideoProbeMS, result.ProbeMS)
+	common.SetContextKey(c, constant.ContextKeyVideoAnalyzeMS, result.AnalyzeMS)
+	common.SetContextKey(c, constant.ContextKeyVideoSelectMS, result.SelectMS)
 	common.SetContextKey(c, constant.ContextKeyVideoExportMS, result.ExportMS)
 	common.SetContextKey(c, constant.ContextKeyVideoRewriteMS, result.RewriteMS)
 	common.SetContextKey(c, constant.ContextKeyVideoTotalMS, result.TotalMS)

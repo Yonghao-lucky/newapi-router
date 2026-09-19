@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"time"
 )
@@ -54,7 +55,10 @@ type ProcessVideoResult struct {
 	// workspace is retained so the caller can clean up the request-scoped
 	// directory. It is not exported because the Cleanup method is the only
 	// stable contract.
-	workspace *workspace
+	workspace      *workspace
+	analysis       *VideoAnalysis
+	selected       []FrameCandidate
+	samplerVersion string
 
 	// limits are the defaults-applied limits this result was produced with, so
 	// a staged export can reuse the exact contract it was probed under.
@@ -192,29 +196,31 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	return result, nil
 }
 
-// exportForFrameCount generates uniform timestamps for the allocated frame
-// count and exports them from the already-decoded video.
-func exportForFrameCount(ctx context.Context, limits MediaLimits, videoPath string, durationSeconds float64, frames int, outputDir string) ([]ExportedFrame, error) {
-	if frames < 1 {
-		return nil, newError(CodeImageLimitExceeded, "video was allocated no frames")
-	}
-	timestamps, err := generateUniformTimestamps(durationSeconds, frames, 1)
-	if err != nil {
-		return nil, err
-	}
-	var result ProcessVideoResult
-	if err := exportJobWithTimestamps(ctx, limits, videoPath, timestamps, outputDir, 0, &result); err != nil {
-		return nil, err
-	}
-	return result.Frames, nil
-}
-
 // exportJobWithTimestamps runs the batch FFmpeg export with the downgrade
 // ladder and records the frames and their byte sizes onto result.
 func exportJobWithTimestamps(ctx context.Context, limits MediaLimits, videoPath string, timestamps []float64, outputDir string, rotationDegrees int, result *ProcessVideoResult) error {
 	if err := timeoutOrCancel(ctx); err != nil {
 		return err
 	}
+
+	// A very short or low-FPS clip may have fewer source frames than its image
+	// allocation. Clamp sample times to real nominal frame positions and remove
+	// collisions so the sequential exporter never demands non-existent frames.
+	normalized := make([]float64, 0, len(timestamps))
+	values := make([]FrameCandidate, 0, len(timestamps))
+	for i, timestamp := range timestamps {
+		if fps := result.Metadata.FPS; isFinitePositive(fps) {
+			timestamp = math.Floor((min(timestamp, max(0, result.Metadata.DurationSeconds-1/fps))+1e-9)*fps) / fps
+		}
+		if len(normalized) > 0 && timestamp <= normalized[len(normalized)-1] {
+			continue
+		}
+		normalized = append(normalized, timestamp)
+		if len(result.selected) == len(timestamps) {
+			values = append(values, result.selected[i])
+		}
+	}
+	timestamps = normalized
 
 	exportStart := time.Now()
 	exportCtx, exportCancel := context.WithTimeout(ctx, limits.ExportTimeout)
@@ -225,9 +231,13 @@ func exportJobWithTimestamps(ctx context.Context, limits MediaLimits, videoPath 
 		timestamps:      timestamps,
 		outputDir:       outputDir,
 		quality:         limits.JPEGQuality,
-		maxLongSide:     limits.MaxLongSide,
+		maxLongSide:     min(limits.MaxLongSide, max(result.Metadata.Width, result.Metadata.Height)),
 		rotationDegrees: rotationDegrees,
 		ffmpegThreads:   limits.FFmpegThreads,
+		width:           result.Metadata.Width,
+		height:          result.Metadata.Height,
+		minimumFrames:   min(len(timestamps), limits.MinFramesPerVideo),
+		values:          values,
 	}
 
 	frames, err := attemptExportWithDowngrade(exportCtx, limits.FFmpegPath, job, limits)

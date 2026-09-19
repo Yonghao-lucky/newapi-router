@@ -15,6 +15,10 @@ func generateUniformTimestamps(durationSeconds float64, maxFramesPerRequest, min
 		return nil, invalidConfig("min frames per video must be positive")
 	}
 
+	if maxFramesPerRequest > 0 && minFramesPerVideo > maxFramesPerRequest {
+		return nil, newError(CodeImageLimitExceeded, "frame allowance is below the minimum coverage")
+	}
+
 	// Determine target frame count based on duration
 	targetFrames := frameBudgetForDuration(durationSeconds)
 

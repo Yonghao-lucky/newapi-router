@@ -4,191 +4,195 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
 
-// ExportedFrame is one JPEG frame extracted from the video at a specific timestamp.
 type ExportedFrame struct {
 	TimestampSeconds float64
 	Path             string
 	Bytes            int64
 }
 
-// exportJob describes one batch export request. All timestamps are exported in
-// a single FFmpeg invocation to avoid per-frame process overhead.
 type exportJob struct {
-	videoPath       string
-	timestamps      []float64
-	outputDir       string
-	quality         int
-	maxLongSide     int
-	rotationDegrees int
-	ffmpegThreads   int
+	videoPath                                            string
+	timestamps                                           []float64
+	values                                               []FrameCandidate
+	outputDir                                            string
+	quality, maxLongSide, rotationDegrees, ffmpegThreads int
+	width, height, minimumFrames                         int
 }
 
-// exportFrames spawns FFmpeg to extract JPEG frames at the given timestamps
-// from videoPath. The subprocess runs under ctx, uses -nostdin, and has its
-// stderr capped. On cancellation, the entire process group is killed.
-//
-// The export writes one JPEG per timestamp into outputDir with generated names,
-// then returns the list of frames in timestamp order. The caller owns the files.
+// exportFrames decodes once in timestamp order. FFmpeg only emits bounded raw
+// RGB frames; Go writes JPEG quality 0–100 directly to private, byte-limited
+// files, so neither qscale semantics nor encoder-created file modes can differ
+// from the administrator's contract.
 func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits MediaLimits) ([]ExportedFrame, error) {
 	if err := timeoutOrCancel(ctx); err != nil {
 		return nil, err
 	}
 	if len(job.timestamps) == 0 {
-		return nil, nil
+		return nil, newError(CodeImageLimitExceeded, "video has no selected frames")
 	}
-
-	// Build the filter chain: scale + optional rotation
-	filter := buildScaleFilter(job.maxLongSide, job.rotationDegrees)
-
-	// Build FFmpeg arguments for batch export
-	args := []string{
-		"-nostdin", "-hide_banner", "-loglevel", "error",
-		"-protocol_whitelist", "file,pipe",
-		"-filter_threads", "1",
-		"-threads", strconv.Itoa(job.ffmpegThreads),
-		"-i", job.videoPath,
+	width, height := job.width, job.height
+	if job.rotationDegrees%180 != 0 {
+		width, height = height, width
 	}
-
-	frames := make([]ExportedFrame, len(job.timestamps))
+	if width < 1 || height < 1 {
+		return nil, invalidConfig("export requires probed video dimensions")
+	}
+	scale := min(1.0, float64(job.maxLongSide)/float64(max(width, height)))
+	width, height = max(1, int(float64(width)*scale)), max(1, int(float64(height)*scale))
+	var selection strings.Builder
 	for i, ts := range job.timestamps {
-		outPath := filepath.Join(job.outputDir, fmt.Sprintf("frame_%04d.jpg", i))
-		frames[i] = ExportedFrame{
-			TimestampSeconds: ts,
-			Path:             outPath,
+		if i > 0 {
+			selection.WriteByte('+')
 		}
-
-		args = append(args,
-			"-ss", fmt.Sprintf("%.3f", ts),
-			"-vframes", "1",
-			"-q:v", strconv.Itoa(job.quality),
-			"-vf", filter,
-			"-y",
-			outPath,
-		)
+		fmt.Fprintf(&selection, "eq(selected_n\\,%d)*gte(t\\,%.9f)", i, ts)
 	}
-
-	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+	filter := fmt.Sprintf("select=%s,scale=%d:%d,format=rgb24", selection.String(), width, height)
+	cmd := exec.CommandContext(ctx, ffmpegPath,
+		"-nostdin", "-hide_banner", "-v", "error", "-protocol_whitelist", "file,pipe",
+		"-threads", strconv.Itoa(job.ffmpegThreads), "-filter_threads", "1",
+		"-i", job.videoPath, "-map", "0:v:0", "-an", "-sn", "-dn",
+		"-vf", filter, "-fps_mode", "vfr", "-frames:v", strconv.Itoa(len(job.timestamps)),
+		"-threads", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
-
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: int64(limits.MaxFFmpegStderrBytes)}
-
-	if err := cmd.Run(); err != nil {
-		if ctxErr := timeoutOrCancel(ctx); ctxErr != nil {
-			return nil, ctxErr
-		}
-		return nil, mediaCommandError(CodeExportFailed, err, stderr.String())
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, wrapError(CodeExportFailed, "failed to open export stream", err)
 	}
-
-	// Verify all frames exist and record their sizes
-	var totalBytes int64
-	for i := range frames {
-		info, err := os.Stat(frames[i].Path)
+	if err = cmd.Start(); err != nil {
+		return nil, mediaCommandError(CodeExportFailed, err, "")
+	}
+	if limits.processChanged != nil {
+		limits.processChanged(1)
+		defer limits.processChanged(-1)
+	}
+	rgb := make([]byte, width*height*3)
+	frame := image.NewRGBA(image.Rect(0, 0, width, height))
+	frames := make([]ExportedFrame, 0, len(job.timestamps))
+	var total int64
+	for i, ts := range job.timestamps {
+		_, err = io.ReadFull(stdout, rgb)
 		if err != nil {
-			return nil, wrapError(CodeExportFailed, "exported frame is missing", err)
+			break
 		}
-		frames[i].Bytes = info.Size()
-		totalBytes += info.Size()
+		for p := range width * height {
+			copy(frame.Pix[p*4:p*4+3], rgb[p*3:p*3+3])
+			frame.Pix[p*4+3] = 255
+		}
+		path := filepath.Join(job.outputDir, fmt.Sprintf("frame_%04d.jpg", i))
+		var file *os.File
+		file, err = os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		if err != nil {
+			err = wrapError(CodeStorageFailed, "failed to create exported frame", err)
+			break
+		}
+		writer := &imageBudgetWriter{ctx: ctx, writer: file, remaining: limits.MaxTotalImageBytes - total}
+		err = jpeg.Encode(writer, frame, &jpeg.Options{Quality: job.quality})
+		closeErr := file.Close()
+		if err != nil {
+			if CodeOf(err) == "" {
+				err = wrapError(CodeStorageFailed, "failed to write exported frame", err)
+			}
+			break
+		}
+		if closeErr != nil {
+			err = wrapError(CodeStorageFailed, "failed to close exported frame", closeErr)
+			break
+		}
+		total += writer.written
+		frames = append(frames, ExportedFrame{TimestampSeconds: ts, Path: path, Bytes: writer.written})
 	}
-
-	if totalBytes > limits.MaxTotalImageBytes {
-		return frames, newError(CodeOutputTooLarge,
-			fmt.Sprintf("exported frames total %d bytes, exceeds limit %d bytes",
-				totalBytes, limits.MaxTotalImageBytes))
+	if err != nil {
+		_ = cmd.Cancel()
 	}
-
+	waitErr := cmd.Wait()
+	if ctxErr := timeoutOrCancel(ctx); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil && CodeOf(err) != "" {
+		return nil, err
+	}
+	if waitErr != nil {
+		return nil, mediaCommandError(CodeExportFailed, waitErr, stderr.String())
+	}
+	if err != nil || len(frames) != len(job.timestamps) {
+		return nil, newError(CodeUnsupportedFormat, "video did not contain all selected frames")
+	}
 	return frames, nil
 }
 
-// buildScaleFilter constructs the FFmpeg filter string for scaling and rotation.
-// maxLongSide bounds the longest dimension while preserving aspect ratio.
-// rotationDegrees applies the necessary transpose/rotation to correct orientation.
-func buildScaleFilter(maxLongSide, rotationDegrees int) string {
-	scale := fmt.Sprintf("scale='if(gte(iw,ih),min(%d,iw),-2)':'if(lt(iw,ih),min(%d,ih),-2)'", maxLongSide, maxLongSide)
-
-	// Normalize rotation to [0, 360)
-	rot := rotationDegrees % 360
-	if rot < 0 {
-		rot += 360
-	}
-
-	var transpose string
-	switch rot {
-	case 90:
-		transpose = "transpose=1" // 90° clockwise
-	case 180:
-		transpose = "transpose=1,transpose=1" // 180°
-	case 270:
-		transpose = "transpose=2" // 90° counter-clockwise
-	default:
-		return scale
-	}
-
-	return transpose + "," + scale
+// imageBudgetWriter refuses before writing beyond the output allowance.
+type imageBudgetWriter struct {
+	ctx                context.Context
+	writer             io.Writer
+	remaining, written int64
 }
 
-// attemptExportWithDowngrade tries to export frames at the current quality and
-// size, and if the output exceeds the byte budget, deterministically downgrades
-// quality → size → frame count until success or the downgrade ladder is exhausted.
-//
-// Returns the exported frames or an error if even the most degraded export fails.
-func attemptExportWithDowngrade(
-	ctx context.Context,
-	ffmpegPath string,
-	job exportJob,
-	limits MediaLimits,
-) ([]ExportedFrame, error) {
-	quality := job.quality
-	longSide := job.maxLongSide
-	timestamps := job.timestamps
+func (w *imageBudgetWriter) Write(data []byte) (int, error) {
+	if err := timeoutOrCancel(w.ctx); err != nil {
+		return 0, err
+	}
+	if int64(len(data)) > w.remaining {
+		return 0, newError(CodeOutputTooLarge, "exported frames exceed the output byte budget")
+	}
+	n, err := w.writer.Write(data)
+	w.remaining -= int64(n)
+	w.written += int64(n)
+	return n, err
+}
 
+func attemptExportWithDowngrade(ctx context.Context, ffmpegPath string, job exportJob, limits MediaLimits) ([]ExportedFrame, error) {
+	original := job
 	for {
-		currentJob := job
-		currentJob.quality = quality
-		currentJob.maxLongSide = longSide
-		currentJob.timestamps = timestamps
-
-		frames, err := exportFrames(ctx, ffmpegPath, currentJob, limits)
+		frames, err := exportFrames(ctx, ffmpegPath, job, limits)
 		if err == nil {
-			// Success
 			return frames, nil
 		}
-
-		// If not an output-too-large error, fail immediately
+		// Remove partial output before retrying, so degradation never accumulates
+		// abandoned files beyond the request's disk reservation.
+		for i := range len(original.timestamps) {
+			_ = os.Remove(filepath.Join(job.outputDir, fmt.Sprintf("frame_%04d.jpg", i)))
+		}
 		if CodeOf(err) != CodeOutputTooLarge {
 			return nil, err
 		}
-
-		// Apply deterministic downgrade
-		if quality > minExportQuality+10 {
-			quality -= 10
+		if job.quality > 40 {
+			job.quality = max(40, job.quality-15)
 			continue
 		}
-		if longSide > minExportLongSide+128 {
-			longSide -= 128
-			quality = job.quality // reset quality for new size
+		if job.maxLongSide > 256 {
+			job.maxLongSide = max(256, job.maxLongSide*3/4)
 			continue
 		}
-		if len(timestamps) > job.ffmpegThreads {
-			// Drop lowest-value frames (for uniform sampling, drop from the end)
-			timestamps = timestamps[:len(timestamps)*3/4]
-			quality = job.quality
-			longSide = job.maxLongSide
-			continue
+		if len(job.timestamps) <= max(1, job.minimumFrames) {
+			return nil, err
 		}
-
-		// All downgrades exhausted, fail
-		return nil, newError(CodeOutputTooLarge,
-			"exported frames exceed byte budget even after maximum downgrade")
+		// Adaptive frames carry their importance, including temporal anchors.
+		// Uniform fallback preserves its coverage by removing an interior frame.
+		drop := len(job.timestamps) / 2
+		if len(job.values) == len(job.timestamps) {
+			for i := range job.values {
+				if job.values[i].Value < job.values[drop].Value {
+					drop = i
+				}
+			}
+			job.values = append(job.values[:drop:drop], job.values[drop+1:]...)
+		}
+		job.timestamps = append(job.timestamps[:drop:drop], job.timestamps[drop+1:]...)
 	}
 }

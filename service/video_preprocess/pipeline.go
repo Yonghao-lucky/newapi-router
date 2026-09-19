@@ -16,7 +16,7 @@ import (
 // processorVersion identifies the sampler integration that produced a
 // rewritten request. It is reported in the ProcessResult so a later
 // persistence phase can attribute an outcome to the code that produced it.
-const processorVersion = "uniform-v1"
+const processorVersion = "adaptive-v1"
 
 // Processor is the request-level entry point the future middleware calls. It
 // owns the whole pipeline — one settings snapshot, admission, per-video media
@@ -167,6 +167,8 @@ type ProcessResult struct {
 	ExtractedFrames int
 
 	// Stage timings in milliseconds.
+	AnalyzeMS int64
+	SelectMS  int64
 	DecodeMS  int64
 	ProbeMS   int64
 	ExportMS  int64
@@ -234,6 +236,7 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 	// generation is owned by the Processor (NewProcessor/SetConfig), so tests
 	// and callers can inject exact limits.
 	cfg := p.config()
+	cfg.Media.processChanged = p.recordFFmpeg
 
 	// Gate 1: the master switch. The body is deliberately not read — a
 	// disabled subsystem must cost a request nothing, not even a storage read.
@@ -274,6 +277,10 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 	}
 	if max := cfg.Rewrite.MaxRequestBytes; max > 0 && int64(len(body)) > max {
 		return nil, newError(CodeTooLarge, "request body exceeds the configured video preprocessing limit")
+	}
+
+	if cfg.Rewrite.MaxImagesPerRequest-layout.ExistingImages-cfg.ReserveImageSlots < len(layout.Videos)*cfg.Media.MinFramesPerVideo {
+		return nil, newError(CodeImageLimitExceeded, "request does not leave the minimum image allowance for each video")
 	}
 
 	// Stage 2: admission. The queue parks metadata and the body handle only;
@@ -422,13 +429,7 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 	// Decode + probe pass. The decoded video stays in its workspace so the
 	// export pass never re-decodes.
 	probed := make([]probedVideo, 0, len(layout.Videos))
-	p.activeFFmpeg.Add(int64(len(layout.Videos)))
-	p.publishMediaCounters()
 	var probeErr error
-	defer func() {
-		p.activeFFmpeg.Add(-int64(len(layout.Videos)))
-		p.publishMediaCounters()
-	}()
 	for _, part := range layout.Videos {
 		url := extractVideoURL(body, part)
 		if url == "" {
@@ -441,8 +442,16 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 			probeErr = err
 			break
 		}
+
 		p.trackWorkspace(vr.workspace, true)
 		probed = append(probed, probedVideo{index: part.Index, result: vr})
+		analyzeStart := time.Now()
+		vr.analysis, err = analyzeVideo(stageCtx, vr, cfg.Analysis)
+		result.AnalyzeMS += time.Since(analyzeStart).Milliseconds()
+		if err != nil {
+			probeErr = err
+			break
+		}
 	}
 	if probeErr != nil {
 		cleanupProbed(p, probed)
@@ -452,7 +461,11 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 	// Multi-video frame budget over the whole request.
 	inputs := make([]VideoBudgetInput, len(probed))
 	for i, v := range probed {
-		inputs[i] = VideoBudgetInput{VideoIndex: v.index, DurationSeconds: v.result.Metadata.DurationSeconds}
+		ceiling := cfg.DefaultMaxFrames
+		if v.result.analysis.Complexity > 1.5 {
+			ceiling = cfg.HighDetailMaxFrames
+		}
+		inputs[i] = VideoBudgetInput{VideoIndex: v.index, DurationSeconds: v.result.Metadata.DurationSeconds, Complexity: v.result.analysis.Complexity, MaxFrames: ceiling}
 	}
 	available := cfg.Rewrite.MaxImagesPerRequest - result.ExistingImages - cfg.ReserveImageSlots
 	budget, err := allocateFrameBudget(available, cfg.Media.MinFramesPerVideo, cfg.DefaultMaxFrames, inputs)
@@ -461,18 +474,76 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 		return err
 	}
 
-	// Export pass: uniform timestamps per video, one batch FFmpeg per video.
+	// Reserve JSON/Base64 overhead first. All videos share one output allowance;
+	// no video can consume bytes reserved for its siblings' minimum coverage.
+	preserved := int64(len(body))
+	for _, part := range layout.Videos {
+		preserved -= int64(part.length)
+	}
+	bodyAllowance := cfg.Rewrite.MaxRewrittenBodyBytes - preserved - int64(len(probed)*256+budget.TotalFrames*256)
+	remainingBytes := min(cfg.Rewrite.MaxOutputImageBytes, bodyAllowance*3/4)
+	if remainingBytes <= 0 {
+		cleanupProbed(p, probed)
+		return newError(CodeOutputTooLarge, "request leaves no space for video frames")
+	}
+	remainingFrames := budget.TotalFrames
+	fallbackCount := 0
 	for i, v := range probed {
-		if err := p.engine().ExportUniform(stageCtx, v.result, budget.Videos[i].Frames); err != nil {
+		kept := v.result
+		frames := budget.Videos[i].Frames
+		selectStart := time.Now()
+		kept.selected, err = selectAdaptiveFrames(stageCtx, kept.analysis, kept.Metadata.DurationSeconds, frames, cfg.Media.MinFramesPerVideo, cfg.Analysis)
+		if err != nil {
 			cleanupProbed(p, probed)
 			return err
 		}
-		result.ExtractedFrames += len(v.result.Frames)
-		result.workspaces = append(result.workspaces, v.result)
-		result.DecodeMS += v.result.DurationMillis.Decode
-		result.ProbeMS += v.result.DurationMillis.Probe
-		result.ExportMS += v.result.DurationMillis.Export
+		timestamps := make([]float64, 0, len(kept.selected))
+		for _, candidate := range kept.selected {
+			timestamps = append(timestamps, candidate.Timestamp)
+		}
+		if len(timestamps) == 0 {
+			// A successfully decoded clip with no useful visual candidates (for
+			// example an all-black leader) may use the stable coverage baseline.
+			// Decoder errors, limits, cancellation and resource failures never reach
+			// this fallback: they propagate before frame selection.
+			var err error
+			timestamps, err = generateUniformTimestamps(kept.Metadata.DurationSeconds, frames, 1)
+			if err != nil {
+				cleanupProbed(p, probed)
+				return err
+			}
+			kept.samplerVersion = "uniform-v1"
+			fallbackCount++
+		} else {
+			kept.samplerVersion = processorVersion
+		}
+		result.SelectMS += time.Since(selectStart).Milliseconds()
+		limits := kept.limits
+		limits.MaxTotalImageBytes = remainingBytes * int64(frames) / int64(remainingFrames)
+		if limits.MaxTotalImageBytes <= 0 {
+			cleanupProbed(p, probed)
+			return newError(CodeOutputTooLarge, "video output budget is exhausted")
+		}
+		if err := exportJobWithTimestamps(stageCtx, limits, kept.workspace.path("video.bin"), timestamps, kept.workspace.dir, kept.Metadata.RotationDegrees, kept); err != nil {
+			cleanupProbed(p, probed)
+			return err
+		}
+		for _, frame := range kept.Frames {
+			remainingBytes -= frame.Bytes
+		}
+		remainingFrames -= frames
+		result.ExtractedFrames += len(kept.Frames)
+		result.workspaces = append(result.workspaces, kept)
+		result.DecodeMS += kept.DurationMillis.Decode
+		result.ProbeMS += kept.DurationMillis.Probe
+		result.ExportMS += kept.DurationMillis.Export
 	}
+	if fallbackCount == len(probed) {
+		result.SamplerVersion = "uniform-v1"
+	} else if fallbackCount > 0 {
+		result.SamplerVersion = "adaptive-v1+uniform-v1"
+	}
+
 	return nil
 }
 
@@ -598,4 +669,10 @@ func ctxErrOr(ctx context.Context) error {
 		return nil
 	}
 	return ctx.Err()
+}
+
+// recordFFmpeg counts actual running FFmpeg subprocesses, including downgrade
+// attempts, rather than the number of videos in a request.
+func (p *Processor) recordFFmpeg(delta int) {
+	p.queue.SetActiveFFmpeg(int(p.activeFFmpeg.Add(int64(delta))))
 }

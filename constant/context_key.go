@@ -124,7 +124,9 @@ const (
 	ContextKeyVideoDecodeMS ContextKey = "video_decode_ms"
 
 	// ContextKeyVideoProbeMS is the total probe time across all videos.
-	ContextKeyVideoProbeMS ContextKey = "video_probe_ms"
+	ContextKeyVideoProbeMS   ContextKey = "video_probe_ms"
+	ContextKeyVideoAnalyzeMS ContextKey = "video_analyze_ms"
+	ContextKeyVideoSelectMS  ContextKey = "video_select_ms"
 
 	// ContextKeyVideoExportMS is the total export time across all videos.
 	ContextKeyVideoExportMS ContextKey = "video_export_ms"
