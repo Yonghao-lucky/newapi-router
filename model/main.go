@@ -371,6 +371,7 @@ func migrateDB() error {
 		&CasbinRule{},
 		&AuthzRole{},
 		&AIRouterLog{},
+		&VideoPreprocessLog{},
 		&AIRouterTargetPolicy{},
 		&AIRouterTargetCandidate{},
 		&AIRouterAttemptLog{},

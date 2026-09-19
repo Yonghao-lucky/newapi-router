@@ -74,7 +74,7 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 	}
 
 	if err := validateMetadata(meta, limits); err != nil {
-		return nil, err
+		return meta, err
 	}
 
 	return meta, nil

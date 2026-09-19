@@ -3,11 +3,13 @@ package video_preprocess
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -32,7 +34,10 @@ type Processor struct {
 	// settings mid-flight.
 	cfg atomic.Pointer[EngineConfig]
 
-	queue *Queue
+	queue           *Queue
+	completions     atomic.Pointer[completionWriter]
+	completed       completionMetrics
+	configAppliedAt atomic.Int64
 
 	// activeFFmpeg is the media layer's real-time subprocess gauge, merged
 	// into the queue's runtime snapshot.
@@ -54,6 +59,7 @@ func NewProcessor(cfg EngineConfig) (*Processor, error) {
 	}
 	p := &Processor{queue: queue}
 	p.cfg.Store(&cfg)
+	p.configAppliedAt.Store(time.Now().Unix())
 	p.liveWorkspaces = make(map[*workspace]struct{})
 	p.publishMediaCounters()
 	return p, nil
@@ -65,6 +71,9 @@ func NewProcessor(cfg EngineConfig) (*Processor, error) {
 func (p *Processor) SetConfig(cfg EngineConfig) error {
 	if err := p.queue.SetLimits(cfg.Admission); err != nil {
 		return err
+	}
+	if p.config().Version != cfg.Version {
+		p.configAppliedAt.Store(time.Now().Unix())
 	}
 	p.cfg.Store(&cfg)
 	p.publishMediaCounters()
@@ -167,13 +176,17 @@ type ProcessResult struct {
 	ExtractedFrames int
 
 	// Stage timings in milliseconds.
-	AnalyzeMS int64
-	SelectMS  int64
-	DecodeMS  int64
-	ProbeMS   int64
-	ExportMS  int64
-	RewriteMS int64
-	TotalMS   int64
+	QueueMS           int64
+	Videos            []model.VideoPreprocessMedia
+	DecodedVideoBytes int64
+	OutputImageBytes  int64
+	AnalyzeMS         int64
+	SelectMS          int64
+	DecodeMS          int64
+	ProbeMS           int64
+	ExportMS          int64
+	RewriteMS         int64
+	TotalMS           int64
 
 	// SamplerVersion identifies the sampling integration.
 	SamplerVersion string
@@ -228,7 +241,7 @@ type probedVideo struct {
 // untouched: no new BodyStorage is installed, the original stays replayable,
 // and every workspace created on the way is cleaned up before the error
 // returns.
-func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessResult, error) {
+func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *ProcessResult, processErr error) {
 	start := time.Now()
 
 	// One config generation per request: every stage below reads the same
@@ -269,6 +282,20 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 		return bypassResultWithModality(BypassReasonNoVideo, layout), nil
 	}
 
+	result := &ProcessResult{
+		OriginalModality:  "video",
+		EffectiveModality: "image",
+		VideoCount:        len(layout.Videos),
+		ExistingImages:    layout.ExistingImages,
+		SamplerVersion:    processorVersion,
+		OriginalBodyBytes: int64(len(body)),
+	}
+
+	defer func() {
+		result.TotalMS = time.Since(start).Milliseconds()
+		p.recordCompletion(cfg, input, result, processErr)
+	}()
+
 	// Request-level input limits before queueing.
 	if max := cfg.MaxVideosPerRequest; max > 0 && len(layout.Videos) > max {
 		return nil, newError(CodeTooLarge,
@@ -286,24 +313,16 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 	// Stage 2: admission. The queue parks metadata and the body handle only;
 	// the full body is never copied into the queue. Materialization for the
 	// rewrite happens after admission, from the caller's own body bytes.
+	queueStart := time.Now()
 	lease, admitErr := p.queue.Acquire(ctx, AcquireRequest{
 		RequestID: requestIDOf(ginCtx),
 		UserID:    input.UserID,
 		Model:     input.Model,
 		BodyBytes: int64(len(body)),
 	}, body)
+	result.QueueMS = time.Since(queueStart).Milliseconds()
 	if admitErr != nil {
 		return nil, admitErr
-	}
-
-	result := &ProcessResult{
-		OriginalModality:   "video",
-		EffectiveModality:  "image",
-		VideoCount:         len(layout.Videos),
-		ExistingImages:     layout.ExistingImages,
-		SamplerVersion:     processorVersion,
-		OriginalBodyBytes:  int64(len(body)),
-		RewrittenBodyBytes: int64(len(body)),
 	}
 
 	// The queue slot is released exactly once, here, on every path after a
@@ -317,8 +336,6 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 			p.queue.Release(lease, contextFailure(ctxErrOr(ctx)))
 		}
 	}()
-
-	queueDone := time.Now()
 
 	// Stages 3..6 run under the lease via Execute, which classifies stage
 	// failures, enforces the snapshotted job timeout and contains panics.
@@ -340,17 +357,14 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (*ProcessRe
 			rewriteResult = rewrite
 			return nil
 		default:
-			// Decoding, probing, analyzing and selecting have no standalone
-			// work in the uniform sampler: decode and probe run inside
-			// processVideos (per video, before the budget), and the uniform
-			// budget IS the selection.
+			// Per-video decode, probe, analysis and selection run inside
+			// processVideos and record their own measured stage durations.
 			return nil
 		}
 	})
 	if execErr != nil {
 		return nil, execErr
 	}
-	_ = queueDone
 	if rewriteResult == nil {
 		return nil, &StageError{Code: CodeProcessingFailed, Stage: JobStageRewriting, Message: "rewrite produced no result"}
 	}
@@ -438,6 +452,13 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 			break
 		}
 		vr, err := p.engine().ProbeAndKeep(stageCtx, url, cfg.Media, cfg.AllowedMIMETypes, part.Index)
+		if vr != nil {
+			result.DecodeMS += vr.DurationMillis.Decode
+			result.ProbeMS += vr.DurationMillis.Probe
+			result.DecodedVideoBytes += vr.DecodedBytes
+			duration := min(vr.Metadata.DurationSeconds*1000, float64(math.MaxInt64-1024))
+			result.Videos = append(result.Videos, model.VideoPreprocessMedia{Index: part.Index, DurationMS: int64(duration), Width: vr.Metadata.Width, Height: vr.Metadata.Height, Codec: vr.Metadata.VideoCodec, DecodedBytes: vr.DecodedBytes})
+		}
 		if err != nil {
 			probeErr = err
 			break
@@ -524,19 +545,23 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 			cleanupProbed(p, probed)
 			return newError(CodeOutputTooLarge, "video output budget is exhausted")
 		}
-		if err := exportJobWithTimestamps(stageCtx, limits, kept.workspace.path("video.bin"), timestamps, kept.workspace.dir, kept.Metadata.RotationDegrees, kept); err != nil {
+		exportStart := time.Now()
+		exportErr := exportJobWithTimestamps(stageCtx, limits, kept.workspace.path("video.bin"), timestamps, kept.workspace.dir, kept.Metadata.RotationDegrees, kept)
+		result.ExportMS += time.Since(exportStart).Milliseconds()
+		if exportErr != nil {
 			cleanupProbed(p, probed)
-			return err
+			return exportErr
 		}
 		for _, frame := range kept.Frames {
 			remainingBytes -= frame.Bytes
+			result.OutputImageBytes += frame.Bytes
+			result.Videos[i].ImageBytes += frame.Bytes
 		}
 		remainingFrames -= frames
 		result.ExtractedFrames += len(kept.Frames)
 		result.workspaces = append(result.workspaces, kept)
-		result.DecodeMS += kept.DurationMillis.Decode
-		result.ProbeMS += kept.DurationMillis.Probe
-		result.ExportMS += kept.DurationMillis.Export
+		result.Videos[i].Frames = len(kept.Frames)
+		result.Videos[i].SamplerVersion = kept.samplerVersion
 	}
 	if fallbackCount == len(probed) {
 		result.SamplerVersion = "uniform-v1"

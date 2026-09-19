@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -158,8 +162,7 @@ func UpdateVideoPreprocessSettings(c *gin.Context) {
 
 // GetVideoPreprocessRuntime returns this node's live video preprocessing
 // counters: queue occupancy, media subprocess gauge, temp storage, wait age,
-// config version and binary health. Everything is read from in-process state —
-// no throughput, trend or persisted statistic exists to report.
+// config version, throughput, logging health and binary availability.
 func GetVideoPreprocessRuntime(c *gin.Context) {
 	common.ApiSuccess(c, video_preprocess.GetRuntimeStatus())
 }
@@ -196,4 +199,92 @@ func ValidateVideoPreprocessSettings(c *gin.Context) {
 		Issues:   issues,
 		Blocking: video_preprocess_setting.HasBlockingIssue(issues),
 	})
+}
+
+// The same validated filter is used for logs and every statistics view. Query
+// deadlines protect relay capacity from expensive administrator range scans.
+func videoPreprocessFilter(c *gin.Context) (model.VideoPreprocessLogFilter, bool) {
+	now := time.Now().Unix()
+	filter := model.VideoPreprocessLogFilter{StartTime: now - 24*3600, EndTime: now}
+	if err := c.ShouldBindQuery(&filter); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid video log filters"})
+		return filter, false
+	}
+	if err := filter.Validate(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return filter, false
+	}
+	return filter, true
+}
+
+func GetVideoPreprocessLogs(c *gin.Context) {
+	filter, ok := videoPreprocessFilter(c)
+	if !ok {
+		return
+	}
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 || page > 1000000 {
+		c.JSON(400, gin.H{"success": false, "message": "invalid page"})
+		return
+	}
+	size, err := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if err != nil || size < 1 {
+		c.JSON(400, gin.H{"success": false, "message": "invalid page size"})
+		return
+	}
+	size = min(size, 100)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	rows, total, err := model.GetVideoPreprocessLogs(ctx, filter, page, size)
+	if err != nil {
+		c.JSON(503, gin.H{"success": false, "message": "video logs are unavailable"})
+		return
+	}
+	common.ApiSuccess(c, gin.H{"items": rows, "total": total, "page": page, "page_size": size})
+}
+
+func GetVideoPreprocessLogDetail(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id < 1 {
+		c.JSON(400, gin.H{"success": false, "message": "invalid video log id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	row, err := model.GetVideoPreprocessLog(ctx, id)
+	if err != nil {
+		c.JSON(503, gin.H{"success": false, "message": "video log is unavailable"})
+		return
+	}
+	if row == nil {
+		c.JSON(404, gin.H{"success": false, "message": "video log was not found"})
+		return
+	}
+	common.ApiSuccess(c, row)
+}
+
+// All statistics routes share the same portable aggregation and filters; the
+// route suffix only chooses the projection sent to the dashboard.
+func GetVideoPreprocessStats(c *gin.Context) {
+	filter, ok := videoPreprocessFilter(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	stats, err := model.GetVideoPreprocessStats(ctx, filter)
+	if err != nil {
+		c.JSON(503, gin.H{"success": false, "message": "video statistics are unavailable"})
+		return
+	}
+	switch {
+	case strings.HasSuffix(c.Request.URL.Path, "/trend"):
+		common.ApiSuccess(c, stats.Trend)
+	case strings.HasSuffix(c.Request.URL.Path, "/durations"):
+		common.ApiSuccess(c, gin.H{"queue": stats.Queue, "total": stats.Total, "stage_ms": stats.StageMS, "by_duration": stats.ByDuration, "by_codec": stats.ByCodec, "by_frames": stats.ByFrames})
+	case strings.HasSuffix(c.Request.URL.Path, "/errors"):
+		common.ApiSuccess(c, gin.H{"by_error": stats.ByError, "rejected_count": stats.RejectedCount})
+	default:
+		common.ApiSuccess(c, stats)
+	}
 }

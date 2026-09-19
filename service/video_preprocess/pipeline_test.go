@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	ai_router "github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
@@ -609,4 +610,105 @@ func TestProcessorCancelDuringQueueWait(t *testing.T) {
 	assert.Equal(t, 1, p.Snapshot().RunningJobs, "only the test's occupier holds a slot")
 	p.queue.Release(occupier, nil)
 	assert.Equal(t, 0, p.Snapshot().RunningJobs)
+}
+
+func TestProcessorCompletionRecordsAreAsyncAndPrivate(t *testing.T) {
+	cfg := testEngineConfig(t)
+	cfg.Admission.MaxRunningJobs = 1
+	cfg.Admission.MaxRunningPerUser = 1
+	cfg.Admission.MaxWaitingJobs = 0
+	cfg.Admission.MaxWaitingPerUser = 0
+	p, err := NewProcessor(cfg)
+	require.NoError(t, err)
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	rows := make(chan *model.VideoPreprocessLog, 16)
+	writer := newCompletionWriter(16, func(ctx context.Context, entry *model.VideoPreprocessLog) error {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+		select {
+		case <-unblock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		rows <- entry
+		return nil
+	})
+	p.completions.Store(writer)
+	t.Cleanup(func() {
+		p.completions.Store(nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		require.NoError(t, writer.close(ctx))
+	})
+	// The sink is deliberately blocked. The client must finish independently.
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Process(context.Background(), ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, "https://private.invalid/prompt"))})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.Equal(t, CodeInvalidDataURL, CodeOf(err))
+	case <-time.After(time.Second):
+		t.Fatal("customer request blocked on telemetry persistence")
+	}
+	<-entered
+	close(unblock)
+	url := fixtureVideo(t, "static")
+	body := videoBody("kimi-k3", 1, url, url)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	c.Set(common.RequestIdKey, "video-completion-request-id")
+	result, err := p.Process(context.Background(), ProcessInput{UserID: 88, Model: "kimi-k3", Ctx: c})
+	require.NoError(t, err)
+	common.CleanupBodyStorage(c)
+	assert.Equal(t, 2, result.VideoCount)
+	lease := acquireOK(t, context.Background(), p.queue, AcquireRequest{UserID: 99})
+	_, err = p.Process(context.Background(), ProcessInput{UserID: 88, Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, url))})
+	require.Equal(t, CodeQueueFull, CodeOf(err))
+	p.queue.Release(lease, nil)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = p.Process(canceled, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, url))})
+	require.Equal(t, CodeProcessingCanceled, CodeOf(err))
+	expired, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	_, err = p.Process(expired, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, url))})
+	require.Equal(t, CodeProcessingTimeout, CodeOf(err))
+	_, err = p.Process(context.Background(), ProcessInput{Model: "kimi-k3", Body: []byte(`{"messages":[{"content":"text bypass"}]}`)})
+	require.NoError(t, err)
+	ctx, finish := context.WithTimeout(context.Background(), 3*time.Second)
+	defer finish()
+	require.NoError(t, writer.close(ctx))
+	require.Len(t, rows, 5, "exactly one completion for each detected video, including terminal failures; no text log")
+	expected := []string{"failed", "succeeded", "rejected", "canceled", "timed_out"}
+	for i := range 5 {
+		entry := <-rows
+		assert.Equal(t, expected[i], entry.Status)
+		assert.Equal(t, "kimi-k3", entry.Model)
+		serialized, err := common.Marshal(entry)
+		require.NoError(t, err)
+		assert.NotContains(t, string(serialized), "base64")
+		assert.NotContains(t, string(serialized), "private.invalid")
+		assert.NotContains(t, string(serialized), "before")
+		assert.NotContains(t, string(serialized), cfg.Media.TempRoot)
+		if entry.Status == "succeeded" {
+			assert.Equal(t, "video-completion-request-id", entry.RequestId)
+			assert.Equal(t, 88, entry.UserId)
+			assert.Equal(t, result.ExtractedFrames, entry.ExtractedFrames)
+			require.Len(t, entry.Videos, 2)
+			assert.Equal(t, "h264", entry.Codec)
+			assert.EqualValues(t, len(body), entry.OriginalBodyBytes)
+			assert.Positive(t, entry.DecodedVideoBytes)
+			assert.Positive(t, entry.OutputImageBytes)
+			assert.Positive(t, entry.AnalyzeMS)
+			assert.GreaterOrEqual(t, entry.TotalMS, entry.AnalyzeMS+entry.ExportMS)
+		}
+	}
+	assert.Zero(t, writer.dropped.Load())
+	assert.Equal(t, [3]int64{5, 5, 5}, p.recentThroughput())
 }

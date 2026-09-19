@@ -351,3 +351,18 @@ func TestVideoPreprocessRouteIsolation(t *testing.T) {
 		})
 	}
 }
+
+func TestVideoManagementRoutesRequireAdminAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	require.NoError(t, i18n.Init())
+	engine := gin.New()
+	SetApiRouter(engine)
+	for _, path := range []string{"settings", "runtime", "logs", "logs/1", "stats", "stats/trend", "stats/durations", "stats/errors"} {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, httptest.NewRequest("GET", "/api/ai-router/video/"+path, nil))
+			assert.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+			assert.NotContains(t, w.Body.String(), "video_count")
+		})
+	}
+}

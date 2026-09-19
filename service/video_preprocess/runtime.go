@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -20,6 +21,7 @@ var (
 	singletonMu sync.Mutex
 	singleton   *Processor
 	singletonFx error
+	runtimeOnce sync.Once
 )
 
 // GetProcessor returns the process-wide processor, building it from the
@@ -78,7 +80,19 @@ func StartVideoPreprocessRuntime() {
 		// would log the same nil-processor condition every minute.
 		return
 	}
-	startStaleWorkspaceCleanup(p)
+	runtimeOnce.Do(func() {
+		p.completions.Store(newCompletionWriter(4096, model.InsertVideoPreprocessLog))
+		runStaleCleanupOnce(p)
+		startStaleWorkspaceCleanup(p)
+		gopool.Go(func() {
+			runCompletionRetention()
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				runCompletionRetention()
+			}
+		})
+	})
 }
 
 // staleCleanupInterval is the sweep cadence. Workspaces are request-scoped and
@@ -128,8 +142,8 @@ func binaryHealth(name string) bool {
 }
 
 // RuntimeStatus is the payload of GET /api/ai-router/video/runtime. Every
-// number is a live counter from this node's queue and media layer — no
-// throughput, trend or persisted statistic exists in the pipeline to report.
+// number is a live counter from this node's queue, media layer or completion
+// writer. Historical aggregation is served separately from the primary DB.
 type RuntimeStatus struct {
 	// Available is false only when the processor failed to build; the
 	// remaining fields are zero and Reason says why.
@@ -146,7 +160,14 @@ type RuntimeStatus struct {
 
 	// Enabled mirrors the published master switch so the page can show
 	// "configured off" next to a healthy runtime.
-	Enabled bool `json:"enabled"`
+	Enabled          bool                                  `json:"enabled"`
+	ConfigAppliedAt  int64                                 `json:"config_applied_at"`
+	CompletedLast1M  int64                                 `json:"completed_last_1m"`
+	CompletedLast5M  int64                                 `json:"completed_last_5m"`
+	CompletedLast15M int64                                 `json:"completed_last_15m"`
+	PendingLogs      int                                   `json:"pending_logs"`
+	DroppedLogs      int64                                 `json:"dropped_logs"`
+	Disk             video_preprocess_setting.TempDiskInfo `json:"disk"`
 }
 
 // GetRuntimeStatus builds the runtime payload from the singleton processor and
@@ -165,12 +186,21 @@ func GetRuntimeStatus() RuntimeStatus {
 	}
 	cfg := p.config()
 	deploy := video_preprocess_setting.GetDeploymentConfig()
-	return RuntimeStatus{
+	counts := p.recentThroughput()
+	status := RuntimeStatus{
+		ConfigAppliedAt: p.configAppliedAt.Load(),
+		CompletedLast1M: counts[0], CompletedLast5M: counts[1], CompletedLast15M: counts[2],
+		Disk:             video_preprocess_setting.GetTempDiskInfo(),
 		Available:        true,
 		Queue:            p.Snapshot(),
 		Version:          cfg.Version,
 		FFmpegAvailable:  binaryHealth(deploy.FFmpegPath),
 		FFprobeAvailable: binaryHealth(deploy.FFprobePath),
-		Enabled:          video_preprocess_setting.GetSettings().Enabled,
+		Enabled:          cfg.Enabled,
 	}
+	if writer := p.completions.Load(); writer != nil {
+		status.PendingLogs = len(writer.pending)
+		status.DroppedLogs = writer.dropped.Load()
+	}
+	return status
 }

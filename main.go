@@ -160,6 +160,13 @@ func main() {
 	// settings and start this node's stale workspace cleanup. Settings changes
 	// propagate through the option reload hook below, not through this call.
 	video_preprocess.StartVideoPreprocessRuntime()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := video_preprocess.StopVideoPreprocessRuntime(ctx); err != nil {
+			common.SysError("video completion logs did not drain before shutdown")
+		}
+	}()
 	model.OnVideoPreprocessPublished = video_preprocess.ApplyPublishedSettings
 
 	// Report this process as a system instance so the System Info page can show

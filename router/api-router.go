@@ -294,6 +294,12 @@ func SetApiRouter(router *gin.Engine) {
 			aiRouterGroup.PUT("/video/settings", controller.UpdateVideoPreprocessSettings)
 			aiRouterGroup.POST("/video/settings/validate", controller.ValidateVideoPreprocessSettings)
 			aiRouterGroup.GET("/video/runtime", controller.GetVideoPreprocessRuntime)
+			aiRouterGroup.GET("/video/logs", controller.GetVideoPreprocessLogs)
+			aiRouterGroup.GET("/video/logs/:id", controller.GetVideoPreprocessLogDetail)
+			aiRouterGroup.GET("/video/stats", controller.GetVideoPreprocessStats)
+			aiRouterGroup.GET("/video/stats/trend", controller.GetVideoPreprocessStats)
+			aiRouterGroup.GET("/video/stats/durations", controller.GetVideoPreprocessStats)
+			aiRouterGroup.GET("/video/stats/errors", controller.GetVideoPreprocessStats)
 
 			aiRouterGroup.GET("/channels", controller.GetAIRouterChannels)
 			aiRouterGroup.PUT("/channels/:id/router", controller.UpdateAIRouterChannelRouter)

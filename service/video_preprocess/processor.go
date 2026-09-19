@@ -36,7 +36,8 @@ type ProcessVideoInput struct {
 // ProcessVideoResult is the complete output of one ProcessVideo call.
 type ProcessVideoResult struct {
 	// VideoIndex echoes the caller's VideoInput.Index.
-	VideoIndex int
+	VideoIndex   int
+	DecodedBytes int64
 
 	// Metadata is the validated video metadata from ffprobe.
 	Metadata VideoMetadata
@@ -81,7 +82,11 @@ func (r *ProcessVideoResult) Cleanup() error {
 // The caller must invoke result.Cleanup() when the frames are no longer needed,
 // regardless of success, failure, cancellation or timeout.
 func ProcessVideo(ctx context.Context, input ProcessVideoInput, opts Options) (*ProcessVideoResult, error) {
-	return processVideoStage(ctx, input, opts, true)
+	result, err := processVideoStage(ctx, input, opts, true)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // processVideoStage runs the decode and probe halves of the pipeline. When
@@ -123,10 +128,10 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	// Stage 1: Parse and validate Data URL
 	dataURL, decodedSize, err := parseVideoDataURL(input.Video.URL, opts.AllowedMIMETypes)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	if decodedSize > limits.MaxDecodedVideoBytes {
-		return nil, newError(CodeTooLarge,
+		return result, newError(CodeTooLarge,
 			fmt.Sprintf("decoded video size %d exceeds limit %d",
 				decodedSize, limits.MaxDecodedVideoBytes))
 	}
@@ -135,27 +140,27 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	decodeStart := time.Now()
 	videoFile, err := ws.create("video.bin")
 	if err != nil {
-		return nil, err
+		return result, err
 	}
-	_, err = decodeVideoDataURL(dataURL, videoFile, limits.MaxDecodedVideoBytes)
+	result.DecodedBytes, err = decodeVideoDataURL(dataURL, videoFile, limits.MaxDecodedVideoBytes)
 	if closeErr := videoFile.Close(); closeErr != nil && err == nil {
 		err = wrapError(CodeStorageFailed, "failed to close decoded video file", closeErr)
 	}
-	if err != nil {
-		return nil, err
-	}
 	result.DurationMillis.Decode = time.Since(decodeStart).Milliseconds()
+	if err != nil {
+		return result, err
+	}
 
 	videoPath := ws.path("video.bin")
 
 	// Sanity check: sniff container magic bytes
 	head, err := readHead(videoPath, 12)
 	if err != nil {
-		return nil, wrapError(CodeDecodeFailed, "failed to read decoded video", err)
+		return result, wrapError(CodeDecodeFailed, "failed to read decoded video", err)
 	}
 	sniffed := sniffContainer(head)
 	if sniffed == "" {
-		return nil, newError(CodeUnsupportedFormat, "decoded video has no recognizable container magic")
+		return result, newError(CodeUnsupportedFormat, "decoded video has no recognizable container magic")
 	}
 
 	// Stage 3: Probe with ffprobe
@@ -164,11 +169,13 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	defer probeCancel()
 
 	meta, err := probeVideo(probeCtx, limits.FFprobePath, videoPath, limits)
-	if err != nil {
-		return nil, err
-	}
-	result.Metadata = *meta
 	result.DurationMillis.Probe = time.Since(probeStart).Milliseconds()
+	if meta != nil {
+		result.Metadata = *meta
+	}
+	if err != nil {
+		return result, err
+	}
 
 	if !export {
 		// The decode and probe halves are done; the caller decides the frame
@@ -184,11 +191,11 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	}
 	timestamps, err := generateUniformTimestamps(meta.DurationSeconds, maxFrames, limits.MinFramesPerVideo)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 
 	if err := exportJobWithTimestamps(ctx, limits, videoPath, timestamps, ws.dir, meta.RotationDegrees, result); err != nil {
-		return nil, err
+		return result, err
 	}
 	result.DurationMillis.Total = time.Since(start).Milliseconds()
 	// Success: the caller owns cleanup from here on.

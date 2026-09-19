@@ -15,11 +15,13 @@ import (
 // MB/second/millisecond unit boundary is converted in exactly one place —
 // here.
 type EngineConfig struct {
-	Media               MediaLimits
-	Analysis            AnalysisConfig
-	HighDetailMaxFrames int
-	Rewrite             RewriteLimits
-	Admission           AdmissionLimits
+	Media                 MediaLimits
+	Analysis              AnalysisConfig
+	HighDetailMaxFrames   int
+	TelemetryEnabled      bool
+	RecordPerVideoDetails bool
+	Rewrite               RewriteLimits
+	Admission             AdmissionLimits
 
 	// Enabled is the subsystem's master switch. A request arriving under a
 	// disabled config bypasses without reading the body, entering the queue or
@@ -64,15 +66,17 @@ func BuildEngineConfig(snapshot video_preprocess_setting.Snapshot, deploy video_
 	s := snapshot.Settings
 
 	cfg := EngineConfig{
-		Version:             snapshot.Version,
-		Enabled:             s.Enabled,
-		TargetModels:        slices.Clone(s.TargetModels),
-		StaleTTL:            time.Duration(s.StaleFileTTLMinutes) * time.Minute,
-		MaxVideosPerRequest: s.MaxVideosPerRequest,
-		ReserveImageSlots:   s.ReserveImageSlots,
-		DefaultMaxFrames:    s.DefaultMaxFrames,
-		HighDetailMaxFrames: s.HighDetailMaxFrames,
-		IncludeTimestamps:   s.IncludeTimestamps,
+		Version:               snapshot.Version,
+		TelemetryEnabled:      s.TelemetryEnabled,
+		RecordPerVideoDetails: s.RecordPerVideoDetails,
+		Enabled:               s.Enabled,
+		TargetModels:          slices.Clone(s.TargetModels),
+		StaleTTL:              time.Duration(s.StaleFileTTLMinutes) * time.Minute,
+		MaxVideosPerRequest:   s.MaxVideosPerRequest,
+		ReserveImageSlots:     s.ReserveImageSlots,
+		DefaultMaxFrames:      s.DefaultMaxFrames,
+		HighDetailMaxFrames:   s.HighDetailMaxFrames,
+		IncludeTimestamps:     s.IncludeTimestamps,
 	}
 
 	cfg.Analysis = AnalysisConfig{
