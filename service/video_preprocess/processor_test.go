@@ -409,7 +409,7 @@ func TestProcessVideoIntegration(t *testing.T) {
 		videoPath,
 	)
 	if err := cmd.Run(); err != nil {
-		t.Skipf("failed to generate test video: %v", err)
+		t.Fatalf("failed to generate test video: %v", err)
 	}
 
 	// Read and encode as data URL

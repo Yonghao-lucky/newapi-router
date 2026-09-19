@@ -339,11 +339,11 @@ func TestProcessorEndToEndRealVideo(t *testing.T) {
 	tempDir := t.TempDir()
 	videoPath := filepath.Join(tempDir, "test.mp4")
 	cmd := exec.Command("ffmpeg",
-		"-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", videoPath,
+		"-f", "lavfi", "-i", "testsrc2=duration=2:size=320x240:rate=10",
+		"-threads", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", videoPath,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("failed to generate test video: %v: %s", err, out)
+		t.Fatalf("failed to generate test video: %v: %s", err, out)
 	}
 	videoBytes, err := os.ReadFile(videoPath)
 	require.NoError(t, err)
@@ -406,10 +406,10 @@ func TestProcessorRejectsBudgetShortfall(t *testing.T) {
 
 	tempDir := t.TempDir()
 	videoPath := filepath.Join(tempDir, "test.mp4")
-	cmd := exec.Command("ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=10",
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", videoPath)
+	cmd := exec.Command("ffmpeg", "-f", "lavfi", "-i", "testsrc2=duration=1:size=320x240:rate=10",
+		"-threads", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", videoPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("failed to generate test video: %v: %s", err, out)
+		t.Fatalf("failed to generate test video: %v: %s", err, out)
 	}
 	videoBytes, err := os.ReadFile(videoPath)
 	require.NoError(t, err)
@@ -504,10 +504,10 @@ func TestProcessorInstallsBodyStorageOnGinContext(t *testing.T) {
 
 	tempDir := t.TempDir()
 	videoPath := filepath.Join(tempDir, "test.mp4")
-	cmd := exec.Command("ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", videoPath)
+	cmd := exec.Command("ffmpeg", "-f", "lavfi", "-i", "testsrc2=duration=2:size=320x240:rate=10",
+		"-threads", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", videoPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("failed to generate test video: %v: %s", err, out)
+		t.Fatalf("failed to generate test video: %v: %s", err, out)
 	}
 	videoBytes, err := os.ReadFile(videoPath)
 	require.NoError(t, err)
@@ -567,12 +567,12 @@ func TestProcessorRejectsCorruptVideo(t *testing.T) {
 	require.NoError(t, err)
 
 	// "ftyp" header keeps the sniff happy; the rest is not a real movie.
-	body := videoBody("kimi-k3", 0, "data:video/mp4;base64,"+base64.StdEncoding.EncodeToString([]byte("ftyp garbage not a video at all")))
+	body := videoBody("kimi-k3", 0, "data:video/mp4;base64,"+base64.StdEncoding.EncodeToString([]byte("\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2")))
 
 	_, err = p.Process(context.Background(), ProcessInput{UserID: 3, Model: "kimi-k3", Body: []byte(body)})
 	require.Error(t, err)
-	code := CodeOf(err)
-	assert.NotEmpty(t, code, "a corrupt video must classify into a stable code")
+	assert.Equal(t, CodeUnsupportedFormat, CodeOf(err))
+	assert.Equal(t, 400, HTTPStatusForError(err))
 	assert.Equal(t, 0, p.Snapshot().RunningJobs)
 	assert.Equal(t, int64(0), p.Snapshot().TempStorageBytes)
 }

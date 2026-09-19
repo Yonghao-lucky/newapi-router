@@ -1,8 +1,8 @@
 package middleware
 
 import (
-	"fmt"
-	"net/http"
+	"errors"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -26,25 +26,30 @@ func VideoPreprocess() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		processor := video_preprocess.GetProcessor()
 		if processor == nil {
-			abortWithOpenAiMessage(c, http.StatusInternalServerError,
-				"video preprocessing unavailable",
-				types.ErrorCodeInvalidApiType)
+			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidConfig})
 			return
 		}
 
 		// Extract model from request body. This must happen before calling
 		// Processor, because no middleware before VideoPreprocess sets
 		// ContextKeyOriginalModel.
-		modelRequest, err := getModelFromRequest(c)
+		modelRequest, err := getModelFromJSONBody(c)
 		if err != nil {
-			abortWithOpenAiMessage(c, http.StatusBadRequest,
-				fmt.Sprintf("failed to extract model: %v", err),
-				types.ErrorCodeInvalidRequest)
+			code := video_preprocess.CodeInvalidRequest
+			if errors.Is(err, common.ErrRequestBodyTooLarge) || common.IsRequestBodyTooLargeError(err) {
+				code = video_preprocess.CodeTooLarge
+			}
+			handleVideoPreprocessError(c, &video_preprocess.Error{Code: code})
 			return
 		}
 		model := ""
 		if modelRequest != nil {
 			model = modelRequest.Model
+		}
+
+		if model == "" {
+			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidRequest})
+			return
 		}
 
 		userID := c.GetInt(string(constant.ContextKeyUserId))
@@ -65,85 +70,17 @@ func VideoPreprocess() gin.HandlerFunc {
 }
 
 // handleVideoPreprocessError maps video preprocessing errors to OpenAI-compatible
-// HTTP responses. Admission errors carry their own HTTP status and Retry-After
-// hint; all others are classified by their stable error code.
+// HTTP responses. The service owns classification and safe client messages.
 func handleVideoPreprocessError(c *gin.Context, err error) {
 	code := video_preprocess.CodeOf(err)
-	message := video_preprocess.MessageOf(err)
-	if message == "" {
-		message = fmt.Sprintf("video preprocessing failed: %s", code)
+	if code == "" {
+		code = video_preprocess.CodeInternal
 	}
-
-	// Admission errors carry their own HTTP status and Retry-After.
-	httpStatus := video_preprocess.HTTPStatusForError(err)
 	if retryAfter, ok := video_preprocess.RetryAfterForError(err); ok {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
+		c.Header("Retry-After", strconv.FormatInt(retryAfter, 10))
 	}
-
-	// Map every stable error code to an OpenAI error code and HTTP status.
-	var openAICode types.ErrorCode
-	switch code {
-	// 400 Bad Request: client input errors
-	case video_preprocess.CodeInvalidRequest,
-		video_preprocess.CodeInvalidDataURL,
-		video_preprocess.CodeInvalidBase64,
-		video_preprocess.CodeUnsupportedFormat,
-		video_preprocess.CodeInvalidConfig:
-		openAICode = types.ErrorCodeInvalidRequest
-		httpStatus = http.StatusBadRequest
-
-	// 413 Request Entity Too Large: size/length limits
-	case video_preprocess.CodeTooLarge,
-		video_preprocess.CodeTooLong,
-		video_preprocess.CodeResolutionExceeded,
-		video_preprocess.CodeImageLimitExceeded,
-		video_preprocess.CodeOutputTooLarge:
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = http.StatusRequestEntityTooLarge
-
-	// 429 Too Many Requests: queue admission rejections
-	case video_preprocess.CodeQueueFull,
-		video_preprocess.CodeQueueBytes,
-		video_preprocess.CodeUserLimit,
-		video_preprocess.CodeEstimatedWait:
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = http.StatusTooManyRequests
-
-	// 503 Service Unavailable: node resource exhaustion
-	case video_preprocess.CodeStorageExhausted,
-		video_preprocess.CodeDiskStorageExhausted:
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = http.StatusServiceUnavailable
-
-	// 408 Request Timeout: job timed out
-	case video_preprocess.CodeProcessingTimeout,
-		video_preprocess.CodeQueueTimeout:
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = http.StatusRequestTimeout
-
-	// 499 Client Closed Request: canceled by caller
-	case video_preprocess.CodeProcessingCanceled:
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = 499
-
-	// 500 Internal Server Error: media pipeline failures
-	case video_preprocess.CodeProbeFailed,
-		video_preprocess.CodeDecodeFailed,
-		video_preprocess.CodeExportFailed,
-		video_preprocess.CodeStorageFailed,
-		video_preprocess.CodeRewriteFailed,
-		video_preprocess.CodeProcessingFailed,
-		video_preprocess.CodeInternal:
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = http.StatusInternalServerError
-
-	default:
-		// Unknown codes: 500 as a safe default
-		openAICode = types.ErrorCodeBadRequestBody
-		httpStatus = http.StatusInternalServerError
-	}
-
-	abortWithOpenAiMessage(c, httpStatus, message, openAICode)
+	abortWithOpenAiMessage(c, video_preprocess.HTTPStatusForError(err),
+		video_preprocess.PublicMessageForError(err), types.ErrorCode(code))
 }
 
 // publishVideoMetadata writes the ProcessResult into the gin context so the

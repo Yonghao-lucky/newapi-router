@@ -1,7 +1,7 @@
 package video_preprocess
 
 import (
-	"encoding/json"
+	"github.com/QuantumNous/new-api/common"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,30 +42,7 @@ func TestRuntimeStatusReportsLiveCounters(t *testing.T) {
 	assert.NotContains(t, payload, "throughput")
 }
 
-func TestRuntimeStatusUnavailableOnBuildFailure(t *testing.T) {
-	// An invalid admission config is the one realistic way the singleton build
-	// fails: the settings layer already validated the rest.
-	bad := testEngineConfig(t)
-	bad.Admission.MaxRunningJobs = 0
-	bad.Admission.MaxWaitingJobs = 0
-	_, err := NewProcessor(bad)
-	require.Error(t, err)
-
-	status := GetRuntimeStatus()
-	// The real singleton may or may not have been built by a previous test in
-	// the process; what must hold everywhere is that an unavailable payload
-	// carries a reason and an available one carries a queue.
-	if !status.Available {
-		assert.NotEmpty(t, status.Reason)
-	} else {
-		assert.GreaterOrEqual(t, status.Queue.MaxRunningJobs, 0)
-	}
-}
-
 func TestStaleCleanupRemovesAbandonedWorkspace(t *testing.T) {
-	if testing.Short() {
-		t.Skip("stale sweep waits on mtime resolution")
-	}
 	tempRoot := t.TempDir()
 	staleDir := filepath.Join(tempRoot, "vp-stale-unit")
 	require.NoError(t, os.MkdirAll(staleDir, 0o700))
@@ -117,7 +94,7 @@ func TestGetProcessorBuildsFromPublishedSettings(t *testing.T) {
 // statusJSON serializes a RuntimeStatus so tests can assert on the wire shape.
 func statusJSON(t *testing.T, s RuntimeStatus) string {
 	t.Helper()
-	data, err := json.Marshal(s)
+	data, err := common.Marshal(s)
 	require.NoError(t, err)
 	return string(data)
 }

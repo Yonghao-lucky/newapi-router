@@ -3,12 +3,14 @@ package video_preprocess
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // VideoMetadata holds the structural facts about a decoded video, obtained from
@@ -42,6 +44,7 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 
 	args := []string{
 		"-v", "error",
+		"-protocol_whitelist", "file,pipe",
 		"-show_format",
 		"-show_streams",
 		"-of", "json",
@@ -50,17 +53,18 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 
 	cmd := exec.CommandContext(ctx, ffprobePath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	cmd.Stdout = &limitedWriter{w: &stdout, limit: 1 << 20}
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: int64(limits.MaxProbeStderrBytes)}
 
 	if err := cmd.Run(); err != nil {
 		if ctxErr := timeoutOrCancel(ctx); ctxErr != nil {
 			return nil, ctxErr
 		}
-		stderrSnippet := truncateForLog(stderr.String(), 256)
-		return nil, wrapError(CodeProbeFailed, "ffprobe failed: "+stderrSnippet, err)
+		return nil, mediaCommandError(CodeProbeFailed, err, stderr.String())
 	}
 
 	meta, err := parseProbeOutput(stdout.Bytes())
@@ -108,7 +112,7 @@ type sideData struct {
 
 func parseProbeOutput(data []byte) (*VideoMetadata, error) {
 	var out ffprobeOutput
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := common.Unmarshal(data, &out); err != nil {
 		return nil, wrapError(CodeProbeFailed, "failed to parse ffprobe output", err)
 	}
 
@@ -174,10 +178,10 @@ func parseProbeOutput(data []byte) (*VideoMetadata, error) {
 		return nil, newError(CodeUnsupportedFormat, "media has no video stream")
 	}
 	if meta.Width <= 0 || meta.Height <= 0 {
-		return nil, newError(CodeProbeFailed, "video dimensions could not be determined")
+		return nil, newError(CodeUnsupportedFormat, "video dimensions could not be determined")
 	}
 	if meta.DurationSeconds <= 0 {
-		return nil, newError(CodeProbeFailed, "video duration could not be determined")
+		return nil, newError(CodeUnsupportedFormat, "video duration could not be determined")
 	}
 
 	meta.Pixels = int64(meta.Width) * int64(meta.Height)
@@ -266,23 +270,4 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	n, err := lw.w.Write(p[:take])
 	lw.written += int64(n)
 	return len(p), err
-}
-
-// truncateForLog returns the first maxRunes runes of s, or the whole string
-// when it is shorter. It never includes newlines or control characters that
-// could corrupt a structured log line.
-func truncateForLog(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) > maxRunes {
-		runes = runes[:maxRunes]
-	}
-	var clean strings.Builder
-	for _, r := range runes {
-		if r == '\n' || r == '\r' || r == '\t' {
-			clean.WriteRune(' ')
-		} else if r >= 32 && r < 127 {
-			clean.WriteRune(r)
-		}
-	}
-	return clean.String()
 }

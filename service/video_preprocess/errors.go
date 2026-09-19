@@ -303,69 +303,64 @@ func StatusForError(err error) (JobStatus, string) {
 // HTTPStatusForError maps an error to the status the client should receive.
 // Errors that reach the upstream relay are never retried on another channel.
 func HTTPStatusForError(err error) int {
-	var admission *AdmissionError
-	if errors.As(err, &admission) {
-		if admission.HTTPStatus != 0 {
-			return admission.HTTPStatus
-		}
-		return http.StatusTooManyRequests
-	}
-
-	// Map by stable error code for all non-admission errors
-	code := CodeOf(err)
-	switch code {
-	// 400 Bad Request: client input errors
+	switch CodeOf(err) {
 	case CodeInvalidRequest, CodeInvalidDataURL, CodeInvalidBase64,
-		CodeUnsupportedFormat, CodeInvalidConfig:
+		CodeUnsupportedFormat, CodeTooLong, CodeResolutionExceeded, CodeImageLimitExceeded:
 		return http.StatusBadRequest
-
-	// 413 Request Entity Too Large: size/length limits
-	case CodeTooLarge, CodeTooLong, CodeResolutionExceeded,
-		CodeImageLimitExceeded, CodeOutputTooLarge:
+	case CodeTooLarge, CodeOutputTooLarge:
 		return http.StatusRequestEntityTooLarge
-
-	// 429 Too Many Requests: queue admission rejections
 	case CodeQueueFull, CodeQueueBytes, CodeUserLimit, CodeEstimatedWait:
 		return http.StatusTooManyRequests
-
-	// 503 Service Unavailable: temporary resource exhaustion
-	case CodeStorageExhausted, CodeDiskStorageExhausted:
+	case CodeStorageExhausted, CodeDiskStorageExhausted, CodeStorageFailed,
+		CodeProbeFailed, CodeDecodeFailed, CodeExportFailed, CodeInvalidConfig:
 		return http.StatusServiceUnavailable
-
-	// 408 Request Timeout: job timed out
 	case CodeProcessingTimeout, CodeQueueTimeout:
 		return http.StatusRequestTimeout
-
-	// 499 Client Closed Request: canceled by caller
 	case CodeProcessingCanceled:
 		return 499
-
-	// 500 Internal Server Error: media pipeline failures
-	case CodeProbeFailed, CodeDecodeFailed, CodeExportFailed,
-		CodeStorageFailed, CodeRewriteFailed, CodeProcessingFailed, CodeInternal:
-		return http.StatusInternalServerError
-
 	default:
-		// Fallback based on job status for unknown codes
 		status, _ := StatusForError(err)
-		switch status {
-		case JobStatusCanceled:
+		if status == JobStatusCanceled {
 			return 499
-		case JobStatusTimedOut:
-			return http.StatusRequestTimeout
-		default:
-			return http.StatusInternalServerError
 		}
+		if status == JobStatusTimedOut {
+			return http.StatusRequestTimeout
+		}
+		return http.StatusInternalServerError
 	}
 }
 
-// RetryAfterForError returns the Retry-After hint of an admission rejection.
+// PublicMessageForError deliberately ignores diagnostic text. Media tools and
+// recovered panics can contain customer data or local paths even when wrapped.
+func PublicMessageForError(err error) string {
+	switch HTTPStatusForError(err) {
+	case http.StatusBadRequest:
+		return "video input is invalid or exceeds the configured media constraints"
+	case http.StatusRequestEntityTooLarge:
+		return "video request or output exceeds the configured byte limit"
+	case http.StatusTooManyRequests:
+		return "video preprocessing capacity is currently exhausted"
+	case http.StatusServiceUnavailable:
+		return "video preprocessing is temporarily unavailable"
+	case http.StatusRequestTimeout:
+		return "video preprocessing exceeded its time budget"
+	case 499:
+		return "video preprocessing was canceled"
+	default:
+		return "video preprocessing failed"
+	}
+}
+
+// RetryAfterForError returns a positive hint for every capacity rejection.
 func RetryAfterForError(err error) (int64, bool) {
 	var admission *AdmissionError
-	if !errors.As(err, &admission) {
-		return 0, false
+	if errors.As(err, &admission) && admission.RetryAfterSecs > 0 {
+		return admission.RetryAfterSecs, true
 	}
-	return admission.RetryAfterSecs, admission.RetryAfterSecs > 0
+	if HTTPStatusForError(err) == http.StatusTooManyRequests {
+		return 1, true
+	}
+	return 0, false
 }
 
 // contextFailure classifies a context error. The job timeout is derived from the
@@ -386,4 +381,15 @@ func contextFailure(err error) error {
 		Err:     err,
 		Message: "request context canceled",
 	}
+}
+
+// mediaCommandError distinguishes recognizable damaged input from a local tool
+// failure without publishing or retaining subprocess diagnostics.
+func mediaCommandError(code string, cause error, diagnostic string) error {
+	for _, marker := range []string{"Invalid data found when processing input", "moov atom not found", "Invalid NAL unit", "Error while decoding stream", "corrupt decoded frame", "partial file"} {
+		if strings.Contains(diagnostic, marker) {
+			return wrapError(CodeUnsupportedFormat, "video media is invalid or damaged", cause)
+		}
+	}
+	return wrapError(code, "video media tool failed", cause)
 }

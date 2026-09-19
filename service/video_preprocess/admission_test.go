@@ -661,7 +661,7 @@ func TestStagePanicReleasesSlot(t *testing.T) {
 	status, code := StatusForError(err)
 	assert.Equal(t, JobStatusFailed, status)
 	assert.Equal(t, CodeProcessingFailed, code)
-	assert.Contains(t, err.Error(), "decoder exploded")
+	assert.NotContains(t, err.Error(), "decoder exploded", "panic details must not leak through completion errors")
 	assert.Contains(t, err.Error(), string(JobStageAnalyzing))
 
 	assert.Equal(t, JobStatusFailed, lease.Status())

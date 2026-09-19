@@ -34,22 +34,9 @@ type RuntimeSnapshot struct {
 func runStage(ctx context.Context, handler StageHandler, stage JobStage) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			log.Printf("video_preprocess: panic in stage %s: %v\n%s", stage, recovered, debug.Stack())
-			err = &StageError{Code: CodeProcessingFailed, Stage: stage, Message: panicMessage(recovered)}
+			log.Printf("video_preprocess: panic in stage %s\n%s", stage, debug.Stack())
+			err = &StageError{Code: CodeProcessingFailed, Stage: stage, Message: "video processing stage panicked"}
 		}
 	}()
 	return handler(ctx, stage)
-}
-
-func panicMessage(recovered any) string {
-	switch value := recovered.(type) {
-	case nil:
-		return "stage panicked"
-	case error:
-		return "stage panicked: " + value.Error()
-	case string:
-		return "stage panicked: " + value
-	default:
-		return "stage panicked"
-	}
 }

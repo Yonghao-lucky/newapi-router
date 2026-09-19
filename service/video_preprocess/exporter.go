@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // ExportedFrame is one JPEG frame extracted from the video at a specific timestamp.
@@ -49,6 +50,9 @@ func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits 
 
 	// Build FFmpeg arguments for batch export
 	args := []string{
+		"-nostdin", "-hide_banner", "-loglevel", "error",
+		"-protocol_whitelist", "file,pipe",
+		"-filter_threads", "1",
 		"-threads", strconv.Itoa(job.ffmpegThreads),
 		"-i", job.videoPath,
 	}
@@ -73,6 +77,8 @@ func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits 
 
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: int64(limits.MaxFFmpegStderrBytes)}
@@ -81,8 +87,7 @@ func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits 
 		if ctxErr := timeoutOrCancel(ctx); ctxErr != nil {
 			return nil, ctxErr
 		}
-		stderrSnippet := truncateForLog(stderr.String(), 512)
-		return nil, wrapError(CodeExportFailed, "ffmpeg export failed: "+stderrSnippet, err)
+		return nil, mediaCommandError(CodeExportFailed, err, stderr.String())
 	}
 
 	// Verify all frames exist and record their sizes
