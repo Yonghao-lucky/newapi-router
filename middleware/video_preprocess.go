@@ -17,6 +17,7 @@ import (
 // ModelRequestRateLimit and before Distribute.
 //
 // The middleware:
+//   - Extracts the model from the request body
 //   - Calls video_preprocess.Processor.Process() with the gin context
 //   - Maps all error codes to OpenAI-compatible HTTP responses
 //   - Publishes context metadata for the AI Router and billing
@@ -31,7 +32,21 @@ func VideoPreprocess() gin.HandlerFunc {
 			return
 		}
 
-		model := c.GetString(string(constant.ContextKeyOriginalModel))
+		// Extract model from request body. This must happen before calling
+		// Processor, because no middleware before VideoPreprocess sets
+		// ContextKeyOriginalModel.
+		modelRequest, err := getModelFromRequest(c)
+		if err != nil {
+			abortWithOpenAiMessage(c, http.StatusBadRequest,
+				fmt.Sprintf("failed to extract model: %v", err),
+				types.ErrorCodeInvalidRequest)
+			return
+		}
+		model := ""
+		if modelRequest != nil {
+			model = modelRequest.Model
+		}
+
 		userID := c.GetInt(string(constant.ContextKeyUserId))
 
 		result, err := processor.Process(c.Request.Context(), video_preprocess.ProcessInput{
@@ -65,9 +80,10 @@ func handleVideoPreprocessError(c *gin.Context, err error) {
 		c.Header("Retry-After", fmt.Sprintf("%d", retryAfter))
 	}
 
-	// Map the stable error code to an OpenAI error code.
+	// Map every stable error code to an OpenAI error code and HTTP status.
 	var openAICode types.ErrorCode
 	switch code {
+	// 400 Bad Request: client input errors
 	case video_preprocess.CodeInvalidRequest,
 		video_preprocess.CodeInvalidDataURL,
 		video_preprocess.CodeInvalidBase64,
@@ -76,13 +92,16 @@ func handleVideoPreprocessError(c *gin.Context, err error) {
 		openAICode = types.ErrorCodeInvalidRequest
 		httpStatus = http.StatusBadRequest
 
+	// 413 Request Entity Too Large: size/length limits
 	case video_preprocess.CodeTooLarge,
 		video_preprocess.CodeTooLong,
 		video_preprocess.CodeResolutionExceeded,
+		video_preprocess.CodeImageLimitExceeded,
 		video_preprocess.CodeOutputTooLarge:
 		openAICode = types.ErrorCodeBadRequestBody
 		httpStatus = http.StatusRequestEntityTooLarge
 
+	// 429 Too Many Requests: queue admission rejections
 	case video_preprocess.CodeQueueFull,
 		video_preprocess.CodeQueueBytes,
 		video_preprocess.CodeUserLimit,
@@ -90,21 +109,36 @@ func handleVideoPreprocessError(c *gin.Context, err error) {
 		openAICode = types.ErrorCodeBadRequestBody
 		httpStatus = http.StatusTooManyRequests
 
+	// 503 Service Unavailable: node resource exhaustion
 	case video_preprocess.CodeStorageExhausted,
 		video_preprocess.CodeDiskStorageExhausted:
 		openAICode = types.ErrorCodeBadRequestBody
 		httpStatus = http.StatusServiceUnavailable
 
+	// 408 Request Timeout: job timed out
 	case video_preprocess.CodeProcessingTimeout,
 		video_preprocess.CodeQueueTimeout:
 		openAICode = types.ErrorCodeBadRequestBody
 		httpStatus = http.StatusRequestTimeout
 
+	// 499 Client Closed Request: canceled by caller
 	case video_preprocess.CodeProcessingCanceled:
 		openAICode = types.ErrorCodeBadRequestBody
 		httpStatus = 499
 
+	// 500 Internal Server Error: media pipeline failures
+	case video_preprocess.CodeProbeFailed,
+		video_preprocess.CodeDecodeFailed,
+		video_preprocess.CodeExportFailed,
+		video_preprocess.CodeStorageFailed,
+		video_preprocess.CodeRewriteFailed,
+		video_preprocess.CodeProcessingFailed,
+		video_preprocess.CodeInternal:
+		openAICode = types.ErrorCodeBadRequestBody
+		httpStatus = http.StatusInternalServerError
+
 	default:
+		// Unknown codes: 500 as a safe default
 		openAICode = types.ErrorCodeBadRequestBody
 		httpStatus = http.StatusInternalServerError
 	}
