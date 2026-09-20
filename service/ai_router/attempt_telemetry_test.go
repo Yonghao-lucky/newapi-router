@@ -23,7 +23,7 @@ func TestAttemptRecordsSameChannelRetries(t *testing.T) {
 	rc.RequestID = "req-retry"
 
 	callRelay := func() *types.NewAPIError {
-		rc.LastCall = &AttemptCall{ChannelName: "ch-1", DurationMs: 40}
+		rc.LastCall = &AttemptCall{ChannelName: "ch-1", DurationMs: 40, UpstreamStatus: 429}
 		return types.NewErrorWithStatusCode(fmt.Errorf("rate limited"), types.ErrorCodeBadResponseStatusCode, 429)
 	}
 
@@ -50,8 +50,8 @@ func TestAttemptRecordsSameChannelRetries(t *testing.T) {
 		if record.HttpStatusCode == nil || *record.HttpStatusCode != 429 {
 			t.Errorf("record %d: status = %v, want 429", i, record.HttpStatusCode)
 		}
-		if !record.Retryable {
-			t.Errorf("record %d: 429 must be retryable", i)
+		if record.Retryable != (i < 2) {
+			t.Errorf("record %d: retryable must match remaining calls", i)
 		}
 		if record.ChannelName != "ch-1" {
 			t.Errorf("record %d: channel_name = %s, want ch-1", i, record.ChannelName)
@@ -74,7 +74,7 @@ func TestAttemptRecordsFallbackAcrossChannels(t *testing.T) {
 
 	callRelay := func() *types.NewAPIError {
 		if len(rc.AttemptRecords) == 0 {
-			rc.LastCall = &AttemptCall{ChannelName: "ch-1", DurationMs: 20}
+			rc.LastCall = &AttemptCall{ChannelName: "ch-1", DurationMs: 20, UpstreamStatus: 500}
 			return types.NewErrorWithStatusCode(fmt.Errorf("upstream exploded"), types.ErrorCodeBadResponseStatusCode, 500)
 		}
 		rc.LastCall = &AttemptCall{ChannelName: "ch-2", DurationMs: 80, TtftMs: int64Ptr(30)}

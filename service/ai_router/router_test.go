@@ -1,13 +1,92 @@
 package ai_router
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ai_router_setting"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestRouterStatusActions(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		status, retry             int
+		codes                     []int
+		skip, committed, canceled bool
+		want                      []int
+	}{
+		{"401", 401, 2, nil, false, false, false, []int{1, 2}}, {"402", 402, 2, nil, false, false, false, []int{1, 2}},
+		{"403", 403, 2, nil, false, false, false, []int{1, 2}}, {"404", 404, 2, nil, false, false, false, []int{1, 2}},
+		{"405", 405, 2, nil, false, false, false, []int{1, 2}}, {"502", 502, 2, nil, false, false, false, []int{1, 2}},
+		{"429", 429, 2, nil, false, false, false, []int{1, 1, 1, 2}}, {"500", 500, 2, nil, false, false, false, []int{1, 1, 1, 2}},
+		{"503", 503, 2, nil, false, false, false, []int{1, 1, 1, 2}}, {"zero retries", 503, 0, nil, false, false, false, []int{1, 2}},
+		{"400 stops", 400, 2, nil, false, false, false, []int{1}}, {"504 stops", 504, 2, nil, false, false, false, []int{1}},
+		{"no real status", 0, 2, nil, false, false, false, []int{1}}, {"disabled", 503, 2, []int{}, false, false, false, []int{1}},
+		{"custom", 418, 2, []int{418}, false, false, false, []int{1, 1, 1, 2}},
+		{"skip overrides", 503, 2, nil, true, false, false, []int{1}}, {"committed overrides", 503, 2, nil, false, true, false, []int{1}},
+		{"cancel overrides", 503, 2, nil, false, false, true, []int{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := NewRouteContext(RouteDemand{Modality: ModalityText}, 2)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			rc.Context = ctx
+			channels := []RouterChannel{{ID: 1, Priority: 10, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, MaxRetry: tc.retry, RetryStatusCodes: tc.codes}}, {ID: 2, Priority: 1, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true}}}
+			var called []int
+			err := RunFallbackLoop(rc, channels, "default", ai_router_setting.DefaultSettings(), func() *types.NewAPIError {
+				called = append(called, rc.Decision.ChannelID)
+				rc.LastCall = &AttemptCall{UpstreamStatus: tc.status}
+				if rc.Decision.ChannelID == 2 {
+					return nil
+				}
+				rc.ResponseStarted = tc.committed
+				if tc.canceled {
+					cancel()
+				}
+				// Client-visible mapping deliberately differs from the real status.
+				e := types.NewErrorWithStatusCode(fmt.Errorf("upstream"), types.ErrorCodeBadResponseStatusCode, 400)
+				if tc.skip {
+					e = types.NewErrorWithStatusCode(fmt.Errorf("skip"), types.ErrorCodeBadResponseStatusCode, 503, types.ErrOptionWithSkipRetry())
+				}
+				return e
+			})
+			assert.Equal(t, tc.want, called)
+			if tc.want[len(tc.want)-1] == 2 {
+				require.Nil(t, err)
+			} else {
+				require.NotNil(t, err)
+			}
+			assert.False(t, rc.AttemptRecords[len(rc.AttemptRecords)-1].Retryable)
+		})
+	}
+}
+
+func TestRouterRetryAfterSharesIdleBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, budget := common.NewRouterResponseBudget(context.Background(), 10*time.Second)
+		defer budget.Close()
+		rc := NewRouteContext(RouteDemand{Modality: ModalityText}, 2)
+		rc.Context = ctx
+		channels := []RouterChannel{{ID: 1, Weight: 1, Group: "default", RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, MaxRetry: 5}}}
+		calls := 0
+		err := RunFallbackLoop(rc, channels, "default", ai_router_setting.DefaultSettings(), func() *types.NewAPIError {
+			calls++
+			rc.LastCall = &AttemptCall{UpstreamStatus: 429, RetryAfter: 6 * time.Second}
+			return types.NewErrorWithStatusCode(fmt.Errorf("429"), types.ErrorCodeBadResponseStatusCode, 429)
+		})
+		require.NotNil(t, err)
+		assert.Equal(t, 504, err.StatusCode)
+		assert.Equal(t, 2, calls)
+	})
+}
 
 func TestFallbackLoopBasic(t *testing.T) {
 	chs := fixtureChannels()
@@ -23,6 +102,7 @@ func TestFallbackLoopBasic(t *testing.T) {
 	callRelay := func() *types.NewAPIError {
 		attempts = append(attempts, rc.Decision.ChannelID)
 		if len(attempts) < 2 {
+			rc.LastCall = &AttemptCall{UpstreamStatus: 429}
 			// First attempt (highest priority text channel) fails with a retryable error.
 			return types.NewError(
 				fmt.Errorf("mock 429"),
@@ -61,6 +141,7 @@ func TestFallbackLoopAllFail(t *testing.T) {
 	attemptCount := 0
 	callRelay := func() *types.NewAPIError {
 		attemptCount++
+		rc.LastCall = &AttemptCall{UpstreamStatus: 503}
 		return types.NewError(
 			fmt.Errorf("mock error"),
 			types.ErrorCodeModelNotFound,
@@ -132,6 +213,7 @@ func TestChannelMaxRetryExhaustsBeforeSwitch(t *testing.T) {
 	var calls []call
 	callRelay := func() *types.NewAPIError {
 		calls = append(calls, call{rc.Decision.ChannelID, rc.ChannelRetryNo})
+		rc.LastCall = &AttemptCall{UpstreamStatus: 429}
 		return types.NewError(fmt.Errorf("mock 429"), types.ErrorCodeModelNotFound)
 	}
 

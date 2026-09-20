@@ -2,8 +2,11 @@ package ai_router
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ai_router_setting"
 
@@ -65,6 +68,9 @@ func RunFallbackLoop(
 	var lastError *types.NewAPIError
 
 	for attempt := 0; attempt < rc.MaxAttempts; attempt++ {
+		if err := routerCancellation(rc); err != nil {
+			return err
+		}
 		rc.CurrentAttempt = attempt
 		candidates := FilterChannelsWithExclusions(
 			allChannels, rc.Constraints, group, rc.AttemptedChannels,
@@ -95,16 +101,32 @@ func RunFallbackLoop(
 		// set and we move on. Non-retryable errors and a started response
 		// return immediately; the attempted-set exclusion below must not run
 		// until this channel's own retries are exhausted.
-		maxRetry := 0
+		profile := dto.DefaultChannelRoutingProfile()
 		if selected := findChannel(allChannels, decision.ChannelID); selected != nil {
-			maxRetry = selected.RoutingProfile.MaxRetry
+			profile = selected.RoutingProfile
 		}
+		maxRetry := profile.MaxRetry
 		for retryNo := 0; retryNo <= maxRetry; retryNo++ {
+			if err := routerCancellation(rc); err != nil {
+				return err
+			}
 			rc.ChannelRetryNo = retryNo
 			relayErr := callRelay()
+			if canceled := routerCancellation(rc); canceled != nil {
+				relayErr = canceled
+			}
 			call := rc.LastCall
 			rc.LastCall = nil
+			action := retryAction(rc, profile, call, relayErr)
+			if action == "same_channel" && retryNo >= maxRetry {
+				action = "next_channel"
+			}
+			if action == "next_channel" && (attempt+1 >= rc.MaxAttempts || len(FilterChannelsWithExclusions(allChannels, rc.Constraints, group, remainingExclusions(rc, decision.ChannelID))) == 0) {
+				action = "stop"
+			}
 			settleAttemptRecord(rc, call, relayErr)
+			record := rc.AttemptRecords[len(rc.AttemptRecords)-1]
+			record.Retryable = action != "stop"
 			if relayErr == nil {
 				// The successful channel must join the attempt chain before
 				// returning, or a first-channel success records attempts=0
@@ -122,11 +144,22 @@ func RunFallbackLoop(
 				return relayErr
 			}
 			// If non-retryable, return immediately.
-			if !isRetryable(relayErr) {
+			if action == "stop" {
 				rc.MarkAttempted(decision.ChannelID)
 				return relayErr
 			}
-			if retryNo < maxRetry {
+			if call != nil && call.RetryAfter > 0 {
+				timer := time.NewTimer(call.RetryAfter)
+				select {
+				case <-timer.C:
+				case <-rc.Context.Done():
+					timer.Stop()
+					record.Retryable = false
+					rc.MarkAttempted(decision.ChannelID)
+					return routerCancellation(rc)
+				}
+			}
+			if action == "same_channel" {
 				continue
 			}
 			break
@@ -137,16 +170,36 @@ func RunFallbackLoop(
 	return lastError
 }
 
-// isRetryable uses New API's existing retry classification.
-// Router does not maintain its own error taxonomy.
-func isRetryable(err *types.NewAPIError) bool {
-	if err == nil {
-		return false
+func retryAction(rc *RouteContext, profile dto.ChannelRoutingProfile, call *AttemptCall, err *types.NewAPIError) string {
+	if err == nil || types.IsSkipRetryError(err) || rc.ResponseStarted || routerCancellation(rc) != nil || call == nil || call.Responded {
+		return "stop"
 	}
-	if types.IsSkipRetryError(err) {
-		return false
+	if slices.Contains(profile.EffectiveRetryStatusCodes(), call.UpstreamStatus) {
+		return "same_channel"
 	}
-	return true
+	if slices.Contains(profile.EffectiveSwitchStatusCodes(), call.UpstreamStatus) {
+		return "next_channel"
+	}
+	return "stop"
+}
+
+func routerCancellation(rc *RouteContext) *types.NewAPIError {
+	if rc.Context == nil || rc.Context.Err() == nil {
+		return nil
+	}
+	if b := common.RouterBudget(rc.Context); b != nil {
+		return b.APIError()
+	}
+	return types.NewErrorWithStatusCode(rc.Context.Err(), types.ErrorCodeDoRequestFailed, 499, types.ErrOptionWithSkipRetry())
+}
+
+func remainingExclusions(rc *RouteContext, current int) map[int]bool {
+	result := make(map[int]bool, len(rc.AttemptedChannels)+1)
+	for id, excluded := range rc.AttemptedChannels {
+		result[id] = excluded
+	}
+	result[current] = true
+	return result
 }
 
 // settleAttemptRecord turns one relay call's capture into a settled
@@ -163,9 +216,24 @@ func settleAttemptRecord(rc *RouteContext, call *AttemptCall, relayErr *types.Ne
 		call = &AttemptCall{Err: relayErr}
 	}
 	category, status, success := ClassifyAttemptError(relayErr, call.StreamInterrupted)
-	retryable := false
-	if relayErr != nil && !call.Responded && !rc.ResponseStarted {
-		retryable = isRetryable(relayErr)
+	if relayErr != nil && !call.StreamInterrupted {
+		if relayErr.GetErrorCode() == "ai_router_idle_timeout" {
+			category = "timeout"
+		} else if call.UpstreamStatus >= 400 {
+			switch {
+			case call.UpstreamStatus == 429:
+				category = "429"
+			case call.UpstreamStatus >= 500:
+				category = "5xx"
+			default:
+				category = "other"
+			}
+		}
+	}
+	if call.UpstreamStatus > 0 {
+		status = &call.UpstreamStatus
+	} else {
+		status = nil
 	}
 	rc.AttemptRecords = append(rc.AttemptRecords, &AttemptRecord{
 		AttemptSeq:     rc.CurrentAttempt + 1, // 1-based over distinct channels
@@ -175,7 +243,7 @@ func settleAttemptRecord(rc *RouteContext, call *AttemptCall, relayErr *types.Ne
 		Modality:       string(rc.LogModality),
 		HttpStatusCode: status,
 		ErrorCategory:  category,
-		Retryable:      retryable,
+		Retryable:      false,
 		DurationMs:     call.DurationMs,
 		TtftMs:         call.TtftMs,
 		Success:        success,

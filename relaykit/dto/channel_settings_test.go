@@ -5,10 +5,44 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestChannelRetryStatusRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		json        string
+		retry, next []int
+		invalid     bool
+	}{
+		{`{}`, []int{429, 500, 503}, []int{401, 402, 403, 404, 405, 502}, false},
+		{`{"retry_status_codes":null,"switch_status_codes":null}`, []int{429, 500, 503}, []int{401, 402, 403, 404, 405, 502}, false},
+		{`{"retry_status_codes":[],"switch_status_codes":[]}`, []int{}, []int{}, false},
+		{`{"retry_status_codes":[408],"switch_status_codes":[501]}`, []int{408}, []int{501}, false},
+		{`{"retry_status_codes":[429,429]}`, nil, nil, true},
+		{`{"retry_status_codes":[401]}`, nil, nil, true},
+		{`{"retry_status_codes":[200]}`, nil, nil, true},
+		{`{"retry_status_codes":[600]}`, nil, nil, true},
+	} {
+		t.Run(tc.json, func(t *testing.T) {
+			var profile ChannelRoutingProfile
+			require.NoError(t, kitutil.Unmarshal([]byte(tc.json), &profile))
+			if tc.invalid {
+				require.Error(t, profile.Validate())
+				return
+			}
+			require.NoError(t, profile.Validate())
+			serialized, err := kitutil.Marshal(profile)
+			require.NoError(t, err)
+			var restored ChannelRoutingProfile
+			require.NoError(t, kitutil.Unmarshal(serialized, &restored))
+			assert.Equal(t, tc.retry, restored.EffectiveRetryStatusCodes())
+			assert.Equal(t, tc.next, restored.EffectiveSwitchStatusCodes())
+		})
+	}
+}
 
 func TestAdvancedCustomValidateResponsesToChatConverterPath(t *testing.T) {
 	valid := &AdvancedCustomConfig{

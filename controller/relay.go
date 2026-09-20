@@ -89,6 +89,24 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 
 	defer func() {
+		if budget := common.RouterBudget(c.Request.Context()); budget != nil {
+			if err := budget.APIError(); err != nil {
+				newAPIError = err
+				if err.StatusCode == 499 {
+					return
+				}
+				if c.Writer.Written() {
+					body, _ := common.Marshal(gin.H{"error": err.ToOpenAIError()})
+					helper.ExtendWriteDeadline(c)
+					_, _ = c.Writer.Write(append(append([]byte("data: "), body...), []byte("\n\ndata: [DONE]\n\n")...))
+					c.Writer.Flush()
+					return
+				}
+				c.Writer.Header().Del("Transfer-Encoding")
+				c.Writer.Header().Del("Content-Length")
+				c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+			}
+		}
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			// A streaming response has already committed its status and body.
@@ -134,6 +152,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
+	if budget := common.RouterBudgetFor(c); budget != nil {
+		if newAPIError = budget.APIError(); newAPIError != nil {
+			return
+		}
+	}
 	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
 		return
 	}

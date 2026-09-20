@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -115,6 +116,23 @@ type ChannelRoutingProfile struct {
 	// retryable failure, before the channel joins the request-level attempted
 	// set. Default 0 means the channel is called at most once.
 	MaxRetry int `json:"max_retry,omitempty"`
+	// nil inherits defaults; a non-nil empty slice explicitly disables the group.
+	RetryStatusCodes  []int `json:"retry_status_codes"`
+	SwitchStatusCodes []int `json:"switch_status_codes"`
+}
+
+func (p ChannelRoutingProfile) EffectiveRetryStatusCodes() []int {
+	if p.RetryStatusCodes == nil {
+		return []int{429, 500, 503}
+	}
+	return slices.Clone(p.RetryStatusCodes)
+}
+
+func (p ChannelRoutingProfile) EffectiveSwitchStatusCodes() []int {
+	if p.SwitchStatusCodes == nil {
+		return []int{401, 402, 403, 404, 405, 502}
+	}
+	return slices.Clone(p.SwitchStatusCodes)
 }
 
 const (
@@ -164,6 +182,18 @@ func (s *ChannelOtherSettings) RoutingProfile() ChannelRoutingProfile {
 func (p *ChannelRoutingProfile) Validate() error {
 	if p == nil {
 		return nil
+	}
+	seen := make(map[int]bool)
+	for _, codes := range [][]int{p.EffectiveRetryStatusCodes(), p.EffectiveSwitchStatusCodes()} {
+		for _, code := range codes {
+			if code < 400 || code > 599 {
+				return fmt.Errorf("retry status code must be between 400 and 599: %d", code)
+			}
+			if seen[code] {
+				return fmt.Errorf("duplicate or overlapping retry status code: %d", code)
+			}
+			seen[code] = true
+		}
 	}
 	switch p.ToolSupport {
 	case "", ToolSupportUnverified, ToolSupportSupported, ToolSupportUnsupported:

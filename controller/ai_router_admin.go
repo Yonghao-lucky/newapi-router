@@ -537,14 +537,16 @@ type aiRouterChannelView struct {
 }
 
 type aiRouterChannelRouterView struct {
-	Enabled         bool   `json:"enabled"`
-	RouterSet       bool   `json:"router_set"`
-	MaxRetry        int    `json:"max_retry"`
-	SupportsText    *bool  `json:"supports_text,omitempty"`
-	SupportsImage   *bool  `json:"supports_image,omitempty"`
-	SupportsVideo   *bool  `json:"supports_video,omitempty"`
-	UnknownFallback bool   `json:"unknown_fallback"`
-	ToolSupport     string `json:"tool_support,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	RouterSet         bool   `json:"router_set"`
+	MaxRetry          int    `json:"max_retry"`
+	RetryStatusCodes  []int  `json:"retry_status_codes"`
+	SwitchStatusCodes []int  `json:"switch_status_codes"`
+	SupportsText      *bool  `json:"supports_text,omitempty"`
+	SupportsImage     *bool  `json:"supports_image,omitempty"`
+	SupportsVideo     *bool  `json:"supports_video,omitempty"`
+	UnknownFallback   bool   `json:"unknown_fallback"`
+	ToolSupport       string `json:"tool_support,omitempty"`
 }
 
 type aiRouterPolicyRef struct {
@@ -645,14 +647,16 @@ func GetAIRouterChannels(c *gin.Context) {
 			Priority: ch.GetPriority(),
 			Weight:   ch.GetWeight(),
 			RoutingProfile: aiRouterChannelRouterView{
-				Enabled:         profile.Enabled,
-				RouterSet:       otherSettings.Router != nil,
-				MaxRetry:        profile.MaxRetry,
-				SupportsText:    profile.SupportsText,
-				SupportsImage:   profile.SupportsImage,
-				SupportsVideo:   profile.SupportsVideo,
-				UnknownFallback: profile.UnknownFallback,
-				ToolSupport:     profile.ToolSupport,
+				Enabled:           profile.Enabled,
+				RouterSet:         otherSettings.Router != nil,
+				MaxRetry:          profile.MaxRetry,
+				RetryStatusCodes:  profile.EffectiveRetryStatusCodes(),
+				SwitchStatusCodes: profile.EffectiveSwitchStatusCodes(),
+				SupportsText:      profile.SupportsText,
+				SupportsImage:     profile.SupportsImage,
+				SupportsVideo:     profile.SupportsVideo,
+				UnknownFallback:   profile.UnknownFallback,
+				ToolSupport:       profile.ToolSupport,
 			},
 			// Always a list: a channel no policy references must serialize as []
 			// rather than null, so clients that iterate it do not have to guard.

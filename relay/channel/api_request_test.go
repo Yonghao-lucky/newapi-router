@@ -2,14 +2,51 @@ package channel
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRouterCancellationReachesUpstream(t *testing.T) {
+	entered, canceled := make(chan struct{}), make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(entered)
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	defer upstream.Close()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	budgetCtx, budget := common.NewRouterResponseBudget(ctx, time.Hour)
+	defer budget.Close()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil).WithContext(budgetCtx)
+	req, err := http.NewRequest("POST", upstream.URL, strings.NewReader("{}"))
+	require.NoError(t, err)
+	finished := make(chan error, 1)
+	go func() {
+		resp, requestErr := DoRequest(c, req, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}})
+		if requestErr == nil {
+			_, requestErr = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+		finished <- requestErr
+	}()
+	<-entered
+	cancel(common.ErrRouterIdleTimeout)
+	require.Error(t, <-finished)
+	<-canceled
+	require.Equal(t, 504, budget.APIError().StatusCode)
+}
 
 func TestNewTaskAPIRequestInheritsClientCancellation(t *testing.T) {
 	recorder := httptest.NewRecorder()

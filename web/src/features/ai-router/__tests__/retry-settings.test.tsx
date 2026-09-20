@@ -1,0 +1,171 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { beforeEach, expect, it, vi } from 'vitest'
+
+import * as api from '../api'
+import { ChannelDrawer } from '../components/channel-drawer'
+import { GlobalConfigTab } from '../global-config'
+import type { AIRouterChannel } from '../types'
+
+vi.mock('../api', () => ({
+  updateAIRouterChannelRouter: vi.fn().mockResolvedValue({}),
+  updateAIRouterChannelScheduling: vi.fn().mockResolvedValue({}),
+  getAIRouterSettings: vi
+    .fn()
+    .mockResolvedValue({
+      enabled: true,
+      telemetry_enabled: true,
+      tool_filter_enabled: false,
+      max_attempts: 3,
+      retention_days: 7,
+      idle_timeout_seconds: 1000,
+    }),
+  updateAIRouterSettings: vi.fn().mockResolvedValue({}),
+}))
+
+const channel: AIRouterChannel = {
+  id: 1,
+  name: 'test',
+  status: 1,
+  group: 'default',
+  models: 'kimi-k3',
+  priority: 10,
+  weight: 1,
+  router: {
+    router_set: true,
+    enabled: true,
+    max_retry: 2,
+    unknown_fallback: false,
+  },
+  referenced_by: [],
+}
+
+function wrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      {children}
+    </QueryClientProvider>
+  )
+}
+
+beforeEach(() => vi.clearAllMocks())
+
+it('saves defaults for legacy channels and preserves explicit empty groups', async () => {
+  const user = userEvent.setup()
+  const view = render(
+    <ChannelDrawer open onOpenChange={vi.fn()} channel={channel} />,
+    { wrapper }
+  )
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        max_retry: 2,
+        retry_status_codes: [429, 500, 503],
+        switch_status_codes: [401, 402, 403, 404, 405, 502],
+      })
+    )
+  )
+  view.unmount()
+  render(
+    <ChannelDrawer
+      open
+      onOpenChange={vi.fn()}
+      channel={{
+        ...channel,
+        router: {
+          ...channel.router,
+          retry_status_codes: [],
+          switch_status_codes: [],
+        },
+      }}
+    />,
+    { wrapper }
+  )
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(
+      1,
+      expect.objectContaining({
+        retry_status_codes: [],
+        switch_status_codes: [],
+      })
+    )
+  )
+})
+
+it('removes status tags and rejects overlapping groups', async () => {
+  const user = userEvent.setup()
+  const view = render(
+    <ChannelDrawer open onOpenChange={vi.fn()} channel={channel} />,
+    { wrapper }
+  )
+  const chip = screen.getByText('429').closest('[data-slot="combobox-chip"]')!
+  await user.click(within(chip as HTMLElement).getByRole('button'))
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ retry_status_codes: [500, 503] })
+    )
+  )
+  view.unmount()
+  render(
+    <ChannelDrawer
+      open
+      onOpenChange={vi.fn()}
+      channel={{
+        ...channel,
+        router: {
+          ...channel.router,
+          retry_status_codes: [503],
+          switch_status_codes: [503],
+        },
+      }}
+    />,
+    { wrapper }
+  )
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  expect(
+    screen.getByText('Retry status code groups must not overlap.')
+  ).toBeInTheDocument()
+})
+
+it('edits and saves the idle timeout independently of retry counts', async () => {
+  const user = userEvent.setup()
+  render(<GlobalConfigTab />, { wrapper })
+  const input = await screen.findByLabelText('No-progress timeout (seconds)')
+  expect(input).toHaveValue(1000)
+  await user.clear(input)
+  await user.type(input, '1200')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ idle_timeout_seconds: 1200, max_attempts: 3 })
+    )
+  )
+})

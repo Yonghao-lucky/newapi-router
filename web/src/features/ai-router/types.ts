@@ -28,6 +28,7 @@ export interface AIRouterSettings {
   tool_filter_enabled: boolean
   telemetry_enabled: boolean
   retention_days: number
+  idle_timeout_seconds?: number
 }
 
 // Capability values are tri-state: null means "unset" (channel default).
@@ -40,6 +41,8 @@ export interface ChannelRoutingProfile {
   unknown_fallback: boolean
   tool_support?: string
   max_retry: number
+  retry_status_codes?: number[] | null
+  switch_status_codes?: number[] | null
 }
 
 export interface TargetPolicyChannelInfo {
@@ -53,6 +56,8 @@ export interface TargetPolicyChannelInfo {
   router_enabled: boolean
   router_set: boolean
   max_retry: number
+  retry_status_codes?: number[] | null
+  switch_status_codes?: number[] | null
   supports_text: boolean | null
   supports_image: boolean | null
   supports_video: boolean | null

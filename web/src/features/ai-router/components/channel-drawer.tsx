@@ -24,9 +24,18 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { z } from 'zod'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import {
+  SideDrawerSection,
+  sideDrawerContentClassName,
+  sideDrawerFooterClassName,
+  sideDrawerFormClassName,
+  sideDrawerHeaderClassName,
+} from '@/components/drawer-layout'
+import { MultiSelect } from '@/components/multi-select'
+import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   Form,
   FormControl,
@@ -54,14 +63,6 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
-import {
-  SideDrawerSection,
-  sideDrawerContentClassName,
-  sideDrawerFooterClassName,
-  sideDrawerFormClassName,
-  sideDrawerHeaderClassName,
-} from '@/components/drawer-layout'
-import { StatusBadge } from '@/components/status-badge'
 
 import {
   updateAIRouterChannelRouter,
@@ -101,6 +102,8 @@ const capabilityValue = (
 }
 
 const channelFormSchema = z.object({
+  retryStatusCodes: z.array(z.number().int().min(400).max(599)),
+  switchStatusCodes: z.array(z.number().int().min(400).max(599)),
   routerEnabled: z.enum([ROUTER_UNSET, ROUTER_ON, ROUTER_OFF]),
   maxRetry: z
     .number()
@@ -141,6 +144,10 @@ const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
   return {
     routerEnabled: routerEnabledValue(channel),
     maxRetry: channel.router.max_retry ?? 0,
+    retryStatusCodes: channel.router.retry_status_codes ?? [429, 500, 503],
+    switchStatusCodes: channel.router.switch_status_codes ?? [
+      401, 402, 403, 404, 405, 502,
+    ],
     supportsText: capabilityValue(channel.router.supports_text),
     supportsImage: capabilityValue(channel.router.supports_image),
     supportsVideo: capabilityValue(channel.router.supports_video),
@@ -208,6 +215,10 @@ export function ChannelDrawer(props: {
   // without full capability would be rejected by the server, so block here.
   const unknownBlocked = values.unknownFallback && !hasFullCapability(values)
   const profileUnset = values.routerEnabled === ROUTER_UNSET
+  const retryOverlap =
+    values.retryStatusCodes?.some((code) =>
+      values.switchStatusCodes?.includes(code)
+    ) ?? false
 
   const save = useMutation({
     meta: { errorToast: false },
@@ -232,6 +243,8 @@ export function ChannelDrawer(props: {
               unknown_fallback: formValues.unknownFallback,
               tool_support: formValues.toolSupport || 'unverified',
               max_retry: formValues.maxRetry,
+              retry_status_codes: formValues.retryStatusCodes,
+              switch_status_codes: formValues.switchStatusCodes,
             }
       )
       await updateAIRouterChannelScheduling(channel.id, {
@@ -269,6 +282,10 @@ export function ChannelDrawer(props: {
       toast.error(t('Fix validation errors before saving'))
       return
     }
+    if (retryOverlap) {
+      toast.error(t('Retry status code groups must not overlap.'))
+      return
+    }
     if (unknownBlocked) {
       toast.error(
         t(
@@ -283,7 +300,9 @@ export function ChannelDrawer(props: {
   return (
     <>
       <Sheet open={props.open} onOpenChange={close}>
-        <SheetContent className={sideDrawerContentClassName('sm:max-w-[640px]')}>
+        <SheetContent
+          className={sideDrawerContentClassName('sm:max-w-[640px]')}
+        >
           <SheetHeader className={sideDrawerHeaderClassName()}>
             <SheetTitle className='pr-6 break-all'>
               {channel ? `${channel.name} (#${channel.id})` : ''}
@@ -376,6 +395,51 @@ export function ChannelDrawer(props: {
                     )}
                   />
                 </div>
+              </SideDrawerSection>
+
+              <SideDrawerSection>
+                {(['retryStatusCodes', 'switchStatusCodes'] as const).map(
+                  (name) => (
+                    <FormField
+                      key={name}
+                      control={form.control}
+                      name={name}
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {name === 'retryStatusCodes'
+                              ? t('Retry on this channel, then switch')
+                              : t('Switch channel immediately')}
+                          </FormLabel>
+                          <FormControl>
+                            <MultiSelect
+                              disabled={profileUnset}
+                              options={Array.from({ length: 200 }, (_, i) => ({
+                                value: String(400 + i),
+                                label: String(400 + i),
+                              }))}
+                              selected={(field.value ?? []).map(String)}
+                              onChange={(codes) =>
+                                field.onChange(codes.map(Number))
+                              }
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )
+                )}
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Empty groups disable retries. Unlisted status codes stop the request.'
+                  )}
+                </p>
+                {retryOverlap && (
+                  <p className='text-destructive text-xs'>
+                    {t('Retry status code groups must not overlap.')}
+                  </p>
+                )}
               </SideDrawerSection>
 
               <SideDrawerSection>
@@ -483,9 +547,7 @@ export function ChannelDrawer(props: {
                   render={({ field }) => (
                     <FormItem className='flex flex-row items-center justify-between gap-3 rounded-lg border p-3'>
                       <div className='space-y-0.5'>
-                        <FormLabel>
-                          {t('Unknown modality fallback')}
-                        </FormLabel>
+                        <FormLabel>{t('Unknown modality fallback')}</FormLabel>
                         <FormDescription>
                           {t(
                             'Serve unknown modality requests. Requires full capability.'
@@ -626,7 +688,7 @@ export function ChannelDrawer(props: {
             </Button>
             <Button
               onClick={handleSave}
-              disabled={isSubmitting || unknownBlocked}
+              disabled={isSubmitting || unknownBlocked || retryOverlap}
             >
               {isSubmitting ? t('Saving...') : t('Save')}
             </Button>

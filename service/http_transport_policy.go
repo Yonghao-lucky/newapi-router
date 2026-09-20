@@ -13,8 +13,9 @@ import (
 // HTTPTransportPolicy is the runtime-normalized outbound HTTP transport policy
 // for a channel. Unknown or out-of-range stored values are clamped safely.
 type HTTPTransportPolicy struct {
-	Protocol string // dto.HTTPProtocolAuto or dto.HTTPProtocolHTTP1
-	Shards   int    // 1..dto.MaxHTTP2ConnectionShards
+	Protocol     string // dto.HTTPProtocolAuto or dto.HTTPProtocolHTTP1
+	Shards       int    // 1..dto.MaxHTTP2ConnectionShards
+	RouterBudget bool   // request context owns header/total timeout for AI Router
 }
 
 var httpTransportPolicyWarnings sync.Map
@@ -83,6 +84,9 @@ func warnHTTPTransportPolicyOnce(field, value string) {
 }
 
 func (p HTTPTransportPolicy) cacheKeyPart() string {
+	if p.RouterBudget {
+		return fmt.Sprintf("%s|%d|router", p.Protocol, p.Shards)
+	}
 	return fmt.Sprintf("%s|%d", p.Protocol, p.Shards)
 }
 

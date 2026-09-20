@@ -62,6 +62,7 @@ func runAIRouterRelay(
 	allChannels := collectPolicyChannels(group, relayInfo.OriginModelName, filters, settings.MaxAttempts)
 
 	routeCtx := ai_router.NewRouteContext(demand, policyMaxAttempts(group, relayInfo.OriginModelName, settings.MaxAttempts))
+	routeCtx.Context = c.Request.Context()
 	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) &&
 		common.GetContextKeyString(c, constant.ContextKeyVideoOriginalModality) == string(ai_router.ModalityVideo) {
 		routeCtx.LogModality = ai_router.ModalityVideo
@@ -75,9 +76,16 @@ func runAIRouterRelay(
 	// per-attempt telemetry (attempt logs), including the channel name
 	// snapshotted from the cache.
 	callRelay := func() *types.NewAPIError {
+		c.Set(common.UpstreamRequestIdKey, "")
+		c.Set(common.RouterUpstreamStatusKey, 0)
+		c.Set(common.RouterRetryAfterKey, time.Duration(0))
 		callStart := time.Now()
 		call := &ai_router.AttemptCall{}
 		defer func() {
+			call.UpstreamStatus = c.GetInt(common.RouterUpstreamStatusKey)
+			if value, ok := c.Get(common.RouterRetryAfterKey); ok {
+				call.RetryAfter, _ = value.(time.Duration)
+			}
 			call.DurationMs = time.Since(callStart).Milliseconds()
 			routeCtx.LastCall = call
 		}()
@@ -116,6 +124,11 @@ func runAIRouterRelay(
 			relayErr = geminiRelayHandler(c, relayInfo)
 		default:
 			relayErr = relayHandler(c, relayInfo)
+		}
+		if budget := common.RouterBudget(c.Request.Context()); budget != nil {
+			if budgetErr := budget.APIError(); budgetErr != nil {
+				relayErr = budgetErr
+			}
 		}
 
 		// Capture response-start state on both success and error paths:

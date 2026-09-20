@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -101,6 +102,24 @@ func StringData(c *gin.Context, str string) error {
 
 	if requestContextDone(c) {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
+	}
+	if budget := common.RouterBudgetFor(c); budget != nil {
+		payload := []byte("data: " + str + "\n\n")
+		n, err := c.Writer.Write(payload)
+		if err == nil && n != len(payload) {
+			err = io.ErrShortWrite
+		}
+		if err == nil {
+			err = common.FlushRouterResponse(c)
+		}
+		if err != nil {
+			budget.WriteFailed(err)
+			return err
+		}
+		if common.IsGenerationEvent([]byte(str)) {
+			budget.MarkDelivered()
+		}
+		return nil
 	}
 
 	c.Render(-1, common.CustomEvent{Data: "data: " + str})

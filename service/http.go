@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -42,8 +43,21 @@ func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 }
 
 func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
+	if err := IOCopyBytesChecked(c, src, data); err != nil {
+		logger.LogError(c, fmt.Sprintf("failed to copy response body: %s", err.Error()))
+	}
+}
+
+func IOCopyBytesChecked(c *gin.Context, src *http.Response, data []byte) error {
 	if c.Writer == nil {
-		return
+		return io.ErrClosedPipe
+	}
+	budget := common.RouterBudgetFor(c)
+	if budget != nil {
+		if err := budget.Complete(); err != nil {
+			return err
+		}
+		_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(30 * time.Second))
 	}
 
 	body := io.NopCloser(bytes.NewBuffer(data))
@@ -72,8 +86,20 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
 	}
 
 	_, err := io.Copy(c.Writer, body)
-	if err != nil {
-		logger.LogError(c, fmt.Sprintf("failed to copy response body: %s", err.Error()))
+	if budget != nil {
+		if err == nil {
+			err = common.FlushRouterResponse(c)
+		}
+		if err == nil {
+			err = c.Request.Context().Err()
+		}
+		if err != nil {
+			budget.WriteFailed(err)
+			return err
+		}
+		budget.MarkDelivered()
+	} else {
+		c.Writer.Flush()
 	}
-	c.Writer.Flush()
+	return err
 }

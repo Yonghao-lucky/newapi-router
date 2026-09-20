@@ -92,6 +92,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	ctx, cancel := context.WithCancel(context.Background())
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
+	budget := common.RouterBudget(c.Request.Context())
+	run := gopool.Go
+	if budget != nil {
+		// Keep request workers owned by this handler, including under virtual
+		// clocks. cleanup joins them before Gin may reuse the context.
+		run = func(f func()) { go f() }
+	}
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
@@ -103,6 +110,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		cleanupOnce sync.Once
 		stopOnce    sync.Once
 	)
+	timeoutChannel := ticker.C
+	if budget != nil {
+		ticker.Stop()
+		timeoutChannel = nil
+	}
 
 	stop := func() {
 		stopOnce.Do(func() {
@@ -111,7 +123,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	generalSettings := operation_setting.GetGeneralSetting()
-	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
+	pingEnabled := budget == nil && generalSettings.PingIntervalEnabled && !info.DisablePing
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 	if pingInterval <= 0 {
 		pingInterval = DefaultPingInterval
@@ -155,7 +167,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// Handle ping data sending with improved error handling
 	if pingEnabled && pingTicker != nil {
 		wg.Add(1)
-		gopool.Go(func() {
+		run(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					logger.LogError(c, fmt.Sprintf("ping goroutine panic: %v", r))
@@ -205,7 +217,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	dataChan := make(chan string, 10)
 
 	wg.Add(1)
-	gopool.Go(func() {
+	run(func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("data handler goroutine panic: %v", r))
@@ -216,6 +228,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		}()
 		sr := newStreamResult(info.StreamStatus)
 		for data := range dataChan {
+			if budget != nil && c.Request.Context().Err() != nil {
+				return
+			}
 			sr.reset()
 			func() {
 				writeMutex.Lock()
@@ -231,7 +246,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// Scanner goroutine with improved error handling
 	wg.Add(1)
-	common.RelayCtxGo(ctx, func() {
+	scan := func(f func()) { common.RelayCtxGo(ctx, f) }
+	if budget != nil {
+		scan = run
+	}
+	scan(func() {
 		defer func() {
 			close(dataChan)
 			if r := recover(); r != nil {
@@ -253,7 +272,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			default:
 			}
 
-			ticker.Reset(streamingTimeout)
+			if budget == nil {
+				ticker.Reset(streamingTimeout)
+			}
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
@@ -269,7 +290,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
-				info.SetFirstResponseTime()
+				if budget == nil || common.IsGenerationEvent([]byte(data)) {
+					if budget != nil {
+						budget.Progress()
+					}
+					info.SetFirstResponseTime()
+				}
 				info.ReceivedResponseCount++
 
 				select {
@@ -297,7 +323,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// 主循环等待完成或超时
 	select {
-	case <-ticker.C:
+	case <-timeoutChannel:
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
 	case <-stopChan:
 		// EndReason already set by the goroutine that triggered stopChan

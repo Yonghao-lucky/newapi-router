@@ -1,6 +1,7 @@
 package ai_router
 
 import (
+	"context"
 	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -43,6 +44,8 @@ type RouteDecision struct {
 // material for an attempt-log row. The relay closure fills it; the router
 // loop turns it into an AttemptRecord together with the classification.
 type AttemptCall struct {
+	UpstreamStatus int
+	RetryAfter     time.Duration
 	// ChannelName is snapshotted at call time from the channel cache so
 	// attempt rows survive channel deletion.
 	ChannelName string
@@ -81,6 +84,7 @@ type AttemptRecord struct {
 // RouteContext carries per-request routing state.
 // It must never be shared across requests.
 type RouteContext struct {
+	Context   context.Context
 	RequestID string
 	Demand    RouteDemand
 	// LogModality is the client-visible modality persisted by telemetry.
@@ -113,6 +117,7 @@ func NewRouteContext(demand RouteDemand, maxAttempts int) *RouteContext {
 		maxAttempts = 1
 	}
 	return &RouteContext{
+		Context:           context.Background(),
 		Demand:            demand,
 		LogModality:       demand.Modality,
 		MaxAttempts:       maxAttempts,

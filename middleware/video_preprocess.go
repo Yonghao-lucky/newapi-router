@@ -81,6 +81,12 @@ func VideoPreprocess() gin.HandlerFunc {
 // handleVideoPreprocessError maps video preprocessing errors to OpenAI-compatible
 // HTTP responses. The service owns classification and safe client messages.
 func handleVideoPreprocessError(c *gin.Context, err error) {
+	if budget := common.RouterBudget(c.Request.Context()); budget != nil {
+		if apiErr := budget.APIError(); apiErr != nil {
+			c.AbortWithStatusJSON(apiErr.StatusCode, gin.H{"error": apiErr.ToOpenAIError()})
+			return
+		}
+	}
 	code := video_preprocess.CodeOf(err)
 	if code == "" {
 		code = video_preprocess.CodeInternal

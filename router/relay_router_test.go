@@ -407,9 +407,10 @@ func TestVideoPreprocessRouteIsolation(t *testing.T) {
 			}
 			if isChat {
 				require.Positive(t, videoIndex)
-				assert.Contains(t, handlers[videoIndex-1], ".ModelRequestRateLimit.")
-				assert.Contains(t, handlers[videoIndex-2], ".TokenAuth.")
-				assert.Contains(t, handlers[videoIndex-3], ".SystemPerformanceCheck.")
+				assert.Contains(t, handlers[videoIndex-1], ".AIRouterResponseBudget.")
+				assert.Contains(t, handlers[videoIndex-2], ".ModelRequestRateLimit.")
+				assert.Contains(t, handlers[videoIndex-3], ".TokenAuth.")
+				assert.Contains(t, handlers[videoIndex-4], ".SystemPerformanceCheck.")
 				assert.Contains(t, handlers[videoIndex+1], ".Distribute.")
 			} else {
 				assert.Equal(t, -1, videoIndex)

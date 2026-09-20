@@ -88,7 +88,7 @@ func SetRelayRouter(router *gin.Engine) {
 		// Chat completions route with video preprocessing.
 		// Order: ModelRequestRateLimit -> VideoPreprocess -> Distribute -> Relay
 		chatRouter := relayV1Router.Group("")
-		chatRouter.Use(middleware.VideoPreprocess())
+		chatRouter.Use(middleware.AIRouterResponseBudget(), middleware.VideoPreprocess())
 		chatRouter.Use(middleware.Distribute())
 		chatRouter.POST("/chat/completions", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAI)

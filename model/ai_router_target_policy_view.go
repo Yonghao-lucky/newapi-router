@@ -8,21 +8,23 @@ import (
 // policy candidates for the Web UI. It mirrors the fields the candidate table
 // displays — scheduling and capabilities stay sourced from the Channel itself.
 type TargetPolicyChannelInfo struct {
-	Id              int    `json:"id"`
-	Name            string `json:"name"`
-	Status          int    `json:"status"`
-	Group           string `json:"group"`
-	Models          string `json:"models"`
-	Priority        int64  `json:"priority"`
-	Weight          int    `json:"weight"`
-	RouterEnabled   bool   `json:"router_enabled"`
-	RouterSet       bool   `json:"router_set"`
-	MaxRetry        int    `json:"max_retry"`
-	SupportsText    *bool  `json:"supports_text"`
-	SupportsImage   *bool  `json:"supports_image"`
-	SupportsVideo   *bool  `json:"supports_video"`
-	UnknownFallback bool   `json:"unknown_fallback"`
-	ToolSupport     string `json:"tool_support"`
+	Id                int    `json:"id"`
+	Name              string `json:"name"`
+	Status            int    `json:"status"`
+	Group             string `json:"group"`
+	Models            string `json:"models"`
+	Priority          int64  `json:"priority"`
+	Weight            int    `json:"weight"`
+	RouterEnabled     bool   `json:"router_enabled"`
+	RouterSet         bool   `json:"router_set"`
+	MaxRetry          int    `json:"max_retry"`
+	RetryStatusCodes  []int  `json:"retry_status_codes"`
+	SwitchStatusCodes []int  `json:"switch_status_codes"`
+	SupportsText      *bool  `json:"supports_text"`
+	SupportsImage     *bool  `json:"supports_image"`
+	SupportsVideo     *bool  `json:"supports_video"`
+	UnknownFallback   bool   `json:"unknown_fallback"`
+	ToolSupport       string `json:"tool_support"`
 }
 
 // BuildTargetPolicyChannelInfos joins candidate channel rows with their live
@@ -41,21 +43,23 @@ func BuildTargetPolicyChannelInfos(channelIDs []int) (map[int]*TargetPolicyChann
 		otherSettings := ch.GetOtherSettings()
 		profile := otherSettings.RoutingProfile()
 		infos[ch.Id] = &TargetPolicyChannelInfo{
-			Id:              ch.Id,
-			Name:            ch.Name,
-			Status:          ch.Status,
-			Group:           ch.Group,
-			Models:          ch.Models,
-			Priority:        ch.GetPriority(),
-			Weight:          ch.GetWeight(),
-			RouterEnabled:   profile.Enabled,
-			RouterSet:       otherSettings.Router != nil,
-			MaxRetry:        profile.MaxRetry,
-			SupportsText:    profile.SupportsText,
-			SupportsImage:   profile.SupportsImage,
-			SupportsVideo:   profile.SupportsVideo,
-			UnknownFallback: profile.UnknownFallback,
-			ToolSupport:     profile.ToolSupport,
+			Id:                ch.Id,
+			Name:              ch.Name,
+			Status:            ch.Status,
+			Group:             ch.Group,
+			Models:            ch.Models,
+			Priority:          ch.GetPriority(),
+			Weight:            ch.GetWeight(),
+			RouterEnabled:     profile.Enabled,
+			RouterSet:         otherSettings.Router != nil,
+			MaxRetry:          profile.MaxRetry,
+			RetryStatusCodes:  profile.EffectiveRetryStatusCodes(),
+			SwitchStatusCodes: profile.EffectiveSwitchStatusCodes(),
+			SupportsText:      profile.SupportsText,
+			SupportsImage:     profile.SupportsImage,
+			SupportsVideo:     profile.SupportsVideo,
+			UnknownFallback:   profile.UnknownFallback,
+			ToolSupport:       profile.ToolSupport,
 		}
 	}
 	return infos, nil

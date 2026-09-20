@@ -22,11 +22,11 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 
 import { getAIRouterSettings, updateAIRouterSettings } from './api'
 import {
@@ -45,6 +45,7 @@ export function GlobalConfigTab() {
   const [toolFilterEnabled, setToolFilterEnabled] = useState(false)
   const [maxAttempts, setMaxAttempts] = useState(3)
   const [retentionDays, setRetentionDays] = useState(7)
+  const [idleTimeout, setIdleTimeout] = useState(1000)
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: [...AI_ROUTER_QUERY_KEYS.settings],
@@ -58,6 +59,7 @@ export function GlobalConfigTab() {
     setToolFilterEnabled(data.tool_filter_enabled)
     setMaxAttempts(data.max_attempts)
     setRetentionDays(data.retention_days)
+    setIdleTimeout(data.idle_timeout_seconds ?? 1000)
   }, [data])
 
   const save = useMutation({
@@ -69,6 +71,7 @@ export function GlobalConfigTab() {
         tool_filter_enabled: toolFilterEnabled,
         max_attempts: maxAttempts,
         retention_days: retentionDays,
+        idle_timeout_seconds: idleTimeout,
       }),
     onSuccess: () => {
       toast.success(t('Settings saved'))
@@ -144,6 +147,25 @@ export function GlobalConfigTab() {
 
       <div className='grid gap-4 sm:grid-cols-2'>
         <div className='space-y-1.5'>
+          <Label htmlFor='ai-router-idle-timeout'>
+            {t('No-progress timeout (seconds)')}
+          </Label>
+          <Input
+            id='ai-router-idle-timeout'
+            type='number'
+            min={1}
+            max={86400}
+            step={1}
+            value={idleTimeout}
+            onChange={(event) => setIdleTimeout(Number(event.target.value))}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t(
+              'Retries share this budget. Generation progress resets it; heartbeats do not.'
+            )}
+          </p>
+        </div>
+        <div className='space-y-1.5'>
           <Label htmlFor='ai-router-max-attempts'>
             {t('Default max attempts')}
           </Label>
@@ -165,9 +187,7 @@ export function GlobalConfigTab() {
           </p>
         </div>
         <div className='space-y-1.5'>
-          <Label htmlFor='ai-router-retention'>
-            {t('Log retention days')}
-          </Label>
+          <Label htmlFor='ai-router-retention'>{t('Log retention days')}</Label>
           <Input
             id='ai-router-retention'
             type='number'
@@ -203,7 +223,15 @@ export function GlobalConfigTab() {
         >
           {t('Refresh')}
         </Button>
-        <Button onClick={() => save.mutate()} disabled={save.isPending}>
+        <Button
+          onClick={() => save.mutate()}
+          disabled={
+            save.isPending ||
+            !Number.isInteger(idleTimeout) ||
+            idleTimeout < 1 ||
+            idleTimeout > 86400
+          }
+        >
           {save.isPending ? t('Saving...') : t('Save')}
         </Button>
       </div>

@@ -90,6 +90,29 @@ func TestFixedPriceBillingDatabaseMatrix(t *testing.T) {
 			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
 			t.Logf("database: %s", version)
 			runFixedPriceAccountingCases(t, db, logDB)
+			t.Run("router status settings survive storage and copy", func(t *testing.T) {
+				for _, codes := range [][]int{nil, {}, {408, 429}} {
+					channel := model.Channel{Name: "retry-persistence", Key: "unused"}
+					channel.SetOtherSettings(dto.ChannelOtherSettings{Router: &dto.ChannelRoutingProfile{Enabled: true, MaxRetry: 2, RetryStatusCodes: codes, SwitchStatusCodes: []int{}}})
+					require.NoError(t, db.Create(&channel).Error)
+					var restored model.Channel
+					require.NoError(t, db.First(&restored, channel.Id).Error)
+					other := restored.GetOtherSettings()
+					profile := other.RoutingProfile()
+					assert.Equal(t, codes, profile.RetryStatusCodes)
+					assert.NotNil(t, profile.SwitchStatusCodes)
+					assert.Empty(t, profile.SwitchStatusCodes)
+					assert.Equal(t, 2, profile.MaxRetry)
+					restored.Id = 0
+					require.NoError(t, db.Create(&restored).Error)
+					var copied model.Channel
+					require.NoError(t, db.First(&copied, restored.Id).Error)
+					copiedOther := copied.GetOtherSettings()
+					assert.Equal(t, profile, copiedOther.RoutingProfile())
+					require.NoError(t, db.Delete(&channel).Error)
+					require.NoError(t, db.Delete(&copied).Error)
+				}
+			})
 		})
 	}
 }

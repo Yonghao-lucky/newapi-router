@@ -341,6 +341,14 @@ func newHTTPClientFromPolicy(policy HTTPTransportPolicy, proxyURL *url.URL, tlsC
 }
 
 func newHTTPClientFromTransportFactory(policy HTTPTransportPolicy, factory func() *http.Transport) *http.Client {
+	if policy.RouterBudget {
+		baseFactory := factory
+		factory = func() *http.Transport {
+			transport := baseFactory()
+			transport.ResponseHeaderTimeout = 0
+			return transport
+		}
+	}
 	if policy.Shards < 1 {
 		policy.Shards = 1
 	}
@@ -388,6 +396,16 @@ func GetHttpClientWithProxy(rawProxyURL string) (*http.Client, error) {
 // GetHttpClientWithProxy / GetHttpClient for the empty-proxy case.
 func GetHttpClientWithProxySettings(rawProxyURL string, settings dto.ChannelSettings) (*http.Client, error) {
 	policy := NormalizeHTTPTransportPolicy(settings)
+	return getHttpClientForPolicy(rawProxyURL, policy)
+}
+
+func GetRouterHttpClient(rawProxyURL string, settings dto.ChannelSettings) (*http.Client, error) {
+	policy := NormalizeHTTPTransportPolicy(settings)
+	policy.RouterBudget = true
+	return getHttpClientForPolicy(rawProxyURL, policy)
+}
+
+func getHttpClientForPolicy(rawProxyURL string, policy HTTPTransportPolicy) (*http.Client, error) {
 	trimmedProxyURL := strings.TrimSpace(rawProxyURL)
 
 	if trimmedProxyURL == "" {

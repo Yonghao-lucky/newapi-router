@@ -29,24 +29,26 @@ const (
 )
 
 type Settings struct {
-	Enabled           bool     `json:"enabled"`
-	TargetModels      []string `json:"target_models"`
-	MaxAttempts       int      `json:"max_attempts"`
-	UnknownPolicy     string   `json:"unknown_policy"`
-	ToolFilterEnabled bool     `json:"tool_filter_enabled"`
-	TelemetryEnabled  bool     `json:"telemetry_enabled"`
-	RetentionDays     int      `json:"retention_days"`
+	Enabled            bool     `json:"enabled"`
+	TargetModels       []string `json:"target_models"`
+	MaxAttempts        int      `json:"max_attempts"`
+	UnknownPolicy      string   `json:"unknown_policy"`
+	ToolFilterEnabled  bool     `json:"tool_filter_enabled"`
+	TelemetryEnabled   bool     `json:"telemetry_enabled"`
+	RetentionDays      int      `json:"retention_days"`
+	IdleTimeoutSeconds int      `json:"idle_timeout_seconds"`
 }
 
 func DefaultSettings() Settings {
 	return Settings{
-		Enabled:           false,
-		TargetModels:      []string{"kimi-k3"},
-		MaxAttempts:       3,
-		UnknownPolicy:     UnknownPolicyFullCapOnly,
-		ToolFilterEnabled: false,
-		TelemetryEnabled:  true,
-		RetentionDays:     7,
+		Enabled:            false,
+		TargetModels:       []string{"kimi-k3"},
+		MaxAttempts:        3,
+		UnknownPolicy:      UnknownPolicyFullCapOnly,
+		ToolFilterEnabled:  false,
+		TelemetryEnabled:   true,
+		RetentionDays:      7,
+		IdleTimeoutSeconds: 1000,
 	}
 }
 
@@ -67,6 +69,9 @@ func (s *Settings) Normalize() {
 		return
 	}
 	s.TargetModels = NormalizeTargetModels(s.TargetModels)
+	if s.IdleTimeoutSeconds == 0 {
+		s.IdleTimeoutSeconds = 1000
+	}
 	if s.UnknownPolicy == "" {
 		s.UnknownPolicy = UnknownPolicyFullCapOnly
 	}
@@ -90,6 +95,9 @@ func (s *Settings) Validate() error {
 	}
 	if s.RetentionDays < MinRetentionDays || s.RetentionDays > MaxRetentionDays {
 		return fmt.Errorf("retention_days must be between %d and %d", MinRetentionDays, MaxRetentionDays)
+	}
+	if s.IdleTimeoutSeconds < 1 || s.IdleTimeoutSeconds > 86400 {
+		return fmt.Errorf("idle_timeout_seconds must be between 1 and 86400")
 	}
 	return nil
 }
@@ -169,6 +177,12 @@ func applyStrictValue(settings *Settings, key string, value string) error {
 			return fmt.Errorf("invalid max_attempts value: %s", value)
 		}
 		settings.MaxAttempts = parsed
+	case "idle_timeout_seconds":
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 86400 {
+			return fmt.Errorf("idle_timeout_seconds must be between 1 and 86400")
+		}
+		settings.IdleTimeoutSeconds = parsed
 	case "unknown_policy":
 		settings.UnknownPolicy = value
 	case "tool_filter_enabled":

@@ -160,6 +160,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	})
 
 	// 处理最后的响应
+	if budget := common.RouterBudgetFor(c); budget != nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
+		_ = budget.Complete()
+	}
 	shouldSendLastResp := true
 	if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
 		&containStreamUsage, info, &shouldSendLastResp); err != nil {
@@ -212,7 +215,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			if err != nil {
 				info.StreamStatus.RecordError(err.Error())
 			}
-		} else if visibleStop == nil && shouldSendLastResp {
+		} else if visibleStop == nil && shouldSendLastResp && c.Request.Context().Err() == nil {
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}
@@ -228,7 +231,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
-	if visibleStop == nil || (c.Request.Context().Err() == nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors()) {
+	if c.Request.Context().Err() == nil && (visibleStop == nil || (info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors())) {
 		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 	}
 
@@ -400,7 +403,16 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 	}
 
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if common.RouterBudget(c.Request.Context()) != nil && len(simpleResponse.Choices) == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("upstream returned no choices"), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if common.RouterBudgetFor(c) != nil {
+		if err := service.IOCopyBytesChecked(c, resp, responseBody); err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway, types.ErrOptionWithSkipRetry())
+		}
+	} else {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+	}
 
 	return &simpleResponse.Usage, nil
 }
