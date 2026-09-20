@@ -41,6 +41,11 @@ import {
   CHANNEL_TYPE_SGLANG,
   CHANNEL_TYPE_VLLM,
 } from '../../constants'
+import {
+  buildSettingJSON,
+  CHANNEL_FORM_DEFAULT_VALUES,
+  transformChannelToFormDefaults,
+} from '../../lib/channel-form'
 import { channelSchema, type Channel } from '../../types'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelsProvider } from '../channels-provider'
@@ -1296,6 +1301,93 @@ test('restoring routing defaults clears the configured indicator for both the bl
   expect(within(block).getByRole('img', { name: 'Configured' })).toBeVisible()
 })
 
+test('new channels leave Chat compatibility disabled and without a model scope', () => {
+  expect(
+    JSON.parse(buildSettingJSON(CHANNEL_FORM_DEFAULT_VALUES))
+  ).toMatchObject({
+    strict_chat_tool_messages: false,
+    k3_parameter_validation: false,
+    gateway_visible_content_stop: false,
+    chat_compatibility_models: [],
+  })
+})
+
+test.each([
+  ['strict_chat_tool_messages', 'Strict tool message validation'],
+  ['k3_parameter_validation', 'Kimi K3 parameter validation'],
+  ['gateway_visible_content_stop', 'Gateway visible-content stop'],
+] as const)(
+  'Chat compatibility saves %s independently with exact outgoing model names',
+  async (settingName, label) => {
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    const requestTab = screen.getByRole('tab', { name: /Request & Response/ })
+    await user.click(requestTab)
+    const models = screen.getByRole('textbox', {
+      name: 'Exact upstream models',
+    })
+    expect(models).toHaveValue('')
+    const toggle = screen.getByRole('switch', { name: label })
+    expect(toggle).not.toBeChecked()
+    toggle.focus()
+    await user.keyboard(' ')
+    expect(toggle).toBeChecked()
+    await user.type(models, ' mapped-model, another-model, mapped-model ')
+    expect(requestTab).toHaveAccessibleName(/Configured/)
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    const payload = put.mock.calls[0]?.[1] as { setting: string }
+    expect(JSON.parse(payload.setting)).toMatchObject({
+      strict_chat_tool_messages: settingName === 'strict_chat_tool_messages',
+      k3_parameter_validation: settingName === 'k3_parameter_validation',
+      gateway_visible_content_stop:
+        settingName === 'gateway_visible_content_stop',
+      chat_compatibility_models: ['mapped-model', 'another-model'],
+    })
+  }
+)
+
+test('saved Chat compatibility loads all switches and preserves the model scope on an unrelated update', async () => {
+  const settings = {
+    strict_chat_tool_messages: true,
+    k3_parameter_validation: true,
+    gateway_visible_content_stop: true,
+    chat_compatibility_models: ['kimi-k3', 'provider/model-v1'],
+  }
+  editingChannel = { ...editingChannel, setting: JSON.stringify(settings) }
+  expect(
+    JSON.parse(buildSettingJSON(transformChannelToFormDefaults(editingChannel)))
+  ).toMatchObject(settings)
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  fireEvent.change(screen.getByLabelText('Name *'), {
+    target: { value: 'Renamed channel' },
+  })
+  await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+  expect(
+    screen.getByRole('textbox', { name: 'Exact upstream models' })
+  ).toHaveValue('kimi-k3, provider/model-v1')
+  for (const label of [
+    'Strict tool message validation',
+    'Kimi K3 parameter validation',
+    'Gateway visible-content stop',
+  ]) {
+    expect(screen.getByRole('switch', { name: label })).toBeChecked()
+  }
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as { setting: string }
+  expect(JSON.parse(payload.setting)).toMatchObject(settings)
+})
+
 test('request processing configuration does not mark the network category as configured', async () => {
   editingChannel = {
     ...editingChannel,
@@ -1772,6 +1864,19 @@ test('an operator without sensitive write permission can discover saved models a
   expect(thinking).toHaveAttribute('aria-disabled', 'true')
   await user.click(thinking)
   expect(thinking).not.toBeChecked()
+  expect(
+    screen.getByRole('textbox', { name: 'Exact upstream models' })
+  ).toBeDisabled()
+  for (const label of [
+    'Strict tool message validation',
+    'Kimi K3 parameter validation',
+    'Gateway visible-content stop',
+  ]) {
+    const toggle = screen.getByRole('switch', { name: label })
+    expect(toggle).toHaveAttribute('aria-disabled', 'true')
+    await user.click(toggle)
+    expect(toggle).not.toBeChecked()
+  }
   await user.click(screen.getByRole('tab', { name: /Other Settings/ }))
   expect(screen.getByLabelText('Proxy Address')).toBeDisabled()
   await user.click(screen.getByRole('tab', { name: /Routing & Mapping/ }))

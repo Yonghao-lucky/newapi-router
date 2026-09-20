@@ -260,6 +260,10 @@ export const channelFormSchema = z
     // Channel extra settings (stored in setting JSON, not sent directly)
     force_format: z.boolean().optional(),
     thinking_to_content: z.boolean().optional(),
+    strict_chat_tool_messages: z.boolean().optional(),
+    k3_parameter_validation: z.boolean().optional(),
+    gateway_visible_content_stop: z.boolean().optional(),
+    chat_compatibility_models: z.string().optional(),
     proxy: z
       .string()
       .optional()
@@ -460,6 +464,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   // Channel extra settings
   force_format: false,
   thinking_to_content: false,
+  strict_chat_tool_messages: false,
+  k3_parameter_validation: false,
+  gateway_visible_content_stop: false,
+  chat_compatibility_models: '',
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
@@ -510,6 +518,10 @@ export function transformChannelToFormDefaults(
     task_plugin_key: '',
     force_format: false,
     thinking_to_content: false,
+    strict_chat_tool_messages: false,
+    k3_parameter_validation: false,
+    gateway_visible_content_stop: false,
+    chat_compatibility_models: '',
     proxy: '',
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
@@ -530,6 +542,17 @@ export function transformChannelToFormDefaults(
         task_plugin_key: parsed.task_plugin_key || '',
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
+        strict_chat_tool_messages: parsed.strict_chat_tool_messages === true,
+        k3_parameter_validation: parsed.k3_parameter_validation === true,
+        gateway_visible_content_stop:
+          parsed.gateway_visible_content_stop === true,
+        chat_compatibility_models: Array.isArray(
+          parsed.chat_compatibility_models
+        )
+          ? parsed.chat_compatibility_models
+              .filter((model: unknown) => typeof model === 'string')
+              .join(', ')
+          : '',
         proxy: parsed.proxy || '',
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
@@ -601,31 +624,23 @@ export function transformChannelToFormDefaults(
       if (parsed.router) {
         const r = parsed.router
         routerEnabled =
-          r.enabled === true ? 'true' : r.enabled === false ? 'false' : 'unset'
+          typeof r.enabled === 'boolean' ? String(r.enabled) : 'unset'
         routerSupportsText =
-          r.supports_text === true
-            ? 'true'
-            : r.supports_text === false
-              ? 'false'
-              : 'unset'
+          typeof r.supports_text === 'boolean'
+            ? String(r.supports_text)
+            : 'unset'
         routerSupportsImage =
-          r.supports_image === true
-            ? 'true'
-            : r.supports_image === false
-              ? 'false'
-              : 'unset'
+          typeof r.supports_image === 'boolean'
+            ? String(r.supports_image)
+            : 'unset'
         routerSupportsVideo =
-          r.supports_video === true
-            ? 'true'
-            : r.supports_video === false
-              ? 'false'
-              : 'unset'
+          typeof r.supports_video === 'boolean'
+            ? String(r.supports_video)
+            : 'unset'
         routerUnknownFallback =
-          r.unknown_fallback === true
-            ? 'true'
-            : r.unknown_fallback === false
-              ? 'false'
-              : 'unset'
+          typeof r.unknown_fallback === 'boolean'
+            ? String(r.unknown_fallback)
+            : 'unset'
         routerToolSupport = r.tool_support || 'unset'
       }
     } catch (error) {
@@ -701,6 +716,18 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
         : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
+    strict_chat_tool_messages: formData.strict_chat_tool_messages === true,
+    k3_parameter_validation: formData.k3_parameter_validation === true,
+    gateway_visible_content_stop:
+      formData.gateway_visible_content_stop === true,
+    chat_compatibility_models: [
+      ...new Set(
+        (formData.chat_compatibility_models || '')
+          .split(/[,\n]/)
+          .map((model) => model.trim())
+          .filter(Boolean)
+      ),
+    ],
     proxy: formData.proxy?.trim() || '',
     pass_through_body_enabled: formData.pass_through_body_enabled || false,
     responses_websocket_enabled:

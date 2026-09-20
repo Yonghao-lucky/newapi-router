@@ -143,6 +143,25 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 				require.NoError(t, db.Raw("select version()").Scan(&version).Error)
 			}
 			t.Logf("%s version: %s", dialect, version)
+			t.Run("chat compatibility settings", func(t *testing.T) {
+				channel := &Channel{Type: constant.ChannelTypeOpenAI, Key: "fixture", Name: "chat-compatibility", Status: common.ChannelStatusEnabled}
+				require.NoError(t, table.Create(channel).Error)
+				var loaded Channel
+				require.NoError(t, table.First(&loaded, channel.Id).Error)
+				assert.False(t, loaded.GetSetting().StrictChatToolMessages)
+				assert.False(t, loaded.GetSetting().K3ParameterValidation)
+				assert.False(t, loaded.GetSetting().GatewayVisibleContentStop)
+				settings := dto.ChannelSettings{StrictChatToolMessages: true, K3ParameterValidation: true, GatewayVisibleContentStop: true, ChatCompatibilityModels: []string{"kimi-k3", "exact-outbound-alias"}, SystemPrompt: "existing prompt"}
+				channel.SetSetting(settings)
+				require.NoError(t, table.Save(channel).Error)
+				require.NoError(t, table.First(&loaded, channel.Id).Error)
+				assert.Equal(t, settings, loaded.GetSetting())
+				settings.K3ParameterValidation = false
+				channel.SetSetting(settings)
+				require.NoError(t, table.Save(channel).Error)
+				require.NoError(t, table.First(&loaded, channel.Id).Error)
+				assert.Equal(t, settings, loaded.GetSetting(), "the switches remain independent across persistence")
+			})
 			for _, channelType := range []int{constant.ChannelTypeVLLM, constant.ChannelTypeSGLang} {
 				t.Run(fmt.Sprint(channelType), func(t *testing.T) {
 					channel := &Channel{Type: channelType, Key: "EMPTY", Name: "inference", Status: common.ChannelStatusEnabled}

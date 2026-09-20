@@ -83,6 +83,10 @@ export interface ChannelSettings {
   task_plugin_key?: string
   force_format?: boolean
   thinking_to_content?: boolean
+  strict_chat_tool_messages?: boolean
+  k3_parameter_validation?: boolean
+  gateway_visible_content_stop?: boolean
+  chat_compatibility_models?: string[]
   proxy?: string
   pass_through_body_enabled?: boolean
   responses_websocket_enabled?: boolean

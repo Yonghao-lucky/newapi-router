@@ -57,6 +57,10 @@ const CONFIGURATION_BLOCKS = {
     fields: [
       'force_format',
       'thinking_to_content',
+      'strict_chat_tool_messages',
+      'k3_parameter_validation',
+      'gateway_visible_content_stop',
+      'chat_compatibility_models',
       'pass_through_body_enabled',
       'responses_websocket_enabled',
       'ollama_openai_chat',
@@ -150,6 +154,10 @@ export function getChannelConfigurationState(
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||
+      values.strict_chat_tool_messages ||
+      values.k3_parameter_validation ||
+      values.gateway_visible_content_stop ||
+      values.chat_compatibility_models?.trim() ||
       values.pass_through_body_enabled ||
       ((values.type === 1 || values.type === 57) &&
         values.responses_websocket_enabled) ||

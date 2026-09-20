@@ -92,6 +92,10 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 			}
 			paramOverrideApplied = true
 		}
+		chatJSON, compatErr := applyChatCompatibility(c, info, chatJSON, true)
+		if compatErr != nil {
+			return nil, compatErr
+		}
 
 		var overriddenChatReq dto.GeneralOpenAIRequest
 		if err := common.Unmarshal(chatJSON, &overriddenChatReq); err != nil {

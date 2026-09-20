@@ -122,10 +122,10 @@ func runAIRouterRelay(
 		// TTFT must be recorded for successful streams too. The loop never
 		// re-enters after a response started, so the first responding call
 		// is also the only one.
-		if relayInfo.HasSendResponse() {
+		if relayInfo.HasSendResponse() || c.Writer.Written() {
 			routeCtx.ResponseStarted = true
 			call.Responded = !respondedBefore
-			if routeCtx.TTFT == 0 {
+			if routeCtx.TTFT == 0 && relayInfo.HasSendResponse() {
 				ttft := relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
 				routeCtx.TTFT = ttft
 				call.TtftMs = &ttft

@@ -120,11 +120,28 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var secondLastStreamData string // 保留倒数第二个stream data；部分兼容网关把完整usage放在倒数第二个事件
 	seenStreamToolCalls := make(map[string]struct{})
 	var streamFunctionCallNames []string
+	var visibleStop *visibleStopStream
+	if len(info.VisibleStop) > 0 && info.RelayFormat == types.RelayFormatOpenAI {
+		visibleStop = newVisibleStopStream(info.VisibleStop)
+	}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
-			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+			outgoing := lastStreamData
+			if visibleStop != nil {
+				var err error
+				outgoing, err = visibleStop.process(outgoing)
+				if err != nil {
+					sr.Stop(err)
+					return
+				}
+			}
+			if err := HandleStreamFormat(c, info, outgoing, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
+				if visibleStop != nil {
+					sr.Stop(err)
+					return
+				}
 				sr.Error(err)
 			}
 		}
@@ -173,7 +190,29 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
-		if shouldSendLastResp {
+		if visibleStop != nil && c.Request.Context().Err() == nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
+			// Process the last frame even when it also carries usage: a terminal
+			// choice must not disappear merely because include_usage is false.
+			outgoing, err := visibleStop.process(lastStreamData)
+			var pending string
+			if err == nil {
+				pending, err = visibleStop.flush()
+			}
+			if err == nil && !visibleStop.lastHasChoices {
+				// An upstream without finish events can end with usage only;
+				// release the unmatched suffix before that final usage event.
+				err = sendStreamData(c, info, pending, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			if err == nil && (shouldSendLastResp || visibleStop.lastHasChoices) {
+				err = sendStreamData(c, info, outgoing, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			if err == nil && visibleStop.lastHasChoices {
+				err = sendStreamData(c, info, pending, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+			if err != nil {
+				info.StreamStatus.RecordError(err.Error())
+			}
+		} else if visibleStop == nil && shouldSendLastResp {
 			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}
@@ -189,7 +228,9 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	if visibleStop == nil || (c.Request.Context().Err() == nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors()) {
+		HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	}
 
 	return usage, nil
 }
@@ -349,6 +390,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 		responseBody = geminiRespStr
+	}
+
+	if len(info.VisibleStop) > 0 && info.RelayFormat == types.RelayFormatOpenAI {
+		// Estimate missing usage from the complete upstream text before trimming.
+		responseBody, err = truncateVisibleResponse(responseBody, info.VisibleStop)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)

@@ -57,6 +57,15 @@ func TestShouldRetryRelayErrorHonorsChannelPinOnChannelError(t *testing.T) {
 	}
 }
 
+func TestShouldRetryRelayErrorNeverRetriesAfterResponseStarted(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err := c.Writer.Write([]byte("data: {\"choices\":[]}\n\n"))
+	require.NoError(t, err)
+	assert.False(t, ShouldRetryRelayError(c, types.NewError(errors.New("channel failed"), types.ErrorCodeChannelNoAvailableKey), 3))
+	assert.False(t, ShouldRetryRelayError(c, types.NewErrorWithStatusCode(errors.New("upstream failed"), types.ErrorCodeBadResponseStatusCode, http.StatusServiceUnavailable), 3))
+}
+
 func TestProcessChannelErrorMasksDisableReasonAndNotification(t *testing.T) {
 	previousDB, previousType := model.DB, common.MainDatabaseType()
 	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled

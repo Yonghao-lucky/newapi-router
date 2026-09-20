@@ -91,6 +91,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			// A streaming response has already committed its status and body.
+			// Do not append an unrelated JSON response after its events.
+			if c.Writer.Written() && relayFormat != types.RelayFormatOpenAIRealtime {
+				return
+			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -113,6 +118,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Map "request body too large" to 413 so clients can handle it correctly
 		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
 			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+		} else if relayFormat == types.RelayFormatOpenAI && c.Request.URL.Path == "/v1/chat/completions" {
+			newAPIError = types.WithOpenAIError(types.OpenAIError{
+				Type: "invalid_request_error", Message: err.Error(), Code: "invalid_request_error",
+			}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		} else {
 			newAPIError = types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
 		}

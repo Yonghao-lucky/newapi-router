@@ -199,6 +199,7 @@ import type { Channel } from '../../types'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelTypeLogo } from '../channel-type-badge'
 import { useChannels } from '../channels-provider'
+import { ChatCompatibilitySettings } from '../chat-compatibility-settings'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
 import { ConfigureModelsDialog } from '../dialogs/configure-models-dialog'
 import {
@@ -272,6 +273,10 @@ const SENSITIVE_FORM_FIELDS = [
   'azure_responses_version',
   'force_format',
   'thinking_to_content',
+  'strict_chat_tool_messages',
+  'k3_parameter_validation',
+  'gateway_visible_content_stop',
+  'chat_compatibility_models',
   'proxy',
   'http_protocol',
   'http2_connection_shards',
@@ -2122,7 +2127,9 @@ export function ChannelMutateDrawer({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value='unset'>{t('Unset (use default)')}</SelectItem>
+                        <SelectItem value='unset'>
+                          {t('Unset (use default)')}
+                        </SelectItem>
                         <SelectItem value='true'>{t('Yes')}</SelectItem>
                         <SelectItem value='false'>{t('No')}</SelectItem>
                       </SelectGroup>
@@ -2147,9 +2154,15 @@ export function ChannelMutateDrawer({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value='unset'>{t('Unset (use default)')}</SelectItem>
-                      <SelectItem value='supported'>{t('Supported')}</SelectItem>
-                      <SelectItem value='unsupported'>{t('Unsupported')}</SelectItem>
+                      <SelectItem value='unset'>
+                        {t('Unset (use default)')}
+                      </SelectItem>
+                      <SelectItem value='supported'>
+                        {t('Supported')}
+                      </SelectItem>
+                      <SelectItem value='unsupported'>
+                        {t('Unsupported')}
+                      </SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
@@ -2158,7 +2171,6 @@ export function ChannelMutateDrawer({
           />
         </div>
       </fieldset>
-
     </div>
   )
 
@@ -4268,6 +4280,9 @@ export function ChannelMutateDrawer({
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
                 {passthroughFields}
+                <ChatCompatibilitySettings
+                  disabled={sensitiveLocked || isSubmitting}
+                />
                 {systemPromptFields}
                 {systemPromptOverrideFields}
               </fieldset>

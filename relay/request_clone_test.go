@@ -4,19 +4,291 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestChatCompatibilityToolTurns(t *testing.T) {
+	for _, tc := range []struct {
+		name, messages string
+		valid          bool
+	}{
+		{"text only", `[{"role":"user","content":"hello"}]`, true},
+		{"missing result", `[{"role":"assistant","tool_calls":[{"id":"a"}]}]`, false},
+		{"unknown result", `[{"role":"assistant","tool_calls":[{"id":"a"}]},{"role":"tool","tool_call_id":"b"}]`, false},
+		{"orphan result", `[{"role":"tool","tool_call_id":"a"}]`, false},
+		{"duplicate result", `[{"role":"assistant","tool_calls":[{"id":"a"}]},{"role":"tool","tool_call_id":"a"},{"role":"tool","tool_call_id":"a"}]`, false},
+		{"parallel incomplete", `[{"role":"assistant","tool_calls":[{"id":"a"},{"id":"b"}]},{"role":"tool","tool_call_id":"a"}]`, false},
+		{"parallel unordered", `[{"role":"assistant","tool_calls":[{"id":"a"},{"id":"b"}]},{"role":"tool","tool_call_id":"b"},{"role":"tool","tool_call_id":"a"}]`, true},
+		{"dynamic tools between results", `[{"role":"assistant","tool_calls":[{"id":"a"},{"id":"b"}]},{"role":"tool","tool_call_id":"b"},{"role":"system","tools":[{"type":"function","function":{"name":"next"}}]},{"role":"tool","tool_call_id":"a"}]`, true},
+		{"multi round", `[{"role":"assistant","tool_calls":[{"id":"a"}]},{"role":"tool","tool_call_id":"a"},{"role":"assistant","content":"done"},{"role":"user","content":"again"},{"role":"assistant","tool_calls":[{"id":"a"}]},{"role":"tool","tool_call_id":"a"}]`, true},
+		{"result across intervening turn", `[{"role":"assistant","tool_calls":[{"id":"a"}]},{"role":"user","content":"again"},{"role":"tool","tool_call_id":"a"}]`, false},
+		{"duplicate call IDs", `[{"role":"assistant","tool_calls":[{"id":"a"},{"id":"a"}]},{"role":"tool","tool_call_id":"a"}]`, false},
+		{"continuation without pending tools", `[{"role":"user","content":"continue"},{"role":"assistant","content":"The answer is","prefix":true}]`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateChatToolMessages(json.RawMessage(tc.messages))
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestChatCompatibilityK3Parameters(t *testing.T) {
+	for _, tc := range []struct {
+		body, invalid string
+	}{
+		{`{}`, ""},
+		{`{"temperature":1,"top_p":0.95,"n":1,"presence_penalty":0,"frequency_penalty":0,"reasoning_effort":"max"}`, ""},
+		{`{"temperature":1.0,"reasoning_effort":"low"}`, ""},
+		{`{"temperature":10e-1,"top_p":950e-3,"presence_penalty":-0.0}`, ""},
+		{`{"reasoning_effort":"high"}`, ""},
+		{`{"temperature":null,"top_p":null,"n":null,"presence_penalty":null,"frequency_penalty":null,"reasoning_effort":null}`, ""},
+		{`{"temperature":0}`, "temperature"},
+		{`{"temperature":1.0000000000000001}`, "temperature"},
+		{`{"temperature":"1"}`, "temperature"},
+		{`{"temperature":true}`, "temperature"},
+		{`{"temperature":{}}`, "temperature"},
+		{`{"temperature":[]}`, "temperature"},
+		{`{"top_p":0}`, "top_p"},
+		{`{"top_p":1}`, "top_p"},
+		{`{"top_p":0.95000000000000001}`, "top_p"},
+		{`{"n":0}`, "n"},
+		{`{"n":2}`, "n"},
+		{`{"n":1.0}`, "n"},
+		{`{"presence_penalty":1}`, "presence_penalty"},
+		{`{"presence_penalty":1e-2147483648}`, "presence_penalty"},
+		{`{"frequency_penalty":-1}`, "frequency_penalty"},
+		{`{"reasoning_effort":"medium"}`, "reasoning_effort"},
+		{`{"reasoning_effort":""}`, "reasoning_effort"},
+		{`{"reasoning_effort":1}`, "reasoning_effort"},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal([]byte(tc.body), &fields))
+			param, err := validateK3Parameters(fields)
+			if tc.invalid == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Equal(t, tc.invalid, param)
+			}
+		})
+	}
+}
+
+func TestChatCompatibilityAttemptIsolation(t *testing.T) {
+	original := `{"model":"customer-alias","messages":[{"role":"user","content":"hello"}],"stop":["END","结束"],"temperature":null,"stream":false}`
+	outgoing := strings.Replace(original, "customer-alias", "upstream-model", 1)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(original))
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI,
+		ChannelMeta: &relaycommon.ChannelMeta{ApiType: constant.APITypeOpenAI, ChannelSetting: dto.ChannelSettings{
+			StrictChatToolMessages: true, K3ParameterValidation: true, GatewayVisibleContentStop: true,
+			ChatCompatibilityModels: []string{"upstream-model"},
+		}},
+	}
+	body, apiErr := applyChatCompatibility(c, info, []byte(outgoing), false)
+	require.Nil(t, apiErr)
+	assert.NotContains(t, string(body), `"stop"`)
+	assert.Contains(t, string(body), `"temperature":null`)
+	assert.Equal(t, []string{"END", "结束"}, info.VisibleStop)
+	storage, err := common.GetBodyStorage(c)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+	stored, err := storage.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, original, string(stored))
+
+	// A subsequent channel receives the unchanged original request, including
+	// stop, and cannot inherit the first channel's compatibility state.
+	info.ChannelSetting = dto.ChannelSettings{}
+	body, apiErr = applyChatCompatibility(c, info, []byte(original), false)
+	require.Nil(t, apiErr)
+	assert.Equal(t, original, string(body))
+	assert.Nil(t, info.VisibleStop)
+}
+
+func TestChatCompatibilityScopeAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, original, outgoing string
+		viaResponses             bool
+		format                   types.RelayFormat
+		status                   int
+	}{
+		{name: "client invalid even when override fixes", original: `{"temperature":0}`, outgoing: `{"temperature":1}`, status: 400},
+		{name: "configuration invalid", original: `{"temperature":1}`, outgoing: `{"temperature":0}`, status: 500},
+		{name: "omitted original", original: `{}`, outgoing: `{}`},
+		{name: "explicit null", original: `{"temperature":null}`, outgoing: `{}`},
+		{name: "client model alias", original: `{"model":"alias","temperature":0}`, outgoing: `{"temperature":1}`, status: 400},
+		{name: "final override selects other model", original: `{"temperature":0}`, outgoing: `{"model":"other","temperature":0}`},
+		{name: "Responses conversion rejected", original: `{}`, outgoing: `{}`, viaResponses: true, status: 500},
+		{name: "Responses API unaffected", original: `{"temperature":0}`, outgoing: `{"temperature":0}`, format: types.RelayFormatOpenAIResponses},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var original, outgoing map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal([]byte(tc.original), &original))
+			require.NoError(t, common.Unmarshal([]byte(tc.outgoing), &outgoing))
+			for _, body := range []map[string]json.RawMessage{original, outgoing} {
+				if body["model"] == nil {
+					body["model"] = json.RawMessage(`"target"`)
+				}
+				body["messages"] = json.RawMessage(`[{"role":"user","content":"Hi"}]`)
+			}
+			originalJSON, err := common.Marshal(original)
+			require.NoError(t, err)
+			outgoingJSON, err := common.Marshal(outgoing)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(originalJSON))
+			format := tc.format
+			if format == "" {
+				format = types.RelayFormatOpenAI
+			}
+			info := &relaycommon.RelayInfo{
+				RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: format,
+				ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{
+					K3ParameterValidation: true, ChatCompatibilityModels: []string{"target"},
+				}},
+			}
+			_, apiErr := applyChatCompatibility(c, info, outgoingJSON, tc.viaResponses)
+			if storage, exists := c.Get(common.KeyBodyStorage); exists {
+				t.Cleanup(func() { _ = storage.(common.BodyStorage).Close() })
+			}
+			if tc.status == 0 {
+				require.Nil(t, apiErr)
+				return
+			}
+			require.NotNil(t, apiErr)
+			assert.Equal(t, tc.status, apiErr.StatusCode)
+			assert.Equal(t, tc.status == 400, types.IsSkipRetryError(apiErr))
+			if tc.status == 400 {
+				assert.Equal(t, "invalid_request_error", apiErr.RelayError.(types.OpenAIError).Type)
+			} else {
+				assert.True(t, types.IsChannelError(apiErr))
+			}
+		})
+	}
+}
+
+func TestVisibleContentStopRequestForms(t *testing.T) {
+	for _, tc := range []struct {
+		raw   string
+		want  []string
+		valid bool
+	}{
+		{"", nil, true}, {`null`, nil, true}, {`[]`, []string{}, true},
+		{`""`, []string{""}, true}, {`"END"`, []string{"END"}, true},
+		{`["END","结束"]`, []string{"END", "结束"}, true},
+		{`[null]`, nil, false}, {`["END",3]`, nil, false}, {`true`, nil, false}, {`{}`, nil, false},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			stops, err := parseVisibleContentStops(json.RawMessage(tc.raw))
+			if tc.valid {
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, stops)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestChatCompatibilityIndependentPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields    string
+		settings        dto.ChannelSettings
+		viaResponses    bool
+		apiType, status int
+	}{
+		{name: "all off", fields: `"temperature":0,"stop":false`},
+		{name: "empty scope matches nothing", fields: `"temperature":0`, settings: dto.ChannelSettings{K3ParameterValidation: true}},
+		{name: "only tools permits non K3 params", fields: `"temperature":0`, settings: dto.ChannelSettings{StrictChatToolMessages: true, ChatCompatibilityModels: []string{"target"}}},
+		{name: "only stop without stop keeps Responses path", fields: `"temperature":0`, settings: dto.ChannelSettings{GatewayVisibleContentStop: true, ChatCompatibilityModels: []string{"target"}}, viaResponses: true},
+		{name: "stop without sequence keeps unsupported adaptor", fields: `"stop":null`, settings: dto.ChannelSettings{GatewayVisibleContentStop: true, ChatCompatibilityModels: []string{"target"}}, apiType: constant.APITypeGemini},
+		{name: "active stop rejects unsupported adaptor", fields: `"stop":"END"`, settings: dto.ChannelSettings{GatewayVisibleContentStop: true, ChatCompatibilityModels: []string{"target"}}, apiType: constant.APITypeGemini, status: 500},
+		{name: "active stop rejects Responses conversion", fields: `"stop":"END"`, settings: dto.ChannelSettings{GatewayVisibleContentStop: true, ChatCompatibilityModels: []string{"target"}}, viaResponses: true, status: 500},
+		{name: "active stop rejects reasoning relocation", fields: `"stop":"END"`, settings: dto.ChannelSettings{GatewayVisibleContentStop: true, ThinkingToContent: true, ChatCompatibilityModels: []string{"target"}}, status: 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"target","messages":[{"role":"user","content":"Hi"}],` + tc.fields + `}`)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			info := &relaycommon.RelayInfo{
+				RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI,
+				ChannelMeta: &relaycommon.ChannelMeta{ApiType: tc.apiType, ChannelSetting: tc.settings},
+			}
+			result, apiErr := applyChatCompatibility(c, info, body, tc.viaResponses)
+			if storage, exists := c.Get(common.KeyBodyStorage); exists {
+				t.Cleanup(func() { _ = storage.(common.BodyStorage).Close() })
+			}
+			if tc.status == 0 {
+				require.Nil(t, apiErr)
+				assert.Equal(t, body, result)
+			} else {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.status, apiErr.StatusCode)
+				assert.False(t, types.IsSkipRetryError(apiErr))
+			}
+		})
+	}
+}
+
+func TestChatCompatibilityDynamicToolContentPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, original, outgoing string
+		wantContent              bool
+	}{
+		{name: "omitted restored despite inserted system prompt", original: `{"role":"system","tools":[{"type":"function","function":{"name":"lookup"}}]}`, outgoing: `{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"lookup"}}]}`},
+		{name: "explicit null retained", original: `{"role":"system","content":null,"tools":[]}`, outgoing: `{"role":"system","content":null,"tools":[]}`, wantContent: true},
+		{name: "override content retained", original: `{"role":"system","tools":[]}`, outgoing: `{"role":"system","content":"configured","tools":[]}`, wantContent: true},
+		{name: "changed declaration retained", original: `{"role":"system","tools":[]}`, outgoing: `{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"other"}}]}`, wantContent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := []byte(`{"model":"target","messages":[` + tc.original + `,{"role":"user","content":"Hi"}]}`)
+			outgoing := []byte(`{"model":"target","messages":[{"role":"system","content":"existing prompt"},` + tc.outgoing + `,{"role":"user","content":"Hi"}]}`)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(original))
+			info := &relaycommon.RelayInfo{
+				RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI,
+				ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{
+					StrictChatToolMessages: true, ChatCompatibilityModels: []string{"target"},
+				}},
+			}
+			result, apiErr := applyChatCompatibility(c, info, outgoing, false)
+			require.Nil(t, apiErr)
+			storage, err := common.GetBodyStorage(c)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = storage.Close() })
+			var response struct {
+				Messages []map[string]json.RawMessage `json:"messages"`
+			}
+			require.NoError(t, common.Unmarshal(result, &response))
+			_, exists := response.Messages[1]["content"]
+			assert.Equal(t, tc.wantContent, exists)
+			assert.JSONEq(t, `"existing prompt"`, string(response.Messages[0]["content"]))
+		})
+	}
+}
 
 func TestRequestDeepCopyResponses(t *testing.T) {
 	t.Run("nil source", func(t *testing.T) {
