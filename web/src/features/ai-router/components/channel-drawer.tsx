@@ -545,7 +545,7 @@ export function ChannelDrawer(props: {
                           />
                         </FormControl>
                         <FormDescription>
-                          {t('Lower values are tried first.')}
+                          {t('Higher values are tried first.')}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>
