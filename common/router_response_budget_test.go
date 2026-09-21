@@ -84,6 +84,18 @@ func TestRouterNormalStreamCompletionWinsClientCancellation(t *testing.T) {
 	budget.Close()
 }
 
+func TestRouterClientCancellationBeforeCompletionRemains499(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	_, budget := NewRouterResponseBudget(parent, time.Minute)
+	cancel()
+
+	apiErr := budget.APIError()
+	require.NotNil(t, apiErr)
+	assert.Equal(t, 499, apiErr.StatusCode)
+	assert.Equal(t, "ai_router_request_canceled", string(apiErr.GetErrorCode()))
+	budget.Close()
+}
+
 func TestRouterWriteFailureIsNotHiddenByCompletion(t *testing.T) {
 	_, budget := NewRouterResponseBudget(context.Background(), time.Minute)
 	budget.MarkDelivered()
