@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -53,6 +54,18 @@ func buildSSEBody(n int) string {
 	}
 	b.WriteString("data: [DONE]\n")
 	return b.String()
+}
+
+type cancelOnCloseBody struct {
+	io.Reader
+	onClose func()
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	if b.onClose != nil {
+		b.onClose()
+	}
+	return nil
 }
 
 // ---------- Basic correctness ----------
@@ -394,6 +407,27 @@ func TestStreamScannerHandler_StreamStatus_DoneReason(t *testing.T) {
 	assert.Nil(t, info.StreamStatus.EndError)
 	assert.True(t, info.StreamStatus.IsNormalEnd())
 	assert.False(t, info.StreamStatus.HasErrors())
+}
+
+func TestStreamScannerHandler_CompletesRouterBudgetAfterNormalEnd(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	budgetCtx, budget := common.NewRouterResponseBudget(parent, time.Minute)
+	defer budget.Close()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(budgetCtx)
+	resp := &http.Response{Body: &cancelOnCloseBody{
+		Reader:  strings.NewReader(buildSSEBody(1)),
+		onClose: cancelParent,
+	}}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.Nil(t, budget.APIError(), "normal stream completion must win request cancellation")
 }
 
 func TestStreamScannerHandler_StreamStatus_EOFWithoutDone(t *testing.T) {

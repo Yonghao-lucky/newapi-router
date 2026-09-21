@@ -73,3 +73,22 @@ func TestRouterCompletionAndTimeoutHaveOneWinner(t *testing.T) {
 		assert.ErrorIs(t, context.Cause(ctx), ErrRouterIdleTimeout)
 	})
 }
+
+func TestRouterNormalStreamCompletionWinsClientCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	budgetCtx, budget := NewRouterResponseBudget(ctx, time.Minute)
+	cancel()
+	require.NoError(t, budget.CompleteStream())
+	assert.Nil(t, budget.APIError())
+	assert.NotNil(t, budgetCtx)
+	budget.Close()
+}
+
+func TestRouterWriteFailureIsNotHiddenByCompletion(t *testing.T) {
+	_, budget := NewRouterResponseBudget(context.Background(), time.Minute)
+	budget.MarkDelivered()
+	require.NoError(t, budget.Complete())
+	budget.WriteFailed(context.Canceled)
+	require.NotNil(t, budget.APIError())
+	budget.Close()
+}

@@ -334,6 +334,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	cleanup()
+	if budget != nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
+		// The request context can be canceled as soon as the final upstream
+		// event is delivered. CompleteStream treats that cancellation as a
+		// normal shutdown while preserving real timeout and write failures.
+		_ = budget.CompleteStream()
+	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
 	} else {

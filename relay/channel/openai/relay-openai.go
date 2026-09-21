@@ -161,7 +161,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	// 处理最后的响应
 	if budget := common.RouterBudgetFor(c); budget != nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
-		_ = budget.Complete()
+		_ = budget.CompleteStream()
 	}
 	shouldSendLastResp := true
 	if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,

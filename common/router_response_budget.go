@@ -103,6 +103,28 @@ func (b *RouterResponseBudget) Complete() error {
 	return nil
 }
 
+// CompleteStream marks a stream that reached its provider terminal event as
+// complete. The client connection may be closed immediately after the final
+// event, which cancels the request context while the relay is still recording
+// its terminal state. That cancellation must not turn a delivered stream into
+// a synthetic 499; timeout and write failures still win.
+func (b *RouterResponseBudget) CompleteStream() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.completed {
+		return nil
+	}
+	if !time.Now().Before(b.deadline) {
+		b.cancel(ErrRouterIdleTimeout)
+	}
+	if err := context.Cause(b.ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	b.completed = true
+	b.timer.Stop()
+	return nil
+}
+
 func (b *RouterResponseBudget) Close() {
 	b.mu.Lock()
 	b.completed = true
@@ -122,10 +144,13 @@ func (b *RouterResponseBudget) WriteFailed(err error) {
 func (b *RouterResponseBudget) APIError() *types.NewAPIError {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	err := context.Cause(b.ctx)
-	if err == nil {
-		err = b.writeErr
+	if b.writeErr != nil {
+		return types.WithOpenAIError(types.OpenAIError{Type: "server_error", Code: "ai_router_response_write_failed", Message: b.writeErr.Error()}, 499, types.ErrOptionWithSkipRetry())
 	}
+	if b.completed {
+		return nil
+	}
+	err := context.Cause(b.ctx)
 	if err == nil {
 		return nil
 	}
