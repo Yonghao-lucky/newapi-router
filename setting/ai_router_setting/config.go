@@ -1,13 +1,14 @@
 package ai_router_setting
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 const (
@@ -29,26 +30,28 @@ const (
 )
 
 type Settings struct {
-	Enabled            bool     `json:"enabled"`
-	TargetModels       []string `json:"target_models"`
-	MaxAttempts        int      `json:"max_attempts"`
-	UnknownPolicy      string   `json:"unknown_policy"`
-	ToolFilterEnabled  bool     `json:"tool_filter_enabled"`
-	TelemetryEnabled   bool     `json:"telemetry_enabled"`
-	RetentionDays      int      `json:"retention_days"`
-	IdleTimeoutSeconds int      `json:"idle_timeout_seconds"`
+	Enabled              bool     `json:"enabled"`
+	TargetModels         []string `json:"target_models"`
+	MaxAttempts          int      `json:"max_attempts"`
+	UnknownPolicy        string   `json:"unknown_policy"`
+	ToolFilterEnabled    bool     `json:"tool_filter_enabled"`
+	TelemetryEnabled     bool     `json:"telemetry_enabled"`
+	RetentionDays        int      `json:"retention_days"`
+	IdleTimeoutSeconds   int      `json:"idle_timeout_seconds"`
+	ResponseModelAliases []string `json:"response_model_aliases"`
 }
 
 func DefaultSettings() Settings {
 	return Settings{
-		Enabled:            false,
-		TargetModels:       []string{"kimi-k3"},
-		MaxAttempts:        3,
-		UnknownPolicy:      UnknownPolicyFullCapOnly,
-		ToolFilterEnabled:  false,
-		TelemetryEnabled:   true,
-		RetentionDays:      7,
-		IdleTimeoutSeconds: 1000,
+		Enabled:              false,
+		TargetModels:         []string{"kimi-k3"},
+		MaxAttempts:          3,
+		UnknownPolicy:        UnknownPolicyFullCapOnly,
+		ToolFilterEnabled:    false,
+		TelemetryEnabled:     true,
+		RetentionDays:        7,
+		IdleTimeoutSeconds:   1000,
+		ResponseModelAliases: []string{},
 	}
 }
 
@@ -69,6 +72,7 @@ func (s *Settings) Normalize() {
 		return
 	}
 	s.TargetModels = NormalizeTargetModels(s.TargetModels)
+	s.ResponseModelAliases = NormalizeTargetModels(s.ResponseModelAliases)
 	if s.IdleTimeoutSeconds == 0 {
 		s.IdleTimeoutSeconds = 1000
 	}
@@ -105,7 +109,17 @@ func (s *Settings) Validate() error {
 func (s *Settings) clone() Settings {
 	cloned := *s
 	cloned.TargetModels = slices.Clone(s.TargetModels)
+	cloned.ResponseModelAliases = slices.Clone(s.ResponseModelAliases)
 	return cloned
+}
+
+// ResponseModelAlias is matched against the original client endpoint/name,
+// before channel mapping or temporary protocol conversion takes place.
+func (s Settings) ResponseModelAlias(path, model string) string {
+	if s.Enabled && path == "/v1/chat/completions" && slices.Contains(s.ResponseModelAliases, model) {
+		return model
+	}
+	return ""
 }
 
 func (s *Settings) IsTargetModel(model string) bool {
@@ -129,9 +143,7 @@ func GetSettings() Settings {
 	if settings == nil {
 		return DefaultSettings()
 	}
-	cloned := *settings
-	cloned.TargetModels = slices.Clone(settings.TargetModels)
-	return cloned
+	return settings.clone()
 }
 
 func publishSnapshot(settings Settings) {
@@ -167,10 +179,16 @@ func applyStrictValue(settings *Settings, key string, value string) error {
 		settings.Enabled = parsed
 	case "target_models":
 		var models []string
-		if err := json.Unmarshal([]byte(value), &models); err != nil {
+		if err := common.Unmarshal([]byte(value), &models); err != nil {
 			return fmt.Errorf("invalid target_models value: %s", value)
 		}
 		settings.TargetModels = models
+	case "response_model_aliases":
+		var models []string
+		if err := common.Unmarshal([]byte(value), &models); err != nil || models == nil {
+			return fmt.Errorf("response_model_aliases must be an array of model names")
+		}
+		settings.ResponseModelAliases = models
 	case "max_attempts":
 		parsed, err := strconv.Atoi(value)
 		if err != nil {

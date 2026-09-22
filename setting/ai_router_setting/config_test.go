@@ -19,6 +19,34 @@ func TestDefaultSettings(t *testing.T) {
 	assert.True(t, settings.TelemetryEnabled)
 	assert.Equal(t, 7, settings.RetentionDays)
 	assert.NoError(t, settings.Validate())
+	assert.Empty(t, settings.ResponseModelAliases)
+}
+
+func TestResponseModelAliasScopeAndSnapshot(t *testing.T) {
+	previous := GetSettings()
+	t.Cleanup(func() { publishSnapshot(previous) })
+	require.NoError(t, Configure(map[string]string{
+		"enabled": "true", "response_model_aliases": `[" kimi-k3 ","kimi-k3", ""]`,
+	}))
+	snapshot := GetSettings()
+	assert.Equal(t, []string{"kimi-k3"}, snapshot.ResponseModelAliases)
+	assert.Equal(t, "kimi-k3", snapshot.ResponseModelAlias("/v1/chat/completions", "kimi-k3"))
+	assert.Empty(t, snapshot.ResponseModelAlias("/v1/chat/completions", "KIMI-K3"))
+	assert.Empty(t, snapshot.ResponseModelAlias("/v1/responses", "kimi-k3"))
+	assert.Empty(t, snapshot.ResponseModelAlias("/v1/messages", "kimi-k3"))
+	assert.Empty(t, snapshot.ResponseModelAlias("/v1/chat/completions", "other"))
+	for _, invalid := range []string{`null`, `"kimi-k3"`, `[1]`, `{}`} {
+		require.Error(t, Configure(map[string]string{"response_model_aliases": invalid}))
+		assert.Equal(t, snapshot, GetSettings())
+	}
+	require.NoError(t, Configure(map[string]string{"response_model_aliases": `[]`}))
+	assert.Equal(t, "kimi-k3", snapshot.ResponseModelAlias("/v1/chat/completions", "kimi-k3"), "in-flight snapshot survives config change/fallback")
+	assert.Empty(t, GetSettings().ResponseModelAlias("/v1/chat/completions", "kimi-k3"))
+	require.NoError(t, Configure(map[string]string{"response_model_aliases": `["kimi-k3"]`}))
+	GetSettings().ResponseModelAliases[0] = "mutated"
+	assert.Equal(t, []string{"kimi-k3"}, GetSettings().ResponseModelAliases)
+	snapshot.Enabled = false
+	assert.Empty(t, snapshot.ResponseModelAlias("/v1/chat/completions", "kimi-k3"))
 }
 
 func TestValidateTargetModels(t *testing.T) {

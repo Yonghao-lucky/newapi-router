@@ -104,6 +104,7 @@ func StringData(c *gin.Context, str string) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 	if budget := common.RouterBudgetFor(c); budget != nil {
+		str = common.RewriteChatResponseModel(c, str)
 		payload := []byte("data: " + str + "\n\n")
 		n, err := c.Writer.Write(payload)
 		if err == nil && n != len(payload) {
@@ -122,7 +123,7 @@ func StringData(c *gin.Context, str string) error {
 		return nil
 	}
 
-	c.Render(-1, common.CustomEvent{Data: "data: " + str})
+	c.Render(-1, common.CustomEvent{Data: "data: " + common.RewriteChatResponseModel(c, str)})
 	return FlushWriter(c)
 }
 

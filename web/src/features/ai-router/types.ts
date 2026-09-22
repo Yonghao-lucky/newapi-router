@@ -31,6 +31,7 @@ export interface AIRouterSettings {
   telemetry_enabled: boolean
   retention_days: number
   idle_timeout_seconds?: number
+  response_model_aliases?: string[]
 }
 
 // Capability values are tri-state: null means "unset" (channel default).

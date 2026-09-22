@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	ai_router "github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/service/video_preprocess"
+	"github.com/QuantumNous/new-api/setting/ai_router_setting"
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
 	"github.com/gin-gonic/gin"
@@ -73,11 +75,47 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-			require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.AIRouterTargetPolicy{}, &model.AIRouterTargetCandidate{}))
+			require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.AIRouterTargetPolicy{}, &model.AIRouterTargetCandidate{}, &model.Option{}))
 			tx := db.Begin()
 			require.NoError(t, tx.Error)
 			t.Cleanup(func() { require.NoError(t, tx.Rollback().Error) })
 			model.DB, model.LOG_DB = tx, tx
+			t.Run("response_model_alias_settings", func(t *testing.T) {
+				previousSettings := ai_router_setting.GetSettings()
+				aliases, err := common.Marshal(previousSettings.ResponseModelAliases)
+				require.NoError(t, err)
+				previousOptions := common.OptionMap
+				common.OptionMap = maps.Clone(previousOptions)
+				if common.OptionMap == nil {
+					common.OptionMap = make(map[string]string)
+				}
+				t.Cleanup(func() {
+					common.OptionMap = previousOptions
+					require.NoError(t, ai_router_setting.Configure(map[string]string{"response_model_aliases": string(aliases)}))
+				})
+				router := gin.New()
+				router.GET("/settings", GetAIRouterSettings)
+				router.PUT("/settings", UpdateAIRouterSettings)
+				for _, aliases := range []string{`["kimi-k3"]`, `[]`} {
+					data := aiRouterAdminRequest(t, router, http.MethodPut, "/settings", `{"response_model_aliases":`+aliases+`}`)
+					var settings ai_router_setting.Settings
+					require.NoError(t, common.Unmarshal(data, &settings))
+					var want []string
+					require.NoError(t, common.UnmarshalJsonStr(aliases, &want))
+					assert.Equal(t, want, settings.ResponseModelAliases)
+					assert.Equal(t, previousSettings.MaxAttempts, settings.MaxAttempts)
+					assert.Equal(t, previousSettings.IdleTimeoutSeconds, settings.IdleTimeoutSeconds)
+					var stored model.Option
+					require.NoError(t, tx.Where(&model.Option{Key: "ai_router.response_model_aliases"}).First(&stored).Error)
+					assert.JSONEq(t, aliases, stored.Value)
+					// Simulate clearing/reloading the new setting using the startup parser.
+					require.NoError(t, ai_router_setting.Configure(map[string]string{"response_model_aliases": `["temporary"]`}))
+					require.NoError(t, ai_router_setting.Configure(map[string]string{"response_model_aliases": stored.Value}))
+					data = aiRouterAdminRequest(t, router, http.MethodGet, "/settings", "")
+					require.NoError(t, common.Unmarshal(data, &settings))
+					assert.Equal(t, want, settings.ResponseModelAliases)
+				}
+			})
 
 			channels := make([]model.Channel, 0, 7)
 			for _, fixture := range []struct {

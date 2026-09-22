@@ -169,6 +169,67 @@ it('edits and saves the idle timeout independently of retry counts', async () =>
   )
 })
 
+it('defaults response model aliases to disabled and saves a keyboard-created model tag', async () => {
+  const user = userEvent.setup()
+  render(<GlobalConfigTab />, { wrapper })
+  const input = await screen.findByRole('combobox', {
+    name: 'Restore response model names',
+  })
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ response_model_aliases: [] })
+    )
+  )
+  await waitFor(() => expect(input).toBeEnabled())
+  const editable = screen.getByRole('combobox', {
+    name: 'Restore response model names',
+  })
+  await user.type(editable, 'kimi-k3')
+  expect(editable).toHaveValue('kimi-k3')
+  await user.keyboard('{Enter}')
+  expect(
+    screen.getByText('kimi-k3').closest('[data-slot="combobox-chip"]')
+  ).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        response_model_aliases: ['kimi-k3'],
+        idle_timeout_seconds: 1000,
+        max_attempts: 3,
+      })
+    )
+  )
+})
+
+it('reads saved response model aliases and disables rewriting by removing the last tag', async () => {
+  vi.mocked(api.getAIRouterSettings).mockResolvedValueOnce({
+    enabled: true,
+    target_models: ['kimi-k3'],
+    unknown_policy: 'full_capability_only',
+    telemetry_enabled: true,
+    tool_filter_enabled: false,
+    max_attempts: 3,
+    retention_days: 7,
+    idle_timeout_seconds: 1000,
+    response_model_aliases: ['kimi-k3'],
+  })
+  const user = userEvent.setup()
+  render(<GlobalConfigTab />, { wrapper })
+  const chip = (await screen.findByText('kimi-k3')).closest(
+    '[data-slot="combobox-chip"]'
+  )
+  if (!chip) throw new Error('Expected the response model chip')
+  await user.click(within(chip as HTMLElement).getByRole('button'))
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ response_model_aliases: [] })
+    )
+  )
+})
+
 it.each([
   { initial: undefined, input: '0', expected: 0 },
   { initial: 100, input: '', expected: null },

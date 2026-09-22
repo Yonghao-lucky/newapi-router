@@ -31,6 +31,7 @@ func runAIRouterRelay(
 	newAPIError **types.NewAPIError,
 ) {
 	settings := ai_router_setting.GetSettings()
+	common.SetChatResponseModelAlias(c, settings.ResponseModelAlias(c.Request.URL.Path, relayInfo.OriginModelName))
 
 	// Build the RouteDemand by detecting request capabilities.
 	bodyStorage, bodyErr := common.GetBodyStorage(c)

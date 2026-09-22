@@ -15,11 +15,160 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestResponseModelAliasPreservesOpenAIHandlerOutput(t *testing.T) {
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+	for _, tc := range []struct {
+		name                                         string
+		stream, force, thinking, stop, upstreamUsage bool
+	}{
+		{"json", false, false, false, false, true},
+		{"json_stop", false, false, false, true, true},
+		{"json_format_stop", false, true, false, true, true},
+		{"sse", true, false, false, false, true},
+		{"sse_without_requested_usage", true, false, false, false, true},
+		{"sse_stop", true, false, false, true, true},
+		{"sse_format", true, true, false, false, true},
+		{"sse_thinking", true, false, true, false, true},
+		{"sse_all", true, true, true, true, true},
+		{"sse_generated_usage", true, false, false, false, false},
+		{"sse_stop_generated_usage", true, false, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var baseline string
+			var baselineUsage *dto.Usage
+			for _, enabled := range []bool{false, true} {
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				ctx, budget := common.NewRouterResponseBudget(context.Background(), time.Minute)
+				defer budget.Close()
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+				if enabled {
+					common.SetChatResponseModelAlias(c, "kimi-k3")
+				}
+				info := &relaycommon.RelayInfo{
+					ChannelMeta: &relaycommon.ChannelMeta{
+						ChannelType: constant.ChannelTypeOpenAI, UpstreamModelName: "FW-Kimi-K3",
+						ChannelSetting: dto.ChannelSettings{ForceFormat: tc.force, ThinkingToContent: tc.thinking},
+					},
+					OriginModelName: "kimi-k3", BillingModelName: "billing-name",
+					RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeChatCompletions,
+					ShouldIncludeUsage: true, DisablePing: true,
+					ThinkingContentInfo: relaycommon.ThinkingContentInfo{IsFirstThinkingContent: true},
+				}
+				if tc.stop {
+					info.VisibleStop = []string{"STOP"}
+				}
+				if tc.name == "sse_without_requested_usage" {
+					info.ShouldIncludeUsage = false
+				}
+				body := `{"id":"fixture","created":42,"model":"FW-Kimi-K3","choices":[{"index":0,"message":{"role":"assistant","content":"hello STOP FW-Kimi-K3","reasoning_content":"keep STOP","tool_calls":[{"id":"c1","type":"function","function":{"name":"test","arguments":"{\"model\":\"FW-Kimi-K3\"}"}}]},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":100,"total_tokens":110,"vendor_tokens":73},"extra":{"large":9007199254740993}}`
+				if tc.stream {
+					frames := []string{
+						`{"id":"fixture","created":42,"model":"FW-Kimi-K3","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think STOP FW-Kimi-K3"}}]}`,
+						`{"id":"fixture","created":42,"model":"FW-Kimi-K3","choices":[{"index":0,"delta":{"content":"hello ST"}}]}`,
+						`{"id":"fixture","created":42,"model":"FW-Kimi-K3","choices":[{"index":0,"delta":{"content":"OP FW-Kimi-K3","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"test","arguments":"{\"model\":\"FW-Kimi-K3\"}"}}]}}]}`,
+						`{"id":"fixture","created":42,"model":"FW-Kimi-K3","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+					}
+					if tc.upstreamUsage {
+						frames = append(frames, `{"id":"fixture","created":42,"model":"FW-Kimi-K3","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":100,"total_tokens":110,"vendor_tokens":73},"extra":{"large":9007199254740993}}`)
+					}
+					body = "data: " + strings.Join(frames, "\n\ndata: ") + "\n\ndata: [DONE]\n\n"
+				}
+				resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+				var usage *dto.Usage
+				var apiErr *types.NewAPIError
+				if tc.stream {
+					usage, apiErr = OaiStreamHandler(c, info, resp)
+				} else {
+					usage, apiErr = OpenaiHandler(c, info, resp)
+				}
+				require.Nil(t, apiErr)
+				assert.Equal(t, "FW-Kimi-K3", info.UpstreamModelName)
+				assert.Equal(t, "kimi-k3", info.OriginModelName)
+				assert.Equal(t, "billing-name", info.BillingModelName)
+				if !enabled {
+					baseline, baselineUsage = w.Body.String(), usage
+					continue
+				}
+				require.Contains(t, baseline, `"model":"FW-Kimi-K3"`)
+				assert.Equal(t, strings.ReplaceAll(baseline, `"model":"FW-Kimi-K3"`, `"model":"kimi-k3"`), w.Body.String())
+				assert.Equal(t, baselineUsage, usage)
+				if tc.stream {
+					assert.Equal(t, 1, strings.Count(w.Body.String(), "data: [DONE]"))
+					if info.ShouldIncludeUsage {
+						assert.Contains(t, w.Body.String(), `"usage":`)
+					} else {
+						assert.NotContains(t, w.Body.String(), `"usage":`)
+					}
+				}
+			}
+		})
+	}
+}
+
+type modelAliasFlushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed chan string
+}
+
+func (w *modelAliasFlushRecorder) Flush() {
+	w.ResponseRecorder.Flush()
+	select {
+	case w.flushed <- w.Body.String():
+	default:
+	}
+}
+
+func TestResponseModelAliasStreamsBeforeUpstreamEOF(t *testing.T) {
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+	w := &modelAliasFlushRecorder{ResponseRecorder: httptest.NewRecorder(), flushed: make(chan string, 8)}
+	c, _ := gin.CreateTestContext(w)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	common.SetChatResponseModelAlias(c, "kimi-k3")
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeOpenAI, UpstreamModelName: "FW-Kimi-K3"},
+		RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeChatCompletions, DisablePing: true,
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = OaiStreamHandler(c, info, &http.Response{StatusCode: 200, Header: http.Header{}, Body: reader})
+	}()
+	// Existing OaiStreamHandler buffers one event; a second event releases it.
+	_, err := io.WriteString(writer, "data: {\"model\":\"FW-Kimi-K3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first\"}}]}\n\ndata: {\"model\":\"FW-Kimi-K3\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"second\"}}]}\n\n")
+	require.NoError(t, err)
+	select {
+	case output := <-w.flushed:
+		assert.Contains(t, output, `"model":"kimi-k3"`)
+		assert.Contains(t, output, `"content":"first"`)
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not flush before upstream EOF")
+	}
+	_, err = io.WriteString(writer, "data: [DONE]\n\n")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream handler did not finish")
+	}
+}
 
 func TestCollectStreamFunctionCallNamesDedupesSameIndex(t *testing.T) {
 	seen := make(map[string]struct{})

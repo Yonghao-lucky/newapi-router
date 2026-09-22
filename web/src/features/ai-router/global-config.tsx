@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
+import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -46,6 +47,7 @@ export function GlobalConfigTab() {
   const [maxAttempts, setMaxAttempts] = useState(3)
   const [retentionDays, setRetentionDays] = useState(7)
   const [idleTimeout, setIdleTimeout] = useState(1000)
+  const [responseModelAliases, setResponseModelAliases] = useState<string[]>([])
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: [...AI_ROUTER_QUERY_KEYS.settings],
@@ -60,6 +62,7 @@ export function GlobalConfigTab() {
     setMaxAttempts(data.max_attempts)
     setRetentionDays(data.retention_days)
     setIdleTimeout(data.idle_timeout_seconds ?? 1000)
+    setResponseModelAliases(data.response_model_aliases ?? [])
   }, [data])
 
   const save = useMutation({
@@ -72,6 +75,7 @@ export function GlobalConfigTab() {
         max_attempts: maxAttempts,
         retention_days: retentionDays,
         idle_timeout_seconds: idleTimeout,
+        response_model_aliases: responseModelAliases,
       }),
     onSuccess: () => {
       toast.success(t('Settings saved'))
@@ -143,6 +147,35 @@ export function GlobalConfigTab() {
             onCheckedChange={setToolFilterEnabled}
           />
         </div>
+      </div>
+
+      <div className='space-y-2 rounded-lg border p-4'>
+        <Label htmlFor='ai-router-response-model-aliases'>
+          {t('Restore response model names')}
+        </Label>
+        <MultiSelect
+          id='ai-router-response-model-aliases'
+          aria-label={t('Restore response model names')}
+          aria-describedby='ai-router-response-model-aliases-help'
+          selected={responseModelAliases}
+          onChange={setResponseModelAliases}
+          options={[
+            ...new Set([
+              ...(data?.target_models ?? []),
+              ...responseModelAliases,
+            ]),
+          ].map((value) => ({ value, label: value }))}
+          allowCreate
+          disabled={save.isPending}
+        />
+        <p
+          id='ai-router-response-model-aliases-help'
+          className='text-muted-foreground text-xs'
+        >
+          {t(
+            'Exact client model names, such as kimi-k3. Empty disables rewriting. For AI Router Chat Completions only, restore the response model to the requested name in JSON and every SSE event. Other fields and upstream requests stay unchanged.'
+          )}
+        </p>
       </div>
 
       <div className='grid gap-4 sm:grid-cols-2'>
