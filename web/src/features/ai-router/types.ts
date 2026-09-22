@@ -20,6 +20,8 @@ For commercial licensing, please contact support@quantumnous.com
 // Shared AI Router types. Router settings come from the V1 global option;
 // policies/candidates and channel router profiles come from V1.5 Phase 1.
 
+export type AIRouterChannelOrder = 'priority' | 'video_priority'
+
 export interface AIRouterSettings {
   enabled: boolean
   target_models: string[]

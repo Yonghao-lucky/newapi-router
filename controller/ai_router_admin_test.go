@@ -1,15 +1,18 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	ai_router "github.com/QuantumNous/new-api/service/ai_router"
 	"github.com/QuantumNous/new-api/service/video_preprocess"
 	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 
@@ -17,8 +20,196 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
+	for _, database := range []struct {
+		name, dsn string
+	}{
+		{"sqlite", ""},
+		{"mysql", os.Getenv("AI_ROUTER_TEST_MYSQL_DSN")},
+		{"postgres", os.Getenv("AI_ROUTER_TEST_POSTGRES_DSN")},
+	} {
+		t.Run(database.name, func(t *testing.T) {
+			if database.name != "sqlite" && database.dsn == "" {
+				t.Skip("isolated database DSN not configured")
+			}
+			previousMode := gin.Mode()
+			previousDB, previousLogDB := model.DB, model.LOG_DB
+			previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+			previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+			previousPolicies := ai_router.GetTargetPolicySnapshot()
+			gin.SetMode(gin.TestMode)
+			common.MemoryCacheEnabled, common.RedisEnabled = false, false
+			t.Cleanup(func() {
+				gin.SetMode(previousMode)
+				model.DB, model.LOG_DB = previousDB, previousLogDB
+				common.SetDatabaseTypes(previousMainType, previousLogType)
+				common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+				ai_router.PublishTargetPolicySnapshot(previousPolicies)
+			})
+			var driver gorm.Dialector
+			switch database.name {
+			case "mysql":
+				driver = mysql.Open(database.dsn)
+				common.SetDatabaseTypes(common.DatabaseTypeMySQL, common.DatabaseTypeMySQL)
+			case "postgres":
+				driver = postgres.Open(database.dsn)
+				common.SetDatabaseTypes(common.DatabaseTypePostgreSQL, common.DatabaseTypePostgreSQL)
+			default:
+				driver = sqlite.Open("file:channel_admin_matrix?mode=memory&cache=shared")
+				common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{})
+			require.NoError(t, err)
+			if database.name == "sqlite" {
+				var version string
+				require.NoError(t, db.Raw("SELECT sqlite_version()").Scan(&version).Error)
+				t.Logf("SQLite %s", version)
+			}
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+			require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.AIRouterTargetPolicy{}, &model.AIRouterTargetCandidate{}))
+			tx := db.Begin()
+			require.NoError(t, tx.Error)
+			t.Cleanup(func() { require.NoError(t, tx.Rollback().Error) })
+			model.DB, model.LOG_DB = tx, tx
+
+			channels := make([]model.Channel, 0, 7)
+			for _, fixture := range []struct {
+				name, groups, video string
+				priority            int64
+				status              int
+			}{
+				{"A", "default,vip", "100", 90, 1},
+				{"B", "vip", "0", 70, 2},
+				{"C", "default", "null", 100, 1},
+				{"D", "vip-extra", "null", 80, 3},
+				{"E", "default, vip ", "-5", 0, 1},
+				{"F", "v%_ip", "100", 110, 1},
+				{"G", "default", "null", 0, 1},
+			} {
+				channel := model.Channel{
+					Name: "channel-admin-fixture-" + fixture.name, Key: "mock-only", Type: 1,
+					Group: fixture.groups, Models: "kimi-k3", Status: fixture.status, Priority: &fixture.priority,
+					OtherSettings: fmt.Sprintf(`{"router":{"enabled":true,"video_priority":%s,"max_retry":2,"retry_status_codes":[],"switch_status_codes":[502]},"allow_service_tier":true}`, fixture.video),
+				}
+				require.NoError(t, tx.Create(&channel).Error)
+				channels = append(channels, channel)
+			}
+			// Legacy nullable native priority is the same effective tier as zero.
+			require.NoError(t, tx.Model(&channels[6]).Update("priority", nil).Error)
+			policy := model.AIRouterTargetPolicy{Model: "channel-admin-fixture", GroupId: "default", Enabled: true, MaxAttempts: 3,
+				Candidates: []*model.AIRouterTargetCandidate{{ChannelId: channels[0].Id, Enabled: true}},
+			}
+			require.NoError(t, tx.Create(&policy).Error)
+			require.NoError(t, ai_router.ReloadTargetPolicySnapshot())
+			router := gin.New()
+			router.GET("/channels", GetAIRouterChannels)
+			router.PUT("/channels/:id/router", UpdateAIRouterChannelRouter)
+			router.GET("/policies/:id", GetAIRouterTargetPolicy)
+
+			for _, priority := range []string{"100", "0", "-9", "null"} {
+				t.Run("roundtrip_"+priority, func(t *testing.T) {
+					body := fmt.Sprintf(`{"router":{"enabled":true,"video_priority":%s,"max_retry":2,"retry_status_codes":[],"switch_status_codes":[502]}}`, priority)
+					aiRouterAdminRequest(t, router, http.MethodPut, fmt.Sprintf("/channels/%d/router", channels[0].Id), body)
+					data := aiRouterAdminRequest(t, router, http.MethodGet, "/channels?name=channel-admin-fixture-A", "")
+					var page struct {
+						Items []struct {
+							Router map[string]json.RawMessage `json:"router"`
+						} `json:"items"`
+					}
+					require.NoError(t, common.Unmarshal(data, &page))
+					require.Len(t, page.Items, 1)
+					assert.JSONEq(t, priority, string(page.Items[0].Router["video_priority"]))
+					assert.JSONEq(t, "2", string(page.Items[0].Router["max_retry"]))
+					assert.JSONEq(t, "[]", string(page.Items[0].Router["retry_status_codes"]))
+					assert.JSONEq(t, "[502]", string(page.Items[0].Router["switch_status_codes"]))
+					data = aiRouterAdminRequest(t, router, http.MethodGet, fmt.Sprintf("/policies/%d", policy.Id), "")
+					var policyView struct {
+						Candidates []struct {
+							Channel map[string]json.RawMessage `json:"channel"`
+						} `json:"candidates"`
+					}
+					require.NoError(t, common.Unmarshal(data, &policyView))
+					require.Len(t, policyView.Candidates, 1)
+					assert.JSONEq(t, priority, string(policyView.Candidates[0].Channel["video_priority"]))
+					var stored model.Channel
+					require.NoError(t, tx.First(&stored, channels[0].Id).Error)
+					assert.True(t, stored.GetOtherSettings().AllowServiceTier)
+				})
+			}
+			// Restore the saved priority before checking global list order.
+			require.NoError(t, tx.Model(&channels[0]).Update("settings", channels[0].OtherSettings).Error)
+			for _, check := range []struct {
+				name, query string
+				order       []string
+				total       int
+			}{
+				{"ordinary", "", []string{"F", "C", "A", "D", "B", "E", "G"}, 7},
+				{"video", "&order=video_priority", []string{"A", "F", "B", "E", "C", "D", "G"}, 7},
+				{"video_page", "&order=video_priority&page=2&page_size=2", []string{"B", "E"}, 7},
+				{"ordinary_page", "&order=priority&page=2&page_size=2", []string{"A", "D"}, 7},
+				{"group", "&group_id=vip", []string{"A", "B", "E"}, 3},
+				{"group_status", "&group_id=vip&status=1", []string{"A", "E"}, 2},
+				{"group_literal", "&group_id=v%25_ip", []string{"F"}, 1},
+				{"group_no_substring", "&group_id=vi", []string{}, 0},
+				{"group_no_wildcard", "&group_id=%25", []string{}, 0},
+				{"disabled", "&status=2", []string{"B"}, 1},
+				{"auto_disabled", "&status=3", []string{"D"}, 1},
+				{"past_last_page", "&page=100&page_size=2", []string{}, 7},
+				{"max_page", "&page=9223372036854775807&page_size=100", []string{}, 7},
+			} {
+				t.Run(check.name, func(t *testing.T) {
+					data := aiRouterAdminRequest(t, router, http.MethodGet, "/channels?name=channel-admin-fixture-"+check.query, "")
+					var page struct {
+						Total int                   `json:"total"`
+						Items []aiRouterChannelView `json:"items"`
+					}
+					require.NoError(t, common.Unmarshal(data, &page))
+					names := make([]string, 0, len(page.Items))
+					for _, item := range page.Items {
+						names = append(names, strings.TrimPrefix(item.Name, "channel-admin-fixture-"))
+						if item.Id == channels[0].Id {
+							assert.Equal(t, []aiRouterPolicyRef{{PolicyId: policy.Id, Model: policy.Model, GroupId: policy.GroupId, Enabled: true}}, item.ReferencedBy)
+						} else {
+							assert.Equal(t, []aiRouterPolicyRef{}, item.ReferencedBy)
+						}
+					}
+					assert.Equal(t, check.total, page.Total)
+					assert.Equal(t, check.order, names)
+				})
+			}
+			for _, channel := range channels {
+				require.NoError(t, tx.Model(&channel).Update("settings", "{}").Error)
+			}
+			ordinary := aiRouterAdminRequest(t, router, http.MethodGet, "/channels?name=channel-admin-fixture-&order=priority", "")
+			video := aiRouterAdminRequest(t, router, http.MethodGet, "/channels?name=channel-admin-fixture-&order=video_priority", "")
+			assert.JSONEq(t, string(ordinary), string(video), "unset video priorities preserve ordinary order")
+		})
+	}
+}
+
+func aiRouterAdminRequest(t *testing.T, router http.Handler, method, path, body string) json.RawMessage {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload struct {
+		Success bool            `json:"success"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.True(t, payload.Success, payload.Message)
+	return payload.Data
+}
 
 func TestUpdateAIRouterSettingsValidation(t *testing.T) {
 	boolPtr := func(v bool) *bool { return &v }

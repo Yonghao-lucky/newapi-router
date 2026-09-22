@@ -71,10 +71,12 @@ import {
   transformPolicyToFormDefaults,
 } from '../lib/target-policy-form'
 import type {
+  AIRouterChannelOrder,
   AIRouterTargetPolicy,
   AIRouterValidationIssue,
   TargetPolicyChannelInfo,
 } from '../types'
+import { PriorityOrderControl } from './priority-order-control'
 import { ValidationAlert } from './validation-alert'
 
 // PolicyDrawer creates, edits or copies one target policy. Candidates carry
@@ -96,6 +98,7 @@ export function PolicyDrawer(props: {
   const [issues, setIssues] = useState<AIRouterValidationIssue[]>([])
   const [closeConfirm, setCloseConfirm] = useState(false)
   const [pendingRemove, setPendingRemove] = useState<number | null>(null)
+  const [order, setOrder] = useState<AIRouterChannelOrder>('priority')
 
   // Load the full policy when editing: the list row may be stale and the
   // detail endpoint refreshes the joined channel info.
@@ -120,26 +123,47 @@ export function PolicyDrawer(props: {
   }, [props.open, savedRow, detailQuery.isSuccess, form, isEditing])
 
   const candidateIds = form.watch('candidates')
-  const candidateChannelMap = useMemo(() => {
-    const map = new Map<number, TargetPolicyChannelInfo>()
-    for (const candidate of savedRow?.candidates ?? []) {
-      if (candidate.channel) {
-        map.set(candidate.channel_id, candidate.channel)
-      }
-    }
-    return map
-  }, [savedRow])
-
   // Channel picker options: every known channel minus the ones already added.
   const channelsQuery = useQuery({
     queryKey: [...AI_ROUTER_QUERY_KEYS.channels, 'picker'],
-    queryFn: async () =>
-      requireServerSuccess(await getAIRouterChannels({ page_size: 100 })),
+    queryFn: async () => {
+      const first = await getAIRouterChannels({ page: 1, page_size: 100 })
+      const items = [...first.items]
+      for (let page = 2; items.length < first.total; page++) {
+        const next = await getAIRouterChannels({ page, page_size: 100 })
+        if (next.items.length === 0) break
+        items.push(...next.items)
+      }
+      return items
+    },
     enabled: props.open,
   })
+  const candidateChannelMap = useMemo(() => {
+    const map = new Map<number, TargetPolicyChannelInfo>()
+    for (const channel of channelsQuery.data ?? []) {
+      const profile = channel.router
+      map.set(channel.id, {
+        ...channel,
+        video_priority: profile.video_priority,
+        router_enabled: profile.enabled,
+        router_set: profile.router_set ?? false,
+        max_retry: profile.max_retry,
+        supports_text: profile.supports_text ?? null,
+        supports_image: profile.supports_image ?? null,
+        supports_video: profile.supports_video ?? null,
+        unknown_fallback: profile.unknown_fallback,
+        tool_support: profile.tool_support ?? '',
+      })
+    }
+    for (const candidate of savedRow?.candidates ?? []) {
+      if (candidate.channel) map.set(candidate.channel_id, candidate.channel)
+      else map.delete(candidate.channel_id)
+    }
+    return map
+  }, [savedRow, channelsQuery.data])
   const channelOptions = useMemo(() => {
     const added = new Set((candidateIds ?? []).map((c) => c.channel_id))
-    return (channelsQuery.data?.items ?? [])
+    return (channelsQuery.data ?? [])
       .filter((channel) => !added.has(channel.id))
       .map((channel) => ({
         value: String(channel.id),
@@ -222,11 +246,29 @@ export function PolicyDrawer(props: {
   }
 
   const candidateRows = useMemo(() => {
-    return (candidateIds ?? []).map((candidate) => ({
-      candidate,
-      info: candidateChannelMap.get(candidate.channel_id),
-    }))
-  }, [candidateIds, candidateChannelMap])
+    return (candidateIds ?? [])
+      .map((candidate) => ({
+        candidate,
+        info: candidateChannelMap.get(candidate.channel_id),
+      }))
+      .sort((a, b) => {
+        if (!a.info || !b.info) {
+          if (a.info) return -1
+          if (b.info) return 1
+          return a.candidate.channel_id - b.candidate.channel_id
+        }
+        if (order === 'video_priority') {
+          const aVideo = a.info.video_priority
+          const bVideo = b.info.video_priority
+          if (aVideo != null && bVideo == null) return -1
+          if (aVideo == null && bVideo != null) return 1
+          if (aVideo != null && bVideo != null) {
+            return bVideo - aVideo || a.info.id - b.info.id
+          }
+        }
+        return b.info.priority - a.info.priority || a.info.id - b.info.id
+      })
+  }, [candidateIds, candidateChannelMap, order])
 
   const runValidate = () => {
     const payload = transformFormToPolicyPayload(form.getValues())
@@ -382,6 +424,8 @@ export function PolicyDrawer(props: {
                       />
                     </div>
                   </div>
+
+                  <PriorityOrderControl value={order} onChange={setOrder} />
 
                   {candidateRows.length === 0 ? (
                     <p className='text-muted-foreground rounded-lg border border-dashed p-4 text-center text-sm'>

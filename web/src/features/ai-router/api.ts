@@ -21,6 +21,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   AIRouterChannel,
+  AIRouterChannelOrder,
   AIRouterChannelStat,
   AIRouterErrorDistribution,
   AIRouterLog,
@@ -143,6 +144,7 @@ export async function getAIRouterChannels(params: {
   name?: string
   group_id?: string
   status?: string
+  order?: AIRouterChannelOrder
 }): Promise<AIRouterPage<AIRouterChannel>> {
   const response = await api.get<{
     success: boolean

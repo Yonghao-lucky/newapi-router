@@ -1,8 +1,9 @@
 package controller
 
 import (
-	"encoding/json"
+	"cmp"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -48,7 +49,7 @@ func UpdateAIRouterSettings(c *gin.Context) {
 			value = v
 		case []any:
 			// For target_models (JSON array of strings).
-			jsonBytes, err := json.Marshal(raw)
+			jsonBytes, err := common.Marshal(raw)
 			if err != nil {
 				common.ApiErrorMsg(c, fmt.Sprintf("failed to serialize %s: %v", key, err))
 				return
@@ -537,6 +538,7 @@ type aiRouterChannelView struct {
 }
 
 type aiRouterChannelRouterView struct {
+	VideoPriority     *int64 `json:"video_priority"`
 	Enabled           bool   `json:"enabled"`
 	RouterSet         bool   `json:"router_set"`
 	MaxRetry          int    `json:"max_retry"`
@@ -580,62 +582,31 @@ func GetAIRouterChannels(c *gin.Context) {
 		pageSize = 100
 	}
 
-	var total int64
 	query := model.DB.Model(&model.Channel{})
 	if nameFilter := c.Query("name"); nameFilter != "" {
 		query = query.Where("name LIKE ?", "%"+nameFilter+"%")
-	}
-	if groupFilter := c.Query("group_id"); groupFilter != "" {
-		query = query.Where("`group` = ?", groupFilter)
 	}
 	if statusFilter := c.Query("status"); statusFilter != "" {
 		if status, err := strconv.Atoi(statusFilter); err == nil {
 			query = query.Where("status = ?", status)
 		}
 	}
-	if err := query.Count(&total).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
-
 	var channels []*model.Channel
-	if err := query.Order("id ASC").
-		Offset((page - 1) * pageSize).
-		Limit(pageSize).
+	// Settings are portable JSON text. Read only the administration view's
+	// columns (never credentials), then filter and order before pagination.
+	// This avoids database-specific JSON expressions and group LIKE matching.
+	if err := query.Select("id", "name", "status", "group", "models", "priority", "weight", "settings").
 		Find(&channels).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
 
-	// Which policies reference these channels (from the runtime snapshot —
-	// no extra query of the candidate table).
-	ids := make([]int, 0, len(channels))
-	for _, ch := range channels {
-		ids = append(ids, ch.Id)
-	}
-	refs := make(map[int][]aiRouterPolicyRef, len(ids))
-	for _, policy := range ai_router.GetTargetPolicySnapshot().Policies() {
-		for _, candidate := range policy.Candidates {
-			found := false
-			for _, id := range ids {
-				if id == candidate.ChannelID {
-					found = true
-					break
-				}
-			}
-			if found {
-				refs[candidate.ChannelID] = append(refs[candidate.ChannelID], aiRouterPolicyRef{
-					PolicyId: policy.Id,
-					Model:    policy.Model,
-					GroupId:  policy.GroupId,
-					Enabled:  policy.Enabled,
-				})
-			}
-		}
-	}
-
 	items := make([]aiRouterChannelView, 0, len(channels))
+	groupFilter := c.Query("group_id")
 	for _, ch := range channels {
+		if groupFilter != "" && !slices.Contains(ch.GetGroups(), groupFilter) {
+			continue
+		}
 		otherSettings := ch.GetOtherSettings()
 		profile := otherSettings.RoutingProfile()
 		items = append(items, aiRouterChannelView{
@@ -647,6 +618,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			Priority: ch.GetPriority(),
 			Weight:   ch.GetWeight(),
 			RoutingProfile: aiRouterChannelRouterView{
+				VideoPriority:     profile.VideoPriority,
 				Enabled:           profile.Enabled,
 				RouterSet:         otherSettings.Router != nil,
 				MaxRetry:          profile.MaxRetry,
@@ -658,10 +630,58 @@ func GetAIRouterChannels(c *gin.Context) {
 				UnknownFallback:   profile.UnknownFallback,
 				ToolSupport:       profile.ToolSupport,
 			},
-			// Always a list: a channel no policy references must serialize as []
-			// rather than null, so clients that iterate it do not have to guard.
-			ReferencedBy: orEmptyRefs(refs[ch.Id]),
 		})
+	}
+	videoOrder := c.Query("order") == "video_priority"
+	slices.SortFunc(items, func(a, b aiRouterChannelView) int {
+		if videoOrder {
+			av, bv := a.RoutingProfile.VideoPriority, b.RoutingProfile.VideoPriority
+			switch {
+			case av != nil && bv == nil:
+				return -1
+			case av == nil && bv != nil:
+				return 1
+			case av != nil && bv != nil:
+				if order := cmp.Compare(*bv, *av); order != 0 {
+					return order
+				}
+				return cmp.Compare(a.Id, b.Id)
+			}
+		}
+		if order := cmp.Compare(b.Priority, a.Priority); order != 0 {
+			return order
+		}
+		// Weight controls selection within a tier, not its display priority.
+		return cmp.Compare(a.Id, b.Id)
+	})
+	total := len(items)
+	start := total
+	if page-1 <= total/pageSize {
+		start = min((page-1)*pageSize, total)
+	}
+	items = items[start:min(start+pageSize, total)]
+
+	// Enrich only the current page from the runtime snapshot, without
+	// querying candidate tables or scanning all channels for every reference.
+	refs := make(map[int][]aiRouterPolicyRef, len(items))
+	for _, item := range items {
+		refs[item.Id] = nil
+	}
+	for _, policy := range ai_router.GetTargetPolicySnapshot().Policies() {
+		for _, candidate := range policy.Candidates {
+			if _, found := refs[candidate.ChannelID]; found {
+				refs[candidate.ChannelID] = append(refs[candidate.ChannelID], aiRouterPolicyRef{
+					PolicyId: policy.Id,
+					Model:    policy.Model,
+					GroupId:  policy.GroupId,
+					Enabled:  policy.Enabled,
+				})
+			}
+		}
+	}
+	for i := range items {
+		// Unreferenced channels still expose an array rather than null.
+		items[i].ReferencedBy = orEmptyRefs(refs[items[i].Id])
 	}
 	common.ApiSuccess(c, gin.H{
 		"total":     total,

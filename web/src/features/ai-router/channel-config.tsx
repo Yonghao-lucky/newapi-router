@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import type { ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef, ColumnFiltersState } from '@tanstack/react-table'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,16 +27,24 @@ import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { getGroups } from '@/features/channels/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getAIRouterChannels } from './api'
 import { ChannelDrawer } from './components/channel-drawer'
+import { PriorityOrderControl } from './components/priority-order-control'
 import {
   AI_ROUTER_QUERY_KEYS,
   CHANNEL_STATUS_ENABLED,
+  CHANNEL_STATUS_AUTO_DISABLED,
   TOOL_SUPPORT_SUPPORTED,
   TOOL_SUPPORT_UNSUPPORTED,
 } from './constants'
-import type { AIRouterChannel, ChannelRoutingProfile } from './types'
+import type {
+  AIRouterChannel,
+  AIRouterChannelOrder,
+  ChannelRoutingProfile,
+} from './types'
 
 // Tool badge: null hides the highlight (unverified / unset profile).
 function toolBadgeState(profile: ChannelRoutingProfile): boolean | null {
@@ -116,12 +124,33 @@ export function ChannelConfigTab() {
   )
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
+  const [order, setOrder] = useState<AIRouterChannelOrder>('priority')
+  const groupFilter = (
+    columnFilters.find((filter) => filter.id === 'group')?.value as
+      | string[]
+      | undefined
+  )?.[0]
+  const statusFilter = (
+    columnFilters.find((filter) => filter.id === 'status')?.value as
+      | string[]
+      | undefined
+  )?.[0]
+  const group = groupFilter === 'all' ? undefined : groupFilter
+  const status = statusFilter === 'all' ? undefined : statusFilter
+  const groupsQuery = useQuery({
+    queryKey: ['groups'],
+    queryFn: async () => requireServerSuccess(await getGroups()),
+  })
 
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: [
       ...AI_ROUTER_QUERY_KEYS.channels,
       {
         search: appliedSearch,
+        group,
+        status,
+        order,
         page: pagination.pageIndex + 1,
         pageSize: pagination.pageSize,
       },
@@ -131,6 +160,9 @@ export function ChannelConfigTab() {
         page: pagination.pageIndex + 1,
         page_size: pagination.pageSize,
         name: appliedSearch || undefined,
+        group_id: group,
+        status,
+        order,
       }),
   })
 
@@ -171,7 +203,9 @@ export function ChannelConfigTab() {
             </StatusBadge>
           ) : (
             <StatusBadge variant='neutral' type='text'>
-              {t('Disabled')}
+              {row.original.status === CHANNEL_STATUS_AUTO_DISABLED
+                ? t('Auto Disabled')
+                : t('Disabled')}
             </StatusBadge>
           ),
       },
@@ -268,6 +302,13 @@ export function ChannelConfigTab() {
     onPaginationChange: setPagination,
     manualPagination: true,
     manualFiltering: true,
+    manualSorting: true,
+    enableSorting: false,
+    columnFilters,
+    onColumnFiltersChange: (updater) => {
+      setColumnFilters(updater)
+      setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    },
   })
 
   if (isError) {
@@ -278,30 +319,13 @@ export function ChannelConfigTab() {
 
   return (
     <div className='space-y-3'>
-      <div className='flex flex-wrap items-center gap-2'>
-        <Input
-          className='h-8 w-64'
-          placeholder={t('Search channels...')}
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              setAppliedSearch(search)
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }))
-            }
-          }}
-        />
-        <Button
-          size='sm'
-          variant='outline'
-          onClick={() => {
-            setAppliedSearch(search)
-            setPagination((prev) => ({ ...prev, pageIndex: 0 }))
-          }}
-        >
-          {t('Search')}
-        </Button>
-      </div>
+      <PriorityOrderControl
+        value={order}
+        onChange={(value) => {
+          setOrder(value)
+          setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+        }}
+      />
 
       <DataTablePage
         table={table}
@@ -310,7 +334,60 @@ export function ChannelConfigTab() {
         isFetching={isFetching}
         emptyTitle={t('No channels')}
         emptyDescription={t('Channels appear here once created.')}
-        toolbarProps={null}
+        toolbarProps={{
+          collapsibleOnMobile: true,
+          hideViewOptions: true,
+          customSearch: (
+            <Input
+              className='h-8 w-full sm:w-64'
+              aria-label={t('Search channels...')}
+              placeholder={t('Search channels...')}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  setAppliedSearch(search)
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+                }
+              }}
+            />
+          ),
+          hasAdditionalFilters: Boolean(search || appliedSearch),
+          onSearch: () => {
+            setAppliedSearch(search)
+            setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+          },
+          onReset: () => {
+            setSearch('')
+            setAppliedSearch('')
+            setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+          },
+          filters: [
+            {
+              columnId: 'group',
+              title: t('Group'),
+              singleSelect: true,
+              options: [
+                { label: t('All Groups'), value: 'all' },
+                ...(groupsQuery.data?.data ?? []).map((name) => ({
+                  label: name,
+                  value: name,
+                })),
+              ],
+            },
+            {
+              columnId: 'status',
+              title: t('Status'),
+              singleSelect: true,
+              options: [
+                { label: t('All Status'), value: 'all' },
+                { label: t('Enabled'), value: '1' },
+                { label: t('Disabled'), value: '2' },
+                { label: t('Auto Disabled'), value: '3' },
+              ],
+            },
+          ],
+        }}
       />
 
       <ChannelDrawer

@@ -259,14 +259,16 @@ export function ChannelDrawer(props: {
         weight: formValues.weight,
       })
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast.success(t('Channel configuration saved'))
-      void queryClient.invalidateQueries({
-        queryKey: AI_ROUTER_QUERY_KEYS.channels,
-      })
-      void queryClient.invalidateQueries({
-        queryKey: AI_ROUTER_QUERY_KEYS.targets,
-      })
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: AI_ROUTER_QUERY_KEYS.channels,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: AI_ROUTER_QUERY_KEYS.targets,
+        }),
+      ])
       props.onOpenChange(false)
     },
   })
