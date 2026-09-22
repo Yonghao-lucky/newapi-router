@@ -77,6 +77,12 @@ func TestDefaultSettingsAreValid(t *testing.T) {
 	assert.Equal(t, 180, settings.MaxJobSeconds)
 	assert.True(t, settings.TelemetryEnabled)
 	assert.Equal(t, 7, settings.RetentionDays)
+	assert.False(t, settings.RemoteURLEnabled)
+	assert.False(t, settings.RemoteURLAllowlistEnabled)
+	assert.Empty(t, settings.RemoteURLAllowedHosts)
+	assert.True(t, settings.RemoteURLAllowUnknownSize)
+	assert.Equal(t, 120, settings.RemoteURLDownloadTimeoutSeconds)
+	assert.Equal(t, 8, settings.RemoteURLMaxDownloads)
 	requireValid(t, settings)
 }
 
@@ -120,11 +126,75 @@ func TestValidationRejectsEmptyCollections(t *testing.T) {
 	assert.True(t, hasCode(issues, "codecs_required"))
 }
 
+func TestRemoteURLHostNormalization(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{" Media.Example.COM. ", "media.example.com"},
+		{"媒体.example.com", "xn--tqqy7y.example.com"},
+		{"pub-ef3013c53fb4493f8d5fd64a42eaf234.r2.dev", "pub-ef3013c53fb4493f8d5fd64a42eaf234.r2.dev"},
+		{"video.example.test", "video.example.test"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := NormalizeRemoteHost(tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+	for _, input := range []string{
+		"", "localhost", "metadata.google.internal", "video.local", "video.lan", "video.home",
+		"https://media.example.com", "*.r2.dev", "media.example.com:443", "name@media.example.com",
+		"media.example.com/path", "media.example.com?token=secret", "media.example.com#fragment",
+		"127.0.0.1", "[::1]", "::ffff:127.0.0.1", "media..example.com", "-media.example.com",
+		"media-.example.com", "media_name.example.com", "media.example.com..", "media.example.com%00",
+		strings.Repeat("a", 64) + ".example.com", strings.Repeat("a.", 127) + "com",
+	} {
+		t.Run(input, func(t *testing.T) {
+			_, err := NormalizeRemoteHost(input)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestRemoteURLSettingsPolicy(t *testing.T) {
+	settings := DefaultSettings()
+	settings.RemoteURLEnabled = true
+	// An operator can enable remote downloads without a domain allowlist.
+	requireValid(t, settings)
+
+	settings.RemoteURLAllowlistEnabled = true
+	assert.True(t, hasCode(settings.Validate(), "remote_url_hosts_required"))
+	settings.RemoteURLAllowedHosts = []string{" Media.Example.COM. ", "media.example.com", "", "媒体.example.com"}
+	settings.Normalize()
+	requireValid(t, settings)
+	assert.Equal(t, []string{"media.example.com", "xn--tqqy7y.example.com"}, settings.RemoteURLAllowedHosts)
+
+	settings.RemoteURLAllowedHosts = []string{"https://media.example.com/private?signature=secret"}
+	settings.Normalize()
+	issues := BlockingIssues(settings.Validate())
+	require.Len(t, issues, 1)
+	assert.Equal(t, "remote_host_invalid", issues[0].Code)
+	assert.Equal(t, "remote_url_allowed_hosts", issues[0].Field)
+	assert.NotContains(t, issues[0].Message, "secret", "validation must not echo a pasted signed URL")
+
+	settings = DefaultSettings()
+	settings.MaxRunningJobs = 1
+	settings.MaxRunningPerUser = 1
+	// The runtime takes the lower concurrency ceiling; the independent download
+	// setting must not prevent a legacy small-job configuration from loading.
+	requireValid(t, settings)
+}
+
 func TestFieldBounds(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*Settings)
 	}{
+		{name: "remote timeout zero", mutate: func(s *Settings) { s.RemoteURLDownloadTimeoutSeconds = 0 }},
+		{name: "remote timeout too high", mutate: func(s *Settings) { s.RemoteURLDownloadTimeoutSeconds = 601 }},
+		{name: "remote downloads zero", mutate: func(s *Settings) { s.RemoteURLMaxDownloads = 0 }},
+		{name: "remote downloads too high", mutate: func(s *Settings) { s.RemoteURLMaxDownloads = 129 }},
 		{name: "max_videos_per_request too low", mutate: func(s *Settings) { s.MaxVideosPerRequest = 0 }},
 		{name: "max_videos_per_request too high", mutate: func(s *Settings) { s.MaxVideosPerRequest = 17 }},
 		{name: "max_decoded_video_mb too high", mutate: func(s *Settings) { s.MaxDecodedVideoMB = 1025 }},
@@ -599,7 +669,9 @@ func TestSnapshotIsolation(t *testing.T) {
 
 	var stored string
 	persist := recordingPersist(&stored)
-	_, err := Save(settingsWithModel("first"), 0, persist)
+	settings := settingsWithModel("first")
+	settings.RemoteURLAllowedHosts = []string{"media.example.com"}
+	_, err := Save(settings, 0, persist)
 	require.NoError(t, err)
 
 	first := GetSettings()
@@ -610,10 +682,12 @@ func TestSnapshotIsolation(t *testing.T) {
 	first.TargetModels = append(first.TargetModels, "extra")
 	first.Enabled = true
 	first.MaxRunningJobs = 1
+	first.RemoteURLAllowedHosts[0] = "changed.example.com"
 
 	assert.Equal(t, []string{"first"}, GetSettings().TargetModels)
 	assert.False(t, GetSettings().Enabled)
 	assert.Equal(t, DefaultSettings().MaxRunningJobs, GetSettings().MaxRunningJobs)
+	assert.Equal(t, []string{"media.example.com"}, GetSettings().RemoteURLAllowedHosts)
 
 	// A later save does not reach into a snapshot a caller already holds.
 	held := GetSettings()
@@ -698,6 +772,36 @@ func TestDecodeRejectsUnknownAndMissingFields(t *testing.T) {
 		// collapsing to a zero value.
 		assert.Equal(t, DefaultSettings().MaxImagesPerRequest, snapshot.Settings.MaxImagesPerRequest)
 		assert.Equal(t, DefaultSettings().TargetModels, snapshot.Settings.TargetModels)
+		assert.False(t, snapshot.Settings.RemoteURLEnabled)
+		assert.False(t, snapshot.Settings.RemoteURLAllowlistEnabled)
+		assert.Equal(t, []string{}, snapshot.Settings.RemoteURLAllowedHosts)
+		assert.True(t, snapshot.Settings.RemoteURLAllowUnknownSize)
+		assert.Equal(t, 120, snapshot.Settings.RemoteURLDownloadTimeoutSeconds)
+		assert.Equal(t, 8, snapshot.Settings.RemoteURLMaxDownloads)
+	})
+
+	t.Run("explicit remote settings survive storage", func(t *testing.T) {
+		settings := DefaultSettings()
+		settings.RemoteURLEnabled = true
+		settings.RemoteURLAllowlistEnabled = true
+		settings.RemoteURLAllowedHosts = []string{"media.example.com"}
+		settings.RemoteURLAllowUnknownSize = false
+		settings.RemoteURLDownloadTimeoutSeconds = 300
+		settings.RemoteURLMaxDownloads = 32
+		snapshot, err := Decode(encodeSettings(t, settings, 11))
+		require.NoError(t, err)
+		assert.Equal(t, settings, snapshot.Settings)
+	})
+
+	t.Run("candidate must include new remote fields", func(t *testing.T) {
+		var fields map[string]common.RawMessage
+		require.NoError(t, common.Unmarshal(encodeSettingsObject(t, DefaultSettings()), &fields))
+		delete(fields, "remote_url_enabled")
+		raw, err := common.Marshal(fields)
+		require.NoError(t, err)
+		_, err = DecodeSettings(raw)
+		require.ErrorIs(t, err, ErrMissingField)
+		assert.Contains(t, err.Error(), "remote_url_enabled")
 	})
 
 	t.Run("an unknown top-level key is rejected", func(t *testing.T) {

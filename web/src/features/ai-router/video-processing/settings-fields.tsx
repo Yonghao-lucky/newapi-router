@@ -77,7 +77,7 @@ export function VideoSettingsFields(props: {
           <FieldLegend>{t('Video processing scope')}</FieldLegend>
           <FieldDescription>
             {t(
-              'Convert Base64 videos to images before model routing. Remote video URLs are not supported.'
+              'Convert videos to images before model routing. Base64 is supported; HTTPS URLs can be enabled below.'
             )}
           </FieldDescription>
           <FieldGroup>
@@ -181,6 +181,13 @@ export function VideoSettingsFields(props: {
         <Card key={group} className='p-4'>
           <FieldSet disabled={props.disabled}>
             <FieldLegend>{t(group)}</FieldLegend>
+            {group === 'Remote video URLs' && (
+              <FieldDescription>
+                {t(
+                  'HTTPS on port 443 and public IP addresses are always required, even when the domain allowlist is off. Downloads share the video size, processing and temporary storage limits.'
+                )}
+              </FieldDescription>
+            )}
             {group === 'Concurrency and queue' && (
               <FieldDescription>
                 {t(
@@ -203,6 +210,55 @@ export function VideoSettingsFields(props: {
               </FieldDescription>
             )}
             <FieldGroup className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3'>
+              {group === 'Remote video URLs' && (
+                <Controller
+                  control={props.form.control}
+                  name='remote_url_allowed_hosts'
+                  render={({ field, fieldState }) => {
+                    const message =
+                      fieldState.error?.message ??
+                      props.form.formState.errors.remote_url_allowed_hosts?.find?.(
+                        (error) => error?.message
+                      )?.message
+                    return (
+                      <Field
+                        data-invalid={fieldState.invalid}
+                        className='sm:col-span-2 xl:col-span-3'
+                      >
+                        <FieldLabel htmlFor={`video-${field.name}`}>
+                          {t('Allowed video domains')}
+                        </FieldLabel>
+                        <MultiSelect
+                          id={`video-${field.name}`}
+                          aria-label={t('Allowed video domains')}
+                          selected={field.value}
+                          onChange={field.onChange}
+                          options={field.value.map((value) => ({
+                            value,
+                            label: value,
+                          }))}
+                          allowCreate
+                          disabled={props.disabled}
+                          aria-invalid={fieldState.invalid}
+                          aria-describedby={`video-${field.name}-description${message ? ` video-${field.name}-error` : ''}`}
+                        />
+                        <FieldDescription
+                          id={`video-${field.name}-description`}
+                        >
+                          {t(
+                            'Exact domains only. Paste comma- or newline-separated names; subdomains need separate entries. When enforcement is on, an empty list rejects all remote URLs.'
+                          )}
+                        </FieldDescription>
+                        {message && (
+                          <FieldError id={`video-${field.name}-error`}>
+                            {t(message)}
+                          </FieldError>
+                        )}
+                      </Field>
+                    )
+                  }}
+                />
+              )}
               {numericFields
                 .filter((field) => field.group === group)
                 .map((definition) => (
@@ -275,6 +331,13 @@ export function VideoSettingsFields(props: {
                   />
                 ))}
             </FieldGroup>
+            {group === 'Remote video URLs' && (
+              <FieldDescription>
+                {t(
+                  'Unknown-size downloads stop at the video size limit. Turning this option off rejects videos whose size cannot be confirmed. Download concurrency is also capped by concurrent processing jobs.'
+                )}
+              </FieldDescription>
+            )}
           </FieldSet>
         </Card>
       ))}

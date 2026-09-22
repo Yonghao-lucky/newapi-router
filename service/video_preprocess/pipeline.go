@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +53,9 @@ type Processor struct {
 	liveWorkspaces       map[*workspace]struct{}
 	resourceMu           sync.Mutex
 	reservedStorageBytes int64
+	downloadMu           sync.Mutex
+	activeDownloads      int
+	downloadChanged      chan struct{}
 }
 
 // NewProcessor builds the process-wide processor from the current settings.
@@ -392,17 +396,26 @@ func (p *Processor) Process(ctx context.Context, input ProcessInput) (out *Proce
 	execErr := p.queue.Execute(ctx, lease, func(stageCtx context.Context, stage JobStage) error {
 		switch stage {
 		case JobStageDecoding:
-			// Decoded bytes cannot exceed their original JSON body; all videos
-			// share the output budget. Reserve before creating any media files.
-			releaseStorage, err = p.reserveStorage(cfg, min(storage.Size(), int64(result.VideoCount)*cfg.Media.MaxDecodedVideoBytes)+cfg.Rewrite.MaxOutputImageBytes+cfg.Rewrite.MaxRewrittenBodyBytes)
-			if err != nil {
-				return err
-			}
 			body, err = storage.Bytes()
 			if err != nil {
 				return wrapError(CodeInvalidRequest, "failed to read admitted request", err)
 			}
 			layout, err = ScanChatRequest(body)
+			if err != nil {
+				return err
+			}
+			// A remote URL's body size says nothing about its media size. Reserve
+			// the full per-video download allowance before any network activity.
+			var mediaReservation int64
+			for _, part := range layout.Videos {
+				url := extractVideoURL(body, part)
+				if strings.HasPrefix(url, "data:") {
+					mediaReservation += min(part.URLBytes, cfg.Media.MaxDecodedVideoBytes)
+				} else {
+					mediaReservation += cfg.Media.MaxDecodedVideoBytes
+				}
+			}
+			releaseStorage, err = p.reserveStorage(cfg, mediaReservation+cfg.Rewrite.MaxOutputImageBytes+cfg.Rewrite.MaxRewrittenBodyBytes)
 			return err
 		case JobStageExporting:
 			if err := p.processVideos(stageCtx, cfg, layout, body, result); err != nil {
@@ -487,13 +500,19 @@ func (p *Processor) processVideos(stageCtx context.Context, cfg EngineConfig, la
 				"video "+fmt.Sprint(part.Index)+" has no readable url")
 			break
 		}
-		vr, err := p.engine().ProbeAndKeep(stageCtx, url, cfg.Media, cfg.AllowedMIMETypes, part.Index)
+		vr, err := processVideoStage(stageCtx, ProcessVideoInput{Video: VideoInput{URL: url, Index: part.Index}}, Options{
+			Limits: cfg.Media, AllowedMIMETypes: cfg.AllowedMIMETypes, RemoteURL: cfg.RemoteURL,
+			acquireDownload: func(ctx context.Context) (func(), error) { return p.acquireDownload(ctx, cfg.RemoteURL.MaxDownloads) },
+		}, false)
 		if vr != nil {
 			result.DecodeMS += vr.DurationMillis.Decode
 			result.ProbeMS += vr.DurationMillis.Probe
 			result.DecodedVideoBytes += vr.DecodedBytes
 			duration := min(vr.Metadata.DurationSeconds*1000, float64(math.MaxInt64-1024))
-			result.Videos = append(result.Videos, model.VideoPreprocessMedia{Index: part.Index, DurationMS: int64(duration), Width: vr.Metadata.Width, Height: vr.Metadata.Height, Codec: vr.Metadata.VideoCodec, DecodedBytes: vr.DecodedBytes})
+			result.Videos = append(result.Videos, model.VideoPreprocessMedia{
+				Index: part.Index, DurationMS: int64(duration), Width: vr.Metadata.Width, Height: vr.Metadata.Height, Codec: vr.Metadata.VideoCodec, DecodedBytes: vr.DecodedBytes,
+				SourceType: vr.SourceType, SourceHost: vr.Download.SourceHost, DownloadBytes: vr.Download.Bytes, DownloadMS: vr.Download.DurationMS, DownloadErrorStage: vr.Download.FailureStage,
+			})
 		}
 		if err != nil {
 			probeErr = err
@@ -630,9 +649,6 @@ func (p *Processor) rewriteStage(stageCtx context.Context, cfg EngineConfig, lay
 		Limits:            cfg.Rewrite,
 	})
 }
-
-// engine returns the per-process media facade. The Processor owns exactly one.
-func (p *Processor) engine() *MediaEngine { return &MediaEngine{} }
 
 // trackWorkspace adds or removes one retained workspace from the temp storage
 // gauge. add=false happens when a workspace leaves the live set — because its

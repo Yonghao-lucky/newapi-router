@@ -63,13 +63,15 @@ func exportFrames(ctx context.Context, ffmpegPath string, job exportJob, limits 
 		}
 	}
 	filter := fmt.Sprintf("setpts=PTS-STARTPTS,select=%s,scale=%d:%d,format=rgb24", selection.String(), width, height)
-	cmd := exec.CommandContext(ctx, ffmpegPath,
-		"-nostdin", "-hide_banner", "-v", "error", "-protocol_whitelist", "file,pipe",
+	args := []string{"-nostdin", "-hide_banner", "-v", "error"}
+	args = append(args, localVideoSafetyArgs(job.videoPath)...)
+	args = append(args,
 		"-threads", strconv.Itoa(job.ffmpegThreads), "-filter_threads", "1",
 		"-max_pixels", strconv.FormatInt(limits.MaxPixels, 10), "-max_alloc", "268435456", "-err_detect", "explode",
 		"-i", job.videoPath, "-map", "0:v:0", "-an", "-sn", "-dn",
 		"-vf", filter, "-fps_mode", "passthrough", "-frames:v", strconv.Itoa(len(job.timestamps)),
 		"-threads", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1")
+	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second

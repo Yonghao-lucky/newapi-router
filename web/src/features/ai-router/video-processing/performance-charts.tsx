@@ -185,7 +185,7 @@ function VideoTrendChart(props: {
 
 const stageLabels: Record<string, string> = {
   queue: 'Queue',
-  decode: 'Base64 decoding',
+  decode: 'Video acquisition',
   probe: 'Media probing',
   analyze: 'Frame analysis',
   select: 'Frame selection',

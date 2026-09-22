@@ -71,6 +71,11 @@ export interface VideoRuntime {
   }
 }
 export interface VideoMedia {
+  source_type?: 'data' | 'remote'
+  source_host?: string
+  download_bytes?: number
+  download_ms?: number
+  download_error_stage?: string
   index: number
   duration_ms: number
   width: number

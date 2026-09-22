@@ -87,6 +87,131 @@ beforeEach(() => {
 })
 
 describe('video settings workflow', () => {
+  it('saves URL downloads with optional allowlist, batch domains and versioned settings, then reloads them', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    const enabled = await screen.findByRole('switch', {
+      name: 'Enable remote video URLs',
+    })
+    const enforced = screen.getByRole('switch', {
+      name: 'Enforce video domain allowlist',
+    })
+    expect(enabled).not.toBeChecked()
+    expect(enforced).not.toBeChecked()
+    await user.click(enabled)
+    const domains = screen.getByRole('combobox', {
+      name: 'Allowed video domains',
+    })
+    await user.click(domains)
+    await user.paste('Media.Example.com\nbackup.example.com')
+    await user.type(domains, 'remove.example.com')
+    await user.keyboard('{Enter}')
+    const remoteGroup = screen.getByRole('group', { name: 'Remote video URLs' })
+    expect(within(remoteGroup).getByText('remove.example.com')).toBeVisible()
+    const removeButtons = within(remoteGroup).getAllByRole('button')
+    expect(removeButtons).toHaveLength(3)
+    await user.click(removeButtons[2])
+    expect(
+      within(remoteGroup).queryByText('remove.example.com')
+    ).not.toBeInTheDocument()
+    await user.click(
+      screen.getByRole('switch', { name: 'Allow downloads with unknown size' })
+    )
+    fireEvent.change(
+      screen.getByLabelText('Video download timeout (seconds)'),
+      {
+        target: { value: '90' },
+      }
+    )
+    fireEvent.change(screen.getByLabelText('Concurrent video downloads'), {
+      target: { value: '4' },
+    })
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    const confirmation = await screen.findByRole('alertdialog', {
+      name: 'Apply video processing changes?',
+    })
+    await user.click(
+      within(confirmation).getByRole('button', { name: 'Continue' })
+    )
+    const expected = {
+      ...videoDocument.settings,
+      remote_url_enabled: true,
+      remote_url_allowlist_enabled: false,
+      remote_url_allowed_hosts: ['media.example.com', 'backup.example.com'],
+      remote_url_allow_unknown_size: false,
+      remote_url_download_timeout_seconds: 90,
+      remote_url_max_downloads: 4,
+    }
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith('/api/ai-router/video/settings', {
+        expected_version: 7,
+        settings: expected,
+      })
+    )
+    await waitFor(() =>
+      expect(screen.getByText('Configuration version 8')).toBeVisible()
+    )
+    vi.mocked(api.get).mockResolvedValue({
+      data: {
+        success: true,
+        data: { ...videoDocument, version: 8, settings: expected },
+      },
+    })
+    await user.click(screen.getByRole('button', { name: 'Reload' }))
+    await user.click(
+      within(
+        await screen.findByRole('alertdialog', {
+          name: 'Discard unsaved changes?',
+        })
+      ).getByRole('button', { name: 'Continue' })
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Validate' })).toBeEnabled()
+    )
+    expect(enabled).toBeChecked()
+    expect(enforced).not.toBeChecked()
+    expect(
+      screen.getByLabelText('Video download timeout (seconds)')
+    ).toHaveValue(90)
+    expect(screen.getByText('media.example.com')).toBeVisible()
+  })
+
+  it('rejects an empty enforced domain list and invalid domain entries before saving', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    await user.click(
+      await screen.findByRole('switch', {
+        name: 'Enable remote video URLs',
+      })
+    )
+    await user.click(
+      await screen.findByRole('switch', {
+        name: 'Enforce video domain allowlist',
+      })
+    )
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    const domains = screen.getByRole('combobox', {
+      name: 'Allowed video domains',
+    })
+    expect(
+      await screen.findByText(
+        'Add at least one domain before enabling the video allowlist'
+      )
+    ).toBeVisible()
+    expect(domains).toHaveAttribute('aria-invalid', 'true')
+    await user.click(domains)
+    await user.paste('*.example.com,https://evil.example')
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(
+      await screen.findByText(
+        'Enter exact domain names without URLs, ports, IP addresses or wildcards'
+      )
+    ).toBeVisible()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(api.put).not.toHaveBeenCalled()
+  })
+
   it.each(['edited decimals', 'API decimals'] as const)(
     'validates, saves and reloads legal %s with native form constraints',
     async (source) => {

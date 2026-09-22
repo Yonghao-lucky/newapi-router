@@ -40,10 +40,64 @@ describe('video configuration contract', () => {
     { scene_weight: 0.8 },
     { max_decoded_video_mb: Number.POSITIVE_INFINITY },
     { target_models: [] },
+    { remote_url_max_downloads: 0 },
+    { remote_url_max_downloads: 129 },
+    { remote_url_download_timeout_seconds: 0 },
+    { remote_url_download_timeout_seconds: 601 },
+    { remote_url_download_timeout_seconds: 1.5 },
+    {
+      remote_url_enabled: true,
+      remote_url_allowlist_enabled: true,
+      remote_url_allowed_hosts: [],
+    },
   ])('rejects invalid bounds or cross-field constraints: %j', (patch) => {
     expect(
       videoSettingsSchema.safeParse({ ...videoDocument.settings, ...patch })
         .success
     ).toBe(false)
   })
+  it('accepts an optional allowlist and independent download concurrency while retaining all protections', () => {
+    const settings = {
+      ...videoDocument.settings,
+      remote_url_enabled: true,
+      remote_url_allowlist_enabled: false,
+      remote_url_allowed_hosts: [],
+      remote_url_max_downloads: 128,
+      remote_url_download_timeout_seconds: 600,
+      remote_url_allow_unknown_size: false,
+    }
+    expect(videoSettingsSchema.parse(settings)).toEqual(settings)
+  })
+  it('normalizes exact domains including international names when the allowlist is enforced', () => {
+    expect(
+      videoSettingsSchema.parse({
+        ...videoDocument.settings,
+        remote_url_allowlist_enabled: true,
+        remote_url_allowed_hosts: [' Media.Example.com. ', '例子.公司'],
+      }).remote_url_allowed_hosts
+    ).toEqual(['media.example.com', 'xn--fsqu00a.xn--55qx5d'])
+  })
+  it.each([
+    'https://media.example.com/a.mp4',
+    '*.example.com',
+    'media.example.com:443',
+    'media.example.com@evil.com',
+    '127.0.0.1',
+    '[::1]',
+    '2130706433',
+    'localhost',
+    'bad_domain.example',
+    'video.internal',
+    'video%2eexample.com',
+  ])(
+    'rejects non-domain allowlist entry %s even before enforcement',
+    (host) => {
+      expect(
+        videoSettingsSchema.safeParse({
+          ...videoDocument.settings,
+          remote_url_allowed_hosts: [host],
+        }).success
+      ).toBe(false)
+    }
+  )
 })

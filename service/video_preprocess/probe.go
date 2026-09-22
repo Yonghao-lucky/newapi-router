@@ -45,13 +45,15 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 
 	args := []string{
 		"-v", "error",
-		"-protocol_whitelist", "file,pipe",
+	}
+	args = append(args, localVideoSafetyArgs(path)...)
+	args = append(args,
 		"-threads", strconv.Itoa(limits.FFmpegThreads),
 		"-max_pixels", strconv.FormatInt(limits.MaxPixels, 10), "-max_alloc", "268435456", "-max_streams", "16",
 		"-show_entries", "format=format_name,duration:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration:stream_tags=rotate:stream_side_data=side_data_type,rotation",
 		"-of", "json",
 		path,
-	}
+	)
 
 	cmd := exec.CommandContext(ctx, ffprobePath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -86,6 +88,18 @@ func probeVideo(ctx context.Context, ffprobePath, path string, limits MediaLimit
 	}
 
 	return meta, nil
+}
+
+// localVideoSafetyArgs excludes playlist demuxers and network protocols. MOV
+// reference options are demuxer-specific: applying them to WebM would fail an
+// otherwise valid FFmpeg invocation. All inputs have already passed magic checks.
+func localVideoSafetyArgs(path string) []string {
+	args := []string{"-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,avi,flv"}
+	head, err := readHead(path, 12)
+	if err == nil && sniffContainer(head) == "mov" {
+		args = append(args, "-enable_drefs", "0", "-use_absolute_path", "0")
+	}
+	return args
 }
 
 // ffprobeOutput is the shape ffprobe emits with -of json.

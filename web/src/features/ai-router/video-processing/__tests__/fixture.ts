@@ -21,6 +21,12 @@ import type { VideoSettingsDocument, VideoRuntime } from '../types'
 export const videoDocument: VideoSettingsDocument = {
   settings: {
     enabled: false,
+    remote_url_enabled: false,
+    remote_url_allowlist_enabled: false,
+    remote_url_allowed_hosts: [],
+    remote_url_allow_unknown_size: true,
+    remote_url_download_timeout_seconds: 120,
+    remote_url_max_downloads: 8,
     mode: 'always_frames',
     target_models: ['kimi-k3'],
     allowed_mime_types: ['video/mp4', 'video/webm', 'video/quicktime'],
@@ -72,6 +78,12 @@ export const videoDocument: VideoSettingsDocument = {
   },
   defaults: {
     enabled: false,
+    remote_url_enabled: false,
+    remote_url_allowlist_enabled: false,
+    remote_url_allowed_hosts: [],
+    remote_url_allow_unknown_size: true,
+    remote_url_download_timeout_seconds: 120,
+    remote_url_max_downloads: 8,
     mode: 'always_frames',
     target_models: ['kimi-k3'],
     allowed_mime_types: ['video/mp4', 'video/webm', 'video/quicktime'],

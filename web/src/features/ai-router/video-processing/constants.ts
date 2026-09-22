@@ -18,6 +18,22 @@ For commercial licensing, please contact support@quantumnous.com
 */
 export const numericFields = [
   {
+    key: 'remote_url_download_timeout_seconds',
+    labelKey: 'Video download timeout (seconds)',
+    min: 1,
+    max: 600,
+    step: 1,
+    group: 'Remote video URLs',
+  },
+  {
+    key: 'remote_url_max_downloads',
+    labelKey: 'Concurrent video downloads',
+    min: 1,
+    max: 128,
+    step: 1,
+    group: 'Remote video URLs',
+  },
+  {
     key: 'max_videos_per_request',
     labelKey: 'Videos per request',
     min: 1,
@@ -350,6 +366,7 @@ export const numericFields = [
 export type NumericSettingKey = (typeof numericFields)[number]['key']
 
 export const settingsGroups = [
+  'Remote video URLs',
   'Input limits',
   'Frame selection',
   'Output quality',
@@ -360,6 +377,21 @@ export const settingsGroups = [
 ] as const
 
 export const booleanFields = [
+  {
+    key: 'remote_url_enabled',
+    labelKey: 'Enable remote video URLs',
+    group: 'Remote video URLs',
+  },
+  {
+    key: 'remote_url_allowlist_enabled',
+    labelKey: 'Enforce video domain allowlist',
+    group: 'Remote video URLs',
+  },
+  {
+    key: 'remote_url_allow_unknown_size',
+    labelKey: 'Allow downloads with unknown size',
+    group: 'Remote video URLs',
+  },
   {
     key: 'enabled',
     labelKey: 'Enable video processing',
@@ -400,9 +432,14 @@ export const settingLabels: Record<string, string> = {
   target_models: 'Target Models',
   allowed_mime_types: 'Allowed video formats',
   allowed_codecs: 'Allowed video codecs',
+  remote_url_allowed_hosts: 'Allowed video domains',
   mode: 'Video handling',
 }
 export const validationLabels: Record<string, string> = {
+  remote_host_invalid:
+    'Enter exact domain names without URLs, ports, IP addresses or wildcards',
+  remote_url_hosts_required:
+    'Add at least one domain before enabling the video allowlist',
   mode_invalid: 'Choose a supported video handling mode',
   target_models_required: 'Choose at least one model',
   mime_types_required: 'Choose at least one format',

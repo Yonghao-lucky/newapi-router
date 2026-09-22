@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,11 +21,13 @@ type Options struct {
 	// When empty, all video/* types are accepted, but the container and codec
 	// must still pass the MediaLimits allowlists.
 	AllowedMIMETypes []string
+	RemoteURL        RemoteURLConfig
+	acquireDownload  func(context.Context) (func(), error)
 }
 
 // ProcessVideoInput is the top-level input for ProcessVideo.
 type ProcessVideoInput struct {
-	// Video is the Base64 video Data URL to process.
+	// Video is a Base64 Data URL or, when enabled, an HTTPS video URL.
 	Video VideoInput
 
 	// MaxFramesForThisVideo is the caller's remaining image budget for this
@@ -38,6 +41,8 @@ type ProcessVideoResult struct {
 	// VideoIndex echoes the caller's VideoInput.Index.
 	VideoIndex   int
 	DecodedBytes int64
+	SourceType   string
+	Download     RemoteDownloadResult
 
 	// Metadata is the validated video metadata from ffprobe.
 	Metadata VideoMetadata
@@ -75,8 +80,8 @@ func (r *ProcessVideoResult) Cleanup() error {
 	return r.workspace.Cleanup()
 }
 
-// ProcessVideo is the public entry point for the media engine. It decodes the
-// Base64 Data URL, probes the video, generates uniform timestamps, exports JPEG
+// ProcessVideo is the public entry point for the media engine. It acquires the
+// video into a local file, probes it, generates uniform timestamps, exports JPEG
 // frames, and returns ownership of the files to the caller.
 //
 // The caller must invoke result.Cleanup() when the frames are no longer needed,
@@ -125,24 +130,56 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 		}
 	}()
 
-	// Stage 1: Parse and validate Data URL
-	dataURL, decodedSize, err := parseVideoDataURL(input.Video.URL, opts.AllowedMIMETypes)
-	if err != nil {
-		return result, err
-	}
-	if decodedSize > limits.MaxDecodedVideoBytes {
-		return result, newError(CodeTooLarge,
-			fmt.Sprintf("decoded video size %d exceeds limit %d",
-				decodedSize, limits.MaxDecodedVideoBytes))
+	// Remote acquisition and Base64 decoding produce the same local input.
+	// The original URL is never passed to a media subprocess.
+	remote := !strings.HasPrefix(input.Video.URL, "data:")
+	var dataURL videoDataURL
+	if !remote {
+		result.SourceType = "data"
+		var decodedSize int64
+		dataURL, decodedSize, err = parseVideoDataURL(input.Video.URL, opts.AllowedMIMETypes)
+		if err != nil {
+			return result, err
+		}
+		if decodedSize > limits.MaxDecodedVideoBytes {
+			return result, newError(CodeTooLarge, fmt.Sprintf("decoded video size %d exceeds limit %d", decodedSize, limits.MaxDecodedVideoBytes))
+		}
+	} else {
+		result.SourceType = "remote"
+		if !opts.RemoteURL.Enabled {
+			result.Download.FailureStage = "url"
+			return result, newError(CodeInvalidDataURL, "remote video URLs are disabled")
+		}
 	}
 
-	// Stage 2: Decode Base64 to temporary file
+	// Stage 2: acquire video bytes into a temporary file.
 	decodeStart := time.Now()
 	videoFile, err := ws.create("video.bin")
 	if err != nil {
 		return result, err
 	}
-	result.DecodedBytes, err = decodeVideoDataURL(ctx, dataURL, videoFile, limits.MaxDecodedVideoBytes)
+	defer videoFile.Close()
+	if remote {
+		// Queue wait and HEAD/Range/GET share a single download deadline.
+		func() {
+			downloadCtx, cancel := context.WithTimeout(ctx, opts.RemoteURL.DownloadTimeout)
+			defer cancel()
+			if opts.acquireDownload != nil {
+				var release func()
+				release, err = opts.acquireDownload(downloadCtx)
+				if err != nil {
+					result.Download.FailureStage = "download_queue"
+					result.Download.DurationMS = time.Since(decodeStart).Milliseconds()
+					return
+				}
+				defer release()
+			}
+			result.Download, err = downloadRemoteVideo(downloadCtx, input.Video.URL, videoFile, limits.MaxDecodedVideoBytes, opts.RemoteURL)
+		}()
+		result.DecodedBytes = result.Download.Bytes
+	} else {
+		result.DecodedBytes, err = decodeVideoDataURL(ctx, dataURL, videoFile, limits.MaxDecodedVideoBytes)
+	}
 	if closeErr := videoFile.Close(); closeErr != nil && err == nil {
 		err = wrapError(CodeStorageFailed, "failed to close decoded video file", closeErr)
 	}
@@ -164,6 +201,17 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	}
 	if ((dataURL.mime == "video/mp4" || dataURL.mime == "video/quicktime") && sniffed != "mov") || (dataURL.mime == "video/webm" && sniffed != "matroska") {
 		return result, newError(CodeUnsupportedFormat, "video MIME type contradicts its container")
+	}
+	if remote && len(opts.AllowedMIMETypes) > 0 {
+		allowed := false
+		for _, mime := range opts.AllowedMIMETypes {
+			if (sniffed == "mov" && (mime == "video/mp4" || mime == "video/quicktime")) || (sniffed == "matroska" && mime == "video/webm") {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return result, newError(CodeUnsupportedFormat, "downloaded video container is not enabled")
+		}
 	}
 
 	// Stage 3: Probe with ffprobe

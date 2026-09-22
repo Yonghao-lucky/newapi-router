@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/video_preprocess_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -58,13 +59,55 @@ func TestVideoPreprocessDatabase(t *testing.T) {
 			DB = db.Session(&gorm.Session{Logger: recorder})
 			require.NoError(t, migrateDB())
 			assert.Empty(t, recorder.schemaMutations(), "repeat startup must not mutate an already migrated schema")
+
+			// Loading a production document written before remote URL support
+			// preserves all existing limits while introducing disabled defaults.
+			legacy := `{"version":17,"settings":{"enabled":true,"target_models":["kimi-k3"],"max_running_jobs":48,"max_decoded_video_mb":100,"max_temp_storage_gb":500,"max_job_seconds":300}}`
+			require.NoError(t, SaveVideoPreprocessSettingsDocument(legacy))
+			var option Option
+			require.NoError(t, DB.Where(map[string]any{"key": video_preprocess_setting.SettingsOptionKey}).First(&option).Error)
+			snapshot, err := video_preprocess_setting.Decode(option.Value)
+			require.NoError(t, err)
+			assert.Equal(t, int64(17), snapshot.Version)
+			assert.True(t, snapshot.Settings.Enabled)
+			assert.Equal(t, 48, snapshot.Settings.MaxRunningJobs)
+			assert.Equal(t, 100, snapshot.Settings.MaxDecodedVideoMB)
+			assert.Equal(t, 500, snapshot.Settings.MaxTempStorageGB)
+			assert.Equal(t, 300, snapshot.Settings.MaxJobSeconds)
+			assert.False(t, snapshot.Settings.RemoteURLEnabled)
+			assert.False(t, snapshot.Settings.RemoteURLAllowlistEnabled)
+			assert.True(t, snapshot.Settings.RemoteURLAllowUnknownSize)
+			assert.Equal(t, 120, snapshot.Settings.RemoteURLDownloadTimeoutSeconds)
+			assert.Equal(t, 8, snapshot.Settings.RemoteURLMaxDownloads)
+
+			settings := snapshot.Settings
+			settings.RemoteURLEnabled = true
+			settings.RemoteURLAllowlistEnabled = true
+			settings.RemoteURLAllowedHosts = []string{"media.example.com", "xn--tqqy7y.example.com"}
+			settings.RemoteURLAllowUnknownSize = false
+			settings.RemoteURLDownloadTimeoutSeconds = 240
+			settings.RemoteURLMaxDownloads = 24
+			require.Empty(t, video_preprocess_setting.BlockingIssues(video_preprocess_setting.ValidateCandidate(settings)))
+			encodedSettings, err := video_preprocess_setting.Encode(settings, 18)
+			require.NoError(t, err)
+			for range 2 {
+				require.NoError(t, SaveVideoPreprocessSettingsDocument(encodedSettings))
+			}
+			require.NoError(t, DB.Where(map[string]any{"key": video_preprocess_setting.SettingsOptionKey}).First(&option).Error)
+			storedSettings, err := video_preprocess_setting.Decode(option.Value)
+			require.NoError(t, err)
+			assert.Equal(t, video_preprocess_setting.Snapshot{Version: 18, Settings: settings}, storedSettings)
+			var settingRows int64
+			require.NoError(t, DB.Model(&Option{}).Where(map[string]any{"key": video_preprocess_setting.SettingsOptionKey}).Count(&settingRows).Error)
+			assert.EqualValues(t, 1, settingRows, "repeat save must update the single settings document")
+
 			// Dedicated test databases may be reused by the acceptance command.
 			require.NoError(t, DB.Where("request_id LIKE ?", "video-matrix-%").Delete(&VideoPreprocessLog{}).Error)
 			now := time.Now().Unix()
 			rows := []VideoPreprocessLog{
-				{RequestId: "video-matrix-success", UserId: 71, Model: "kimi-k3", Status: "succeeded", VideoCount: 2, ExistingImages: 1, ExtractedFrames: 6, Codec: "mixed", Codecs: ",h264,vp9,", VideoDurationMS: 15000, QueueMS: 10, TotalMS: 100, AnalyzeMS: 20, OriginalBodyBytes: 9000, OutputBodyBytes: 3000, CreatedAt: now - 2, Videos: []VideoPreprocessMedia{{Index: 1, Codec: "h264", Frames: 3, DurationMS: 10000}, {Index: 2, Codec: "vp9", Frames: 3, DurationMS: 5000}}},
+				{RequestId: "video-matrix-success", UserId: 71, Model: "kimi-k3", Status: "succeeded", VideoCount: 2, ExistingImages: 1, ExtractedFrames: 6, Codec: "mixed", Codecs: ",h264,vp9,", VideoDurationMS: 15000, QueueMS: 10, TotalMS: 100, AnalyzeMS: 20, OriginalBodyBytes: 9000, OutputBodyBytes: 3000, CreatedAt: now - 2, Videos: []VideoPreprocessMedia{{Index: 1, Codec: "h264", Frames: 3, DurationMS: 10000, SourceType: "https", SourceHost: "media.example.com", DownloadBytes: 4096, DownloadMS: 23}, {Index: 2, Codec: "vp9", Frames: 3, DurationMS: 5000}}},
 				{RequestId: "video-matrix-rejected", UserId: 72, Model: "kimi-k3", Status: "rejected", ErrorCode: "video_queue_full", QueueMS: 20, TotalMS: 200, CreatedAt: now - 1},
-				{RequestId: "video-matrix-failed", UserId: 71, Model: "other", Status: "failed", ErrorCode: "video_unsupported_format", QueueMS: 30, TotalMS: 300, CreatedAt: now},
+				{RequestId: "video-matrix-failed", UserId: 71, Model: "other", Status: "failed", ErrorCode: "video_unsupported_format", QueueMS: 30, TotalMS: 300, CreatedAt: now, Videos: []VideoPreprocessMedia{{Index: 1, SourceType: "https", SourceHost: "media.example.com", DownloadBytes: 1024, DownloadMS: 50, DownloadErrorStage: "download"}}},
 			}
 			for i := range rows {
 				require.NoError(t, InsertVideoPreprocessLog(context.Background(), &rows[i]))
@@ -96,6 +139,9 @@ func TestVideoPreprocessDatabase(t *testing.T) {
 			detail, err := GetVideoPreprocessLog(context.Background(), rows[0].Id)
 			require.NoError(t, err)
 			assert.Equal(t, rows[0].Videos, detail.Videos)
+			failedDetail, err := GetVideoPreprocessLog(context.Background(), rows[2].Id)
+			require.NoError(t, err)
+			assert.Equal(t, rows[2].Videos, failedDetail.Videos)
 			stats, err := GetVideoPreprocessStats(context.Background(), filter)
 			require.NoError(t, err)
 			assert.EqualValues(t, 3, stats.TotalRequests)
@@ -126,6 +172,8 @@ func TestVideoPreprocessDatabase(t *testing.T) {
 			detail, err = GetVideoPreprocessLog(context.Background(), rows[0].Id)
 			require.NoError(t, err)
 			assert.Equal(t, rows[0].Videos, detail.Videos)
+			require.NoError(t, DB.Where(map[string]any{"key": video_preprocess_setting.SettingsOptionKey}).First(&option).Error)
+			assert.Equal(t, encodedSettings, option.Value, "startup must preserve remote and existing settings")
 		})
 	}
 }

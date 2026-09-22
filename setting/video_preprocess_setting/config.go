@@ -9,11 +9,13 @@ package video_preprocess_setting
 import (
 	"fmt"
 	"math"
+	"net/netip"
 	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"golang.org/x/net/idna"
 )
 
 const (
@@ -59,6 +61,15 @@ type Settings struct {
 	TargetModels     []string `json:"target_models"`
 	AllowedMimeTypes []string `json:"allowed_mime_types"`
 	AllowedCodecs    []string `json:"allowed_codecs"`
+
+	// Remote video acquisition uses its own transport and domain policy. The
+	// allowlist is optional; public-address checks are mandatory in either mode.
+	RemoteURLEnabled                bool     `json:"remote_url_enabled"`
+	RemoteURLAllowlistEnabled       bool     `json:"remote_url_allowlist_enabled"`
+	RemoteURLAllowedHosts           []string `json:"remote_url_allowed_hosts"`
+	RemoteURLAllowUnknownSize       bool     `json:"remote_url_allow_unknown_size"`
+	RemoteURLDownloadTimeoutSeconds int      `json:"remote_url_download_timeout_seconds"`
+	RemoteURLMaxDownloads           int      `json:"remote_url_max_downloads"`
 
 	// Input limits.
 	MaxVideosPerRequest int `json:"max_videos_per_request"`
@@ -125,6 +136,13 @@ func DefaultSettings() Settings {
 		TargetModels:     []string{"kimi-k3"},
 		AllowedMimeTypes: []string{"video/mp4", "video/webm", "video/quicktime"},
 		AllowedCodecs:    []string{"h264", "hevc", "vp9", "av1"},
+
+		RemoteURLEnabled:                false,
+		RemoteURLAllowlistEnabled:       false,
+		RemoteURLAllowedHosts:           []string{},
+		RemoteURLAllowUnknownSize:       true,
+		RemoteURLDownloadTimeoutSeconds: 120,
+		RemoteURLMaxDownloads:           8,
 
 		MaxVideosPerRequest: 4,
 		MaxDecodedVideoMB:   75,
@@ -242,6 +260,43 @@ func normalizeEntries(entries []string, canonicalizeMimeType bool) []string {
 	return normalized
 }
 
+// NormalizeRemoteHost canonicalizes one exact remote-video domain. It accepts
+// hostnames, never URLs or wildcard patterns. The downloader must separately
+// validate every resolved address and pin its connection to a checked IP.
+func NormalizeRemoteHost(raw string) (string, error) {
+	host := strings.TrimSpace(raw)
+	if host == "" || strings.ContainsAny(host, "/\\:@?#*%[]") {
+		return "", fmt.Errorf("must be an exact domain without a URL, port, credentials or wildcard")
+	}
+	host, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return "", fmt.Errorf("must be a valid internationalized domain")
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if len(host) > 253 || !strings.Contains(host, ".") {
+		return "", fmt.Errorf("must be a qualified domain with at most 253 bytes")
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return "", fmt.Errorf("IP addresses are not allowed")
+	}
+	for label := range strings.SplitSeq(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", fmt.Errorf("domain labels must contain 1 to 63 letters, digits or internal hyphens")
+		}
+		for _, character := range label {
+			if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-') {
+				return "", fmt.Errorf("domain labels must contain only letters, digits or internal hyphens")
+			}
+		}
+	}
+	for _, suffix := range []string{"localhost", "local", "internal", "lan", "home"} {
+		if strings.HasSuffix(host, "."+suffix) {
+			return "", fmt.Errorf("local and internal domains are not allowed")
+		}
+	}
+	return host, nil
+}
+
 // Normalize brings the document into the canonical form validation and the
 // runtime snapshot assume. It never rejects: values it cannot repair are
 // reported by Validate.
@@ -261,6 +316,22 @@ func (s *Settings) Normalize() {
 	s.TargetModels = models
 	s.AllowedMimeTypes = normalizeEntries(s.AllowedMimeTypes, true)
 	s.AllowedCodecs = normalizeEntries(s.AllowedCodecs, false)
+	hosts := make([]string, 0, len(s.RemoteURLAllowedHosts))
+	for _, entry := range s.RemoteURLAllowedHosts {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if canonical, err := NormalizeRemoteHost(entry); err == nil {
+			entry = canonical
+		}
+		// Keep invalid entries so Validate reports them instead of silently
+		// weakening the operator's requested policy.
+		if !slices.Contains(hosts, entry) {
+			hosts = append(hosts, entry)
+		}
+	}
+	s.RemoteURLAllowedHosts = hosts
 	if s.Mode == "" {
 		s.Mode = ModeAlwaysFrames
 	}
@@ -272,6 +343,7 @@ func (s Settings) clone() Settings {
 	cloned.TargetModels = slices.Clone(s.TargetModels)
 	cloned.AllowedMimeTypes = slices.Clone(s.AllowedMimeTypes)
 	cloned.AllowedCodecs = slices.Clone(s.AllowedCodecs)
+	cloned.RemoteURLAllowedHosts = slices.Clone(s.RemoteURLAllowedHosts)
 	return cloned
 }
 
@@ -344,12 +416,22 @@ func (s *Settings) Validate() []ValidationIssue {
 	if len(s.AllowedCodecs) == 0 {
 		errorf("codecs_required", "allowed_codecs", "allowed_codecs must contain at least one codec")
 	}
+	if s.RemoteURLEnabled && s.RemoteURLAllowlistEnabled && len(s.RemoteURLAllowedHosts) == 0 {
+		errorf("remote_url_hosts_required", "remote_url_allowed_hosts", "remote_url_allowed_hosts must contain at least one domain when remote URLs and the allowlist are enabled")
+	}
+	for i, host := range s.RemoteURLAllowedHosts {
+		if _, err := NormalizeRemoteHost(host); err != nil {
+			errorf("remote_host_invalid", "remote_url_allowed_hosts", "remote_url_allowed_hosts entry %d %s", i+1, err)
+		}
+	}
 
 	// Per-field inclusive bounds (plan §8.2). A field outside its bound is
 	// reported here; the cross-field relations follow in their own section.
 	// Fields whose ceiling is another field appear only in the relation
 	// section, so one mistake produces one finding.
 	for _, limit := range []numericLimit{
+		{"remote_url_download_timeout_seconds", s.RemoteURLDownloadTimeoutSeconds, 1, 600},
+		{"remote_url_max_downloads", s.RemoteURLMaxDownloads, 1, 128},
 		{"max_videos_per_request", s.MaxVideosPerRequest, 1, 16},
 		{"max_decoded_video_mb", s.MaxDecodedVideoMB, 1, 1024},
 		{"max_duration_seconds", s.MaxDurationSeconds, 1, 21600},

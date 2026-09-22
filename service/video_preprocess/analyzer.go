@@ -72,13 +72,15 @@ func analyzeVideo(ctx context.Context, kept *ProcessVideoResult, cfg AnalysisCon
 	// Keep the first source frame in each scan interval. The fps filter would
 	// synthesize timestamps (and duplicates) that cannot identify VFR frames.
 	filter := fmt.Sprintf("setpts=PTS-STARTPTS,select=isnan(prev_selected_t)+gt(floor(t*%.9f)\\,floor(prev_selected_t*%.9f)),trim=end_frame=%d,showinfo@video_analysis=checksum=0,scale=%d:%d,format=gray", fps, fps, cfg.CandidateLimit, width, height)
-	cmd := exec.CommandContext(ctx, limits.FFmpegPath,
-		"-nostdin", "-hide_banner", "-v", "info", "-nostats", "-protocol_whitelist", "file,pipe",
+	args := []string{"-nostdin", "-hide_banner", "-v", "info", "-nostats"}
+	args = append(args, localVideoSafetyArgs(kept.workspace.path("video.bin"))...)
+	args = append(args,
 		"-threads", strconv.Itoa(limits.FFmpegThreads), "-filter_threads", "1",
 		"-max_pixels", strconv.FormatInt(limits.MaxPixels, 10), "-max_alloc", "268435456", "-err_detect", "explode",
 		"-i", kept.workspace.path("video.bin"), "-map", "0:v:0", "-an", "-sn", "-dn",
 		"-vf", filter, "-fps_mode", "passthrough", "-frames:v", strconv.Itoa(cfg.CandidateLimit), "-threads", "1",
 		"-f", "rawvideo", "-pix_fmt", "gray", "pipe:1")
+	cmd := exec.CommandContext(ctx, limits.FFmpegPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second

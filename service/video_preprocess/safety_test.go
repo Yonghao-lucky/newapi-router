@@ -142,6 +142,57 @@ func TestStorageReservationsCoverOutstandingWrites(t *testing.T) {
 	assert.Equal(t, CodeDiskStorageExhausted, CodeOf(err))
 }
 
+func TestDownloadSlotsBoundWorkAndReleaseAfterCancellation(t *testing.T) {
+	p, err := NewProcessor(testEngineConfig(t))
+	require.NoError(t, err)
+	first, err := p.acquireDownload(context.Background(), 1)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		release, waitErr := p.acquireDownload(ctx, 1)
+		if release != nil {
+			release()
+		}
+		done <- waitErr
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		assert.Equal(t, CodeProcessingCanceled, CodeOf(err))
+	case <-time.After(5 * time.Second):
+		t.Fatal("download slot wait did not stop on cancellation")
+	}
+	first()
+	first() // A cleanup repeated by error handling must not create extra capacity.
+	second, err := p.acquireDownload(context.Background(), 1)
+	require.NoError(t, err)
+	defer second()
+	expired, stop := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer stop()
+	_, err = p.acquireDownload(expired, 1)
+	assert.Equal(t, CodeProcessingTimeout, CodeOf(err))
+}
+
+func TestMediaProbeRejectsExternalReferencePlaylists(t *testing.T) {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	limits := engineLimits(t).withDefaults()
+	for _, playlist := range []string{
+		"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttps://127.0.0.1/SECRET\n#EXT-X-ENDLIST\n",
+		"ffconcat version 1.0\nfile '/etc/SECRET'\n",
+	} {
+		path := filepath.Join(t.TempDir(), "video.bin")
+		require.NoError(t, os.WriteFile(path, []byte(playlist), 0600))
+		_, err := probeVideo(context.Background(), "ffprobe", path, limits)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "SECRET")
+		_, err = ProcessVideo(context.Background(), ProcessVideoInput{Video: VideoInput{URL: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte(playlist))}}, Options{Limits: limits})
+		assert.Equal(t, CodeUnsupportedFormat, CodeOf(err))
+	}
+}
+
 func TestMediaCodecAndConstraintMatrix(t *testing.T) {
 	for _, binary := range []string{"ffmpeg", "ffprobe"} {
 		if _, err := exec.LookPath(binary); err != nil {

@@ -11,6 +11,44 @@ import (
 	"github.com/QuantumNous/new-api/common"
 )
 
+// acquireDownload bounds all HEAD/Range/GET activity for this processor. Tasks
+// already own a preprocessing lease, so download waiters cannot form an
+// unbounded second queue. A request retains its configuration snapshot.
+func (p *Processor) acquireDownload(ctx context.Context, limit int) (func(), error) {
+	if limit < 1 {
+		return nil, invalidConfig("remote download concurrency must be positive")
+	}
+	for {
+		if err := timeoutOrCancel(ctx); err != nil {
+			return nil, err
+		}
+		p.downloadMu.Lock()
+		if p.activeDownloads < limit {
+			p.activeDownloads++
+			p.downloadMu.Unlock()
+			return sync.OnceFunc(func() {
+				p.downloadMu.Lock()
+				defer p.downloadMu.Unlock()
+				p.activeDownloads--
+				if p.downloadChanged != nil {
+					close(p.downloadChanged)
+					p.downloadChanged = nil
+				}
+			}), nil
+		}
+		if p.downloadChanged == nil {
+			p.downloadChanged = make(chan struct{})
+		}
+		changed := p.downloadChanged
+		p.downloadMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, timeoutOrCancel(ctx)
+		case <-changed:
+		}
+	}
+}
+
 // Large video requests spill independently of the gateway-wide cache setting.
 // Ordinary text/image requests never reach this path.
 const videoBodyMemoryLimit = 8 << 20

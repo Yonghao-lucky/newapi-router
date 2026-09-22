@@ -22,6 +22,7 @@ type EngineConfig struct {
 	RecordPerVideoDetails bool
 	Rewrite               RewriteLimits
 	Admission             AdmissionLimits
+	RemoteURL             RemoteURLConfig
 
 	// Enabled is the subsystem's master switch. A request arriving under a
 	// disabled config bypasses without reading the body, entering the queue or
@@ -77,6 +78,14 @@ func BuildEngineConfig(snapshot video_preprocess_setting.Snapshot, deploy video_
 		DefaultMaxFrames:      s.DefaultMaxFrames,
 		HighDetailMaxFrames:   s.HighDetailMaxFrames,
 		IncludeTimestamps:     s.IncludeTimestamps,
+		RemoteURL: RemoteURLConfig{
+			Enabled:          s.RemoteURLEnabled,
+			AllowlistEnabled: s.RemoteURLAllowlistEnabled,
+			AllowedHosts:     slices.Clone(s.RemoteURLAllowedHosts),
+			AllowUnknownSize: s.RemoteURLAllowUnknownSize,
+			DownloadTimeout:  time.Duration(s.RemoteURLDownloadTimeoutSeconds) * time.Second,
+			MaxDownloads:     s.RemoteURLMaxDownloads,
+		},
 	}
 
 	cfg.Analysis = AnalysisConfig{

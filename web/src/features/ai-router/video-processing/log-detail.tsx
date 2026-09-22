@@ -20,7 +20,10 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
-import { StaticDataTable } from '@/components/data-table'
+import {
+  StaticDataTable,
+  type StaticDataTableColumn,
+} from '@/components/data-table'
 import { Dialog } from '@/components/dialog'
 import { LoadingState } from '@/components/loading-state'
 import { formatNumber } from '@/lib/format'
@@ -28,16 +31,25 @@ import { formatNumber } from '@/lib/format'
 import { getVideoLog, videoKeys } from './api'
 import { statusLabels } from './constants'
 import { VideoQueryError } from './query-error'
+import type { VideoMedia } from './types'
 
 const stages = [
   { key: 'queue_ms', labelKey: 'Queue' },
-  { key: 'decode_ms', labelKey: 'Base64 decoding' },
+  { key: 'decode_ms', labelKey: 'Video acquisition' },
   { key: 'probe_ms', labelKey: 'Media probing' },
   { key: 'analyze_ms', labelKey: 'Frame analysis' },
   { key: 'select_ms', labelKey: 'Frame selection' },
   { key: 'export_ms', labelKey: 'JPEG export' },
   { key: 'rewrite_ms', labelKey: 'Request rewriting' },
 ] as const
+
+const downloadStageLabels: Record<string, string> = {
+  url: 'URL safety checks',
+  head: 'Video size probe (HEAD)',
+  range: 'Video size probe (Range)',
+  download: 'Video download',
+  download_queue: 'Download queue',
+}
 
 export function VideoLogDetail(props: {
   id: number | null
@@ -51,6 +63,49 @@ export function VideoLogDetail(props: {
     meta: { errorToast: false },
   })
   const log = query.data
+  const sourceColumns: StaticDataTableColumn<VideoMedia>[] = log?.videos?.some(
+    (video) => video.source_type
+  )
+    ? [
+        {
+          id: 'source',
+          header: t('Video source'),
+          cell: (row) => {
+            if (row.source_type === 'remote') return t('Remote video URL')
+            if (row.source_type === 'data') return 'Base64'
+            return '—'
+          },
+        },
+        {
+          id: 'source_host',
+          header: t('Source domain'),
+          cell: (row) => row.source_host || '—',
+        },
+        {
+          id: 'download_bytes',
+          header: t('Downloaded bytes'),
+          cell: (row) =>
+            row.download_bytes === undefined
+              ? '—'
+              : formatNumber(row.download_bytes),
+        },
+        {
+          id: 'download_ms',
+          header: t('Download time (ms)'),
+          cell: (row) =>
+            row.download_ms === undefined ? '—' : formatNumber(row.download_ms),
+        },
+        {
+          id: 'download_error_stage',
+          header: t('Download failure stage'),
+          cell: (row) => {
+            if (!row.download_error_stage) return '—'
+            const label = downloadStageLabels[row.download_error_stage]
+            return label ? t(label) : row.download_error_stage
+          },
+        },
+      ]
+    : []
   return (
     <Dialog
       open={props.id !== null}
@@ -178,6 +233,7 @@ export function VideoLogDetail(props: {
               data={log.videos}
               columns={[
                 { id: 'index', header: t('Video'), cell: (row) => row.index },
+                ...sourceColumns,
                 {
                   id: 'codec',
                   header: t('Codec'),

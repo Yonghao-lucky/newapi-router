@@ -31,10 +31,48 @@ const numericShape = Object.fromEntries(
   })
 ) as Record<NumericSettingKey, z.ZodNumber>
 
+const videoDomainSchema = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    const invalid = () => {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Enter exact domain names without URLs, ports, IP addresses or wildcards',
+      })
+      return z.NEVER
+    }
+    if (!value || /[\s/:?#@*%\\[\]]/.test(value)) return invalid()
+    try {
+      const hostname = new URL(`https://${value}`).hostname.replace(/\.$/, '')
+      if (
+        hostname.length > 253 ||
+        !hostname.includes('.') ||
+        /^\d+\.\d+\.\d+\.\d+$/.test(hostname) ||
+        /\.(localhost|local|internal|lan|home)$/.test(hostname) ||
+        !hostname
+          .split('.')
+          .every((label) =>
+            /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+          )
+      ) {
+        return invalid()
+      }
+      return hostname
+    } catch {
+      return invalid()
+    }
+  })
+
 export const videoSettingsSchema = z
   .object({
     ...numericShape,
     enabled: z.boolean(),
+    remote_url_enabled: z.boolean(),
+    remote_url_allowlist_enabled: z.boolean(),
+    remote_url_allow_unknown_size: z.boolean(),
+    remote_url_allowed_hosts: z.array(videoDomainSchema),
     mode: z.literal('always_frames'),
     target_models: z
       .array(z.string().trim().min(1))
@@ -50,6 +88,16 @@ export const videoSettingsSchema = z
   .superRefine((settings, ctx) => {
     const invalid = (field: keyof typeof settings, message: string) =>
       ctx.addIssue({ code: 'custom', path: [field], message })
+    if (
+      settings.remote_url_enabled &&
+      settings.remote_url_allowlist_enabled &&
+      settings.remote_url_allowed_hosts.length === 0
+    ) {
+      invalid(
+        'remote_url_allowed_hosts',
+        'Add at least one domain before enabling the video allowlist'
+      )
+    }
     const ceiling =
       settings.max_images_per_request - settings.reserve_image_slots
     if (ceiling < 1) {
@@ -102,6 +150,8 @@ export function needsVideoConfirmation(
   next: VideoSettings
 ): boolean {
   const resourceLimits: NumericSettingKey[] = [
+    'remote_url_max_downloads',
+    'remote_url_download_timeout_seconds',
     'max_running_jobs',
     'ffmpeg_threads_per_job',
     'max_waiting_jobs',
@@ -121,6 +171,7 @@ export function needsVideoConfirmation(
   ]
   return (
     (!current.enabled && next.enabled) ||
+    (!current.remote_url_enabled && next.remote_url_enabled) ||
     resourceLimits.some((key) => next[key] > current[key]) ||
     next.retention_days < current.retention_days
   )

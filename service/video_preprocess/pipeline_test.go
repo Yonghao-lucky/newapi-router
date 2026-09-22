@@ -3,11 +3,14 @@ package video_preprocess
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,6 +121,11 @@ func TestBuildEngineConfigMapping(t *testing.T) {
 	settings.FFmpegThreadsPerJob = 3
 	settings.MaxJobSeconds = 180
 	settings.StaleFileTTLMinutes = 30
+	settings.RemoteURLEnabled = true
+	settings.RemoteURLAllowlistEnabled = true
+	settings.RemoteURLAllowedHosts = []string{"media.example.com"}
+	settings.RemoteURLDownloadTimeoutSeconds = 42
+	settings.RemoteURLMaxDownloads = 3
 
 	cfg := BuildEngineConfig(
 		video_preprocess_setting.Snapshot{Version: 7, Settings: settings},
@@ -146,9 +154,156 @@ func TestBuildEngineConfigMapping(t *testing.T) {
 	assert.Equal(t, 180*time.Second, cfg.Admission.JobTimeout)
 	assert.Equal(t, int64(5)<<30, cfg.Admission.TempStorageCapacity)
 	assert.Equal(t, 30*time.Minute, cfg.StaleTTL)
+	assert.True(t, cfg.RemoteURL.Enabled)
+	assert.True(t, cfg.RemoteURL.AllowlistEnabled)
+	assert.True(t, cfg.RemoteURL.AllowUnknownSize)
+	assert.Equal(t, []string{"media.example.com"}, cfg.RemoteURL.AllowedHosts)
+	assert.Equal(t, 42*time.Second, cfg.RemoteURL.DownloadTimeout)
+	assert.Equal(t, 3, cfg.RemoteURL.MaxDownloads)
+	settings.RemoteURLAllowedHosts[0] = "changed.example.com"
+	assert.Equal(t, []string{"media.example.com"}, cfg.RemoteURL.AllowedHosts, "an in-flight request retains its host policy")
 
 	require.NoError(t, cfg.Admission.Validate())
 	require.NoError(t, cfg.Media.withDefaults().validate())
+}
+
+func TestRemoteVideosShareExistingFramePipelineAndCleanFiles(t *testing.T) {
+	dataURL := fixtureVideo(t, "static")
+	_, encoded, ok := strings.Cut(dataURL, ",")
+	require.True(t, ok)
+	video, err := base64.StdEncoding.DecodeString(encoded)
+	require.NoError(t, err)
+	var requests atomic.Int32
+	downloader := newRemoteVideoTLSFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		assert.Equal(t, "signed=SECRET", r.URL.RawQuery)
+		assert.Empty(t, r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("Cookie"))
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", fmt.Sprint(len(video)))
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(video)
+		}
+	}))
+	cfg := testEngineConfig(t)
+	cfg.RemoteURL.Enabled = true
+	cfg.RemoteURL.downloader = &downloader
+	p, err := NewProcessor(cfg)
+	require.NoError(t, err)
+	body := videoBody("kimi-k3", 1, dataURL, "https://video.example.test/video.mp4?signed=SECRET")
+	result, err := p.Process(context.Background(), ProcessInput{UserID: 1, Model: "kimi-k3", Body: []byte(body)})
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), requests.Load(), "one HEAD and one GET")
+	require.Len(t, result.Videos, 2)
+	assert.Equal(t, "data", result.Videos[0].SourceType)
+	assert.Equal(t, "remote", result.Videos[1].SourceType)
+	assert.Equal(t, "video.example.test", result.Videos[1].SourceHost)
+	assert.Equal(t, int64(len(video)), result.Videos[1].DownloadBytes)
+	assert.Empty(t, result.Videos[1].DownloadErrorStage)
+	assert.Equal(t, "video", result.OriginalModality)
+	assert.Equal(t, "image", result.EffectiveModality)
+	assert.Greater(t, result.ExtractedFrames, 0)
+	assert.Contains(t, string(result.rewrittenBody), "data:image/jpeg;base64,")
+	assert.NotContains(t, string(result.rewrittenBody), "video_url")
+	assert.NotContains(t, string(result.rewrittenBody), "SECRET")
+	logged, err := common.Marshal(result.Videos)
+	require.NoError(t, err)
+	assert.NotContains(t, string(logged), "SECRET")
+	assert.NotContains(t, string(logged), "/video.mp4")
+	entries, err := os.ReadDir(cfg.Media.TempRoot)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+	assert.Zero(t, p.Snapshot().RunningJobs)
+	assert.Zero(t, p.Snapshot().TempStorageBytes)
+}
+
+func TestRemotePolicyAndStorageRejectBeforeFetching(t *testing.T) {
+	var requests atomic.Int32
+	downloader := newRemoteVideoTLSFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	for _, tc := range []struct {
+		name     string
+		enabled  bool
+		capacity int64
+		code     string
+	}{
+		{"disabled", false, 1 << 30, CodeInvalidDataURL},
+		{"short URL still reserves full media allowance", true, 121 << 20, CodeStorageExhausted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testEngineConfig(t)
+			cfg.RemoteURL.Enabled = tc.enabled
+			cfg.RemoteURL.downloader = &downloader
+			cfg.Admission.TempStorageCapacity = tc.capacity
+			cfg.Media.MaxDecodedVideoBytes = 100 << 20
+			cfg.Rewrite.MaxOutputImageBytes = 20 << 20
+			cfg.Rewrite.MaxRewrittenBodyBytes = 100 << 20
+			p, err := NewProcessor(cfg)
+			require.NoError(t, err)
+			_, err = p.Process(context.Background(), ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, "https://video.example.test/a.mp4"))})
+			require.Error(t, err)
+			assert.Equal(t, tc.code, CodeOf(err))
+			assert.Zero(t, requests.Load())
+			assert.Zero(t, p.Snapshot().RunningJobs)
+			entries, err := os.ReadDir(cfg.Media.TempRoot)
+			require.NoError(t, err)
+			assert.Empty(t, entries)
+		})
+	}
+}
+
+func TestRemoteDownloadCancellationClosesOriginAndReleasesResources(t *testing.T) {
+	started, originCanceled := make(chan struct{}), make(chan struct{})
+	downloader := newRemoteVideoTLSFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write([]byte("partial-video"))
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+		close(originCanceled)
+	}))
+	cfg := testEngineConfig(t)
+	cfg.RemoteURL.Enabled = true
+	cfg.RemoteURL.downloader = &downloader
+	p, err := NewProcessor(cfg)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, "https://video.example.test/video.mp4"))})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		assert.Equal(t, CodeProcessingCanceled, CodeOf(err))
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not cancel")
+	}
+	select {
+	case <-originCanceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("origin connection was not canceled")
+	}
+	entries, err := os.ReadDir(cfg.Media.TempRoot)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+	assert.Zero(t, p.Snapshot().RunningJobs)
+	assert.Zero(t, p.Snapshot().TempStorageBytes)
+	release, err := p.acquireDownload(context.Background(), 1)
+	require.NoError(t, err, "canceled request releases its download slot")
+	release()
 }
 
 // TestProcessorBypassesDisabledSwitch: a video request under a disabled

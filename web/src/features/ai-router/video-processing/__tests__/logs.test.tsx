@@ -79,35 +79,79 @@ describe('video processing logs', () => {
     renderLogs()
     expect(await screen.findByText('No video processing logs')).toBeVisible()
   })
-  it('opens structural details with stage timings without rendering extra media fields', async () => {
-    vi.spyOn(api, 'get').mockImplementation(async (url) => ({
-      data: {
-        success: true,
-        data: url.endsWith('/logs/1')
-          ? {
-              ...log,
-              prompt: 'private-prompt',
-              video_url: 'data:video/mp4;base64,private-media',
-            }
-          : { items: [log], total: 1, page: 1, page_size: 20 },
-      },
-    }))
-    const user = userEvent.setup()
-    renderLogs()
-    await user.click(
-      await screen.findByRole('button', { name: 'video-request-1' })
-    )
-    const detail = await screen.findByRole('dialog', {
-      name: 'Video processing details',
-    })
-    expect(await within(detail).findByText('adaptive-v1')).toBeVisible()
-    expect(within(detail).getByText('Frame analysis')).toBeVisible()
-    expect(
-      within(detail).getByRole('button', { name: 'Copy request ID' })
-    ).toBeVisible()
-    expect(detail).not.toHaveTextContent('private-prompt')
-    expect(detail).not.toHaveTextContent('private-media')
-  })
+  it.each([
+    ['url', 'URL safety checks'],
+    ['head', 'Video size probe (HEAD)'],
+    ['range', 'Video size probe (Range)'],
+    ['download', 'Video download'],
+    ['download_queue', 'Download queue'],
+    ['future_stage', 'future_stage'],
+  ])(
+    'shows a readable %s stage and timings without rendering private media fields',
+    async (stage, label) => {
+      vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+        data: {
+          success: true,
+          data: url.endsWith('/logs/1')
+            ? {
+                ...log,
+                prompt: 'private-prompt',
+                video_url: 'data:video/mp4;base64,private-media',
+                videos: [
+                  {
+                    index: 0,
+                    source_type: 'remote',
+                    source_host: 'media.example.com',
+                    download_bytes: 15000,
+                    download_ms: 120,
+                    download_error_stage: stage,
+                    duration_ms: 12000,
+                    width: 160,
+                    height: 96,
+                    codec: 'h264',
+                    frames: 4,
+                    decoded_bytes: 15000,
+                    image_bytes: 4000,
+                    sampler_version: 'adaptive-v1',
+                    source_url:
+                      'https://media.example.com/private.mp4?signature=private-signature',
+                  },
+                ],
+              }
+            : { items: [log], total: 1, page: 1, page_size: 20 },
+        },
+      }))
+      const user = userEvent.setup()
+      renderLogs()
+      await user.click(
+        await screen.findByRole('button', { name: 'video-request-1' })
+      )
+      const detail = await screen.findByRole('dialog', {
+        name: 'Video processing details',
+      })
+      expect(await within(detail).findByText('adaptive-v1')).toBeVisible()
+      expect(within(detail).getByText('Frame analysis')).toBeVisible()
+      expect(
+        within(detail).getByRole('button', { name: 'Copy request ID' })
+      ).toBeVisible()
+      expect(detail).not.toHaveTextContent('private-prompt')
+      expect(detail).not.toHaveTextContent('private-media')
+      expect(within(detail).getByText('media.example.com')).toBeVisible()
+      expect(within(detail).getByText('Remote video URL')).toBeVisible()
+      expect(
+        within(detail).getByRole('columnheader', { name: 'Downloaded bytes' })
+      ).toBeVisible()
+      expect(
+        within(detail).getByRole('columnheader', { name: 'Download time (ms)' })
+      ).toBeVisible()
+      expect(within(detail).getByText(label)).toBeVisible()
+      expect(within(detail).getByText('Video acquisition')).toBeVisible()
+      expect(
+        within(detail).queryByText('Base64 decoding')
+      ).not.toBeInTheDocument()
+      expect(detail).not.toHaveTextContent('private-signature')
+    }
+  )
   it('requests the next page through shared pagination without changing the filters', async () => {
     vi.spyOn(api, 'get').mockImplementation(async (_url, config) => {
       const page = Number(config?.params?.page ?? 1)

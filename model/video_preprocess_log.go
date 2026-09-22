@@ -50,15 +50,20 @@ type VideoPreprocessLog struct {
 }
 
 type VideoPreprocessMedia struct {
-	Index          int    `json:"index"`
-	DurationMS     int64  `json:"duration_ms"`
-	Width          int    `json:"width"`
-	Height         int    `json:"height"`
-	Codec          string `json:"codec"`
-	Frames         int    `json:"frames"`
-	DecodedBytes   int64  `json:"decoded_bytes"`
-	ImageBytes     int64  `json:"image_bytes"`
-	SamplerVersion string `json:"sampler_version"`
+	SourceType         string `json:"source_type,omitempty"`
+	SourceHost         string `json:"source_host,omitempty"`
+	DownloadBytes      int64  `json:"download_bytes,omitempty"`
+	DownloadMS         int64  `json:"download_ms,omitempty"`
+	DownloadErrorStage string `json:"download_error_stage,omitempty"`
+	Index              int    `json:"index"`
+	DurationMS         int64  `json:"duration_ms"`
+	Width              int    `json:"width"`
+	Height             int    `json:"height"`
+	Codec              string `json:"codec"`
+	Frames             int    `json:"frames"`
+	DecodedBytes       int64  `json:"decoded_bytes"`
+	ImageBytes         int64  `json:"image_bytes"`
+	SamplerVersion     string `json:"sampler_version"`
 }
 
 func (VideoPreprocessLog) TableName() string { return "video_preprocess_logs" }
