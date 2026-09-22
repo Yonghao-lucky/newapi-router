@@ -106,6 +106,9 @@ type ChannelOtherSettings struct {
 }
 
 type ChannelRoutingProfile struct {
+	// VideoPriority opts this channel into the video-preferred pool. Zero is
+	// configured; nil leaves the channel in the ordinary fallback pool.
+	VideoPriority   *int64 `json:"video_priority,omitempty"`
 	Enabled         bool   `json:"enabled"`
 	SupportsText    *bool  `json:"supports_text,omitempty"`
 	SupportsImage   *bool  `json:"supports_image,omitempty"`

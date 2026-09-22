@@ -120,6 +120,10 @@ export interface ChannelOtherSettings {
 }
 
 export interface ChannelRoutingProfile {
+  video_priority?: number | null
+  max_retry?: number
+  retry_status_codes?: number[] | null
+  switch_status_codes?: number[] | null
   enabled?: boolean
   supports_text?: boolean | null
   supports_image?: boolean | null

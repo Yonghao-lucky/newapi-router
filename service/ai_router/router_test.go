@@ -88,6 +88,49 @@ func TestRouterRetryAfterSharesIdleBudget(t *testing.T) {
 	})
 }
 
+func TestVideoPriorityFallbackOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		demand               RouteDemand
+		limit, status, retry int
+		priorities           bool
+		want                 []int
+	}{
+		{"text keeps native order", RouteDemand{Modality: ModalityText}, 4, 502, 0, true, []int{3, 1, 4, 2}},
+		{"image keeps native order", RouteDemand{Modality: ModalityImage}, 4, 502, 0, true, []int{3, 1, 4, 2}},
+		{"extracted video prefers video pool", RouteDemand{Modality: ModalityImage, OriginalModality: ModalityVideo}, 4, 502, 0, true, []int{1, 2, 3, 4}},
+		{"unset retains native order", RouteDemand{Modality: ModalityImage, OriginalModality: ModalityVideo}, 4, 502, 0, false, []int{3, 1, 4, 2}},
+		{"attempt cap spans both pools", RouteDemand{Modality: ModalityImage, OriginalModality: ModalityVideo}, 3, 502, 0, true, []int{1, 2, 3}},
+		{"same channel retries before fallback", RouteDemand{Modality: ModalityImage, OriginalModality: ModalityVideo}, 4, 503, 1, true, []int{1, 1, 2, 2, 3, 3, 4, 4}},
+		{"nonretryable stops video pool", RouteDemand{Modality: ModalityImage, OriginalModality: ModalityVideo}, 4, 400, 1, true, []int{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			zero, negative := int64(0), int64(-1)
+			channels := []RouterChannel{
+				{ID: 1, Priority: 90, Group: "default", Weight: 1}, {ID: 2, Priority: 70, Group: "default", Weight: 1},
+				{ID: 3, Priority: 100, Group: "default", Weight: 1}, {ID: 4, Priority: 80, Group: "default", Weight: 1},
+			}
+			for i := range channels {
+				channels[i].RoutingProfile = dto.ChannelRoutingProfile{Enabled: true, SupportsImage: ptr(true), SupportsVideo: ptr(false), MaxRetry: tc.retry}
+			}
+			if tc.priorities {
+				channels[0].RoutingProfile.VideoPriority = &zero
+				channels[1].RoutingProfile.VideoPriority = &negative
+			}
+			rc := NewRouteContext(tc.demand, tc.limit)
+			var called []int
+			err := RunFallbackLoop(rc, channels, "default", ai_router_setting.DefaultSettings(), func() *types.NewAPIError {
+				called = append(called, rc.Decision.ChannelID)
+				rc.LastCall = &AttemptCall{UpstreamStatus: tc.status}
+				return types.NewErrorWithStatusCode(fmt.Errorf("fixture failure"), types.ErrorCodeBadResponseStatusCode, tc.status)
+			})
+			require.NotNil(t, err)
+			assert.Equal(t, tc.want, called)
+			assert.Equal(t, int64(90), channels[0].Priority, "video sorting must not mutate ordinary priority")
+		})
+	}
+}
+
 func TestFallbackLoopBasic(t *testing.T) {
 	chs := fixtureChannels()
 	settings := ai_router_setting.DefaultSettings()

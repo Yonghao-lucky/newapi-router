@@ -23,6 +23,16 @@ import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { StaticDataTable } from '@/components/data-table'
+import {
+  SideDrawerSection,
+  sideDrawerContentClassName,
+  sideDrawerFooterClassName,
+  sideDrawerFormClassName,
+  sideDrawerHeaderClassName,
+} from '@/components/drawer-layout'
+import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ComboboxInput } from '@/components/ui/combobox-input'
@@ -44,16 +54,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
-import { StaticDataTable } from '@/components/data-table'
-import { ConfirmDialog } from '@/components/confirm-dialog'
-import {
-  SideDrawerSection,
-  sideDrawerContentClassName,
-  sideDrawerFooterClassName,
-  sideDrawerFormClassName,
-  sideDrawerHeaderClassName,
-} from '@/components/drawer-layout'
-import { StatusBadge } from '@/components/status-badge'
 import { Switch } from '@/components/ui/switch'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -416,7 +416,8 @@ export function PolicyDrawer(props: {
                                 </Badge>
                               )
                             }
-                            return row.info.status === CHANNEL_STATUS_ENABLED ? (
+                            return row.info.status ===
+                              CHANNEL_STATUS_ENABLED ? (
                               <StatusBadge variant='success' type='text'>
                                 {t('Enabled')}
                               </StatusBadge>
@@ -432,6 +433,12 @@ export function PolicyDrawer(props: {
                           header: t('Priority'),
                           cellClassName: 'tabular-nums',
                           cell: (row) => row.info?.priority ?? '-',
+                        },
+                        {
+                          id: 'video_priority',
+                          header: t('Video priority'),
+                          cell: (row) =>
+                            row.info?.video_priority ?? t('Not set'),
                         },
                         {
                           id: 'weight',
@@ -451,7 +458,10 @@ export function PolicyDrawer(props: {
                             <Switch
                               checked={row.candidate.enabled}
                               onCheckedChange={(checked) =>
-                                toggleCandidate(row.candidate.channel_id, checked)
+                                toggleCandidate(
+                                  row.candidate.channel_id,
+                                  checked
+                                )
                               }
                             />
                           ),

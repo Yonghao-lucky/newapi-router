@@ -29,16 +29,14 @@ import type { AIRouterChannel } from '../types'
 vi.mock('../api', () => ({
   updateAIRouterChannelRouter: vi.fn().mockResolvedValue({}),
   updateAIRouterChannelScheduling: vi.fn().mockResolvedValue({}),
-  getAIRouterSettings: vi
-    .fn()
-    .mockResolvedValue({
-      enabled: true,
-      telemetry_enabled: true,
-      tool_filter_enabled: false,
-      max_attempts: 3,
-      retention_days: 7,
-      idle_timeout_seconds: 1000,
-    }),
+  getAIRouterSettings: vi.fn().mockResolvedValue({
+    enabled: true,
+    telemetry_enabled: true,
+    tool_filter_enabled: false,
+    max_attempts: 3,
+    retention_days: 7,
+    idle_timeout_seconds: 1000,
+  }),
   updateAIRouterSettings: vi.fn().mockResolvedValue({}),
 }))
 
@@ -124,7 +122,8 @@ it('removes status tags and rejects overlapping groups', async () => {
     <ChannelDrawer open onOpenChange={vi.fn()} channel={channel} />,
     { wrapper }
   )
-  const chip = screen.getByText('429').closest('[data-slot="combobox-chip"]')!
+  const chip = screen.getByText('429').closest('[data-slot="combobox-chip"]')
+  if (!chip) throw new Error('Expected the status code chip')
   await user.click(within(chip as HTMLElement).getByRole('button'))
   await user.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() =>
@@ -169,3 +168,41 @@ it('edits and saves the idle timeout independently of retry counts', async () =>
     )
   )
 })
+
+it.each([
+  { initial: undefined, input: '0', expected: 0 },
+  { initial: 100, input: '', expected: null },
+  { initial: 0, input: '-10', expected: -10 },
+])(
+  'saves video priority $input independently of native priority',
+  async ({ initial, input, expected }) => {
+    const user = userEvent.setup()
+    render(
+      <ChannelDrawer
+        open
+        onOpenChange={vi.fn()}
+        channel={{
+          ...channel,
+          router: { ...channel.router, video_priority: initial },
+        }}
+      />,
+      { wrapper }
+    )
+    const field = screen.getByRole('spinbutton', { name: 'Video priority' })
+    expect(field).toHaveValue(initial ?? null)
+    await user.clear(field)
+    if (input) await user.type(field, input)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ video_priority: expected, max_retry: 2 })
+      )
+    )
+    expect(api.updateAIRouterChannelScheduling).toHaveBeenCalledWith(1, {
+      group: channel.group,
+      priority: channel.priority,
+      weight: channel.weight,
+    })
+  }
+)

@@ -44,6 +44,30 @@ func TestChannelRetryStatusRoundTrip(t *testing.T) {
 	}
 }
 
+func TestVideoPriorityJSONContract(t *testing.T) {
+	for _, input := range []string{`{}`, `{"video_priority":null}`, `{"video_priority":0}`, `{"video_priority":100}`, `{"video_priority":-10}`} {
+		t.Run(input, func(t *testing.T) {
+			var profile ChannelRoutingProfile
+			require.NoError(t, kitutil.Unmarshal([]byte(input), &profile))
+			require.NoError(t, profile.Validate())
+			data, err := kitutil.Marshal(profile)
+			require.NoError(t, err)
+			var restored ChannelRoutingProfile
+			require.NoError(t, kitutil.Unmarshal(data, &restored))
+			assert.Equal(t, profile.VideoPriority, restored.VideoPriority)
+			if input == `{}` || input == `{"video_priority":null}` {
+				assert.Nil(t, restored.VideoPriority)
+			} else {
+				require.NotNil(t, restored.VideoPriority)
+			}
+		})
+	}
+	for _, input := range []string{`{"video_priority":1.5}`, `{"video_priority":"100"}`, `{"video_priority":true}`} {
+		var profile ChannelRoutingProfile
+		require.Error(t, kitutil.Unmarshal([]byte(input), &profile))
+	}
+}
+
 func TestAdvancedCustomValidateResponsesToChatConverterPath(t *testing.T) {
 	valid := &AdvancedCustomConfig{
 		Routes: []AdvancedCustomRoute{

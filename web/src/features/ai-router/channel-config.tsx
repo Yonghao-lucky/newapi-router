@@ -17,18 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { DataTablePage, useDataTable } from '@/components/data-table'
 import { ErrorState } from '@/components/error-state'
+import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { StatusBadge } from '@/components/status-badge'
-import type { ColumnDef } from '@tanstack/react-table'
 
 import { getAIRouterChannels } from './api'
+import { ChannelDrawer } from './components/channel-drawer'
 import {
   AI_ROUTER_QUERY_KEYS,
   CHANNEL_STATUS_ENABLED,
@@ -36,7 +37,6 @@ import {
   TOOL_SUPPORT_UNSUPPORTED,
 } from './constants'
 import type { AIRouterChannel, ChannelRoutingProfile } from './types'
-import { ChannelDrawer } from './components/channel-drawer'
 
 // Tool badge: null hides the highlight (unverified / unset profile).
 function toolBadgeState(profile: ChannelRoutingProfile): boolean | null {
@@ -51,7 +51,10 @@ function routerSortValue(profile: ChannelRoutingProfile): string {
 }
 
 // Capability badges: text defaults on, image/video/unknown default off.
-function channelCapabilityBadges(channel: AIRouterChannel, t: (key: string) => string) {
+function channelCapabilityBadges(
+  channel: AIRouterChannel,
+  t: (key: string) => string
+) {
   const profile = channel.router
   // When the profile is unset, effective defaults apply (text on, others off).
   const set = profile.router_set
@@ -153,7 +156,9 @@ export function ChannelConfigTab() {
         id: 'group',
         accessorFn: (row) => row.group,
         header: t('Group'),
-        cell: ({ row }) => <Badge variant='outline'>{row.original.group}</Badge>,
+        cell: ({ row }) => (
+          <Badge variant='outline'>{row.original.group}</Badge>
+        ),
       },
       {
         id: 'status',
@@ -201,6 +206,13 @@ export function ChannelConfigTab() {
         cellClassName: 'tabular-nums',
       },
       {
+        id: 'video_priority',
+        accessorFn: (row) => row.router.video_priority,
+        header: t('Video priority'),
+        cell: ({ row }) => row.original.router.video_priority ?? t('Not set'),
+        cellClassName: 'tabular-nums',
+      },
+      {
         id: 'weight',
         accessorFn: (row) => row.weight,
         header: t('Weight'),
@@ -222,7 +234,9 @@ export function ChannelConfigTab() {
         accessorFn: (row) => row.referenced_by?.length ?? 0,
         header: t('Referenced policies'),
         cell: ({ row }) => (
-          <Badge variant='secondary'>{row.original.referenced_by?.length ?? 0}</Badge>
+          <Badge variant='secondary'>
+            {row.original.referenced_by?.length ?? 0}
+          </Badge>
         ),
       },
       {
@@ -258,10 +272,7 @@ export function ChannelConfigTab() {
 
   if (isError) {
     return (
-      <ErrorState
-        description={error?.message}
-        onRetry={() => void refetch()}
-      />
+      <ErrorState description={error?.message} onRetry={() => void refetch()} />
     )
   }
 

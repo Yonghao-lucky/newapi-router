@@ -5,6 +5,8 @@ import (
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ai_router_setting"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func ptr(b bool) *bool { return &b }
@@ -92,4 +94,25 @@ func TestGroupFilter(t *testing.T) {
 	if len(got) != 1 || got[0].ID != 2 {
 		t.Errorf("expected only channel 2 in vip group, got %v", got)
 	}
+}
+
+func TestVideoPriorityRespectsEligibility(t *testing.T) {
+	high, low := int64(100), int64(90)
+	channels := []RouterChannel{
+		{ID: 1, Priority: 100, Group: "default", Weight: 1, RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsText: ptr(true), VideoPriority: &high}},
+		{ID: 2, Priority: 90, Group: "vip", Weight: 1, RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsImage: ptr(true), VideoPriority: &high}},
+		{ID: 3, Priority: 80, Group: "default", Weight: 1, RoutingProfile: dto.ChannelRoutingProfile{Enabled: false, SupportsImage: ptr(true), VideoPriority: &high}},
+		{ID: 4, Priority: 70, Group: "default", Weight: 7, RoutingProfile: dto.ChannelRoutingProfile{Enabled: true, SupportsImage: ptr(true), SupportsVideo: ptr(false), VideoPriority: &low}},
+	}
+	demand := RouteDemand{Modality: ModalityImage, OriginalModality: ModalityVideo}
+	decision, eligible, err := RouteCandidates(demand, channels, "default", ai_router_setting.DefaultSettings())
+	require.NoError(t, err)
+	require.Len(t, eligible, 1)
+	assert.Equal(t, 4, decision.ChannelID)
+	assert.Equal(t, 7, decision.Weight)
+	assert.Equal(t, int64(70), decision.Priority)
+	assert.Equal(t, "video_priority", decision.SelectionReason)
+	demand.Modality = ModalityVideo
+	_, _, err = RouteCandidates(demand, channels, "default", ai_router_setting.DefaultSettings())
+	require.Error(t, err, "native video still requires video capability")
 }

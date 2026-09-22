@@ -117,6 +117,7 @@ const channelFormSchema = z.object({
   toolSupport: z.string(),
   group: z.string().min(1),
   priority: z.number().int().min(0),
+  videoPriority: z.union([z.literal(''), z.number().int()]),
   weight: z.number().int().min(0),
 })
 
@@ -155,6 +156,7 @@ const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
     toolSupport: channel.router.tool_support ?? 'unverified',
     group: channel.group,
     priority: channel.priority,
+    videoPriority: channel.router.video_priority ?? '',
     weight: channel.weight,
   }
 }
@@ -243,6 +245,10 @@ export function ChannelDrawer(props: {
               unknown_fallback: formValues.unknownFallback,
               tool_support: formValues.toolSupport || 'unverified',
               max_retry: formValues.maxRetry,
+              video_priority:
+                formValues.videoPriority === ''
+                  ? null
+                  : formValues.videoPriority,
               retry_status_codes: formValues.retryStatusCodes,
               switch_status_codes: formValues.switchStatusCodes,
             }
@@ -574,6 +580,37 @@ export function ChannelDrawer(props: {
               </SideDrawerSection>
 
               <SideDrawerSection>
+                <FormField
+                  control={form.control}
+                  name='videoPriority'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Video priority')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          step={1}
+                          disabled={profileUnset}
+                          placeholder={t('Not set')}
+                          onChange={(event) =>
+                            field.onChange(
+                              event.target.value === ''
+                                ? ''
+                                : Number(event.target.value)
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Video requests prefer configured channels, higher values first, then fall back to ordinary priority. Leave empty to use ordinary priority. Text and image requests are unchanged.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <div className='grid gap-4 sm:grid-cols-3'>
                   <FormField
                     control={form.control}

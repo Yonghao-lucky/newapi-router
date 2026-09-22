@@ -51,6 +51,10 @@ func runAIRouterRelay(
 		return
 	}
 	demand.Model = relayInfo.OriginModelName
+	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) &&
+		common.GetContextKeyString(c, constant.ContextKeyVideoOriginalModality) == string(ai_router.ModalityVideo) {
+		demand.OriginalModality = ai_router.ModalityVideo
+	}
 
 	// Resolve the group first (mirrors New API's own selection), then build
 	// the candidate set from the target policy snapshot intersected with the
@@ -63,8 +67,7 @@ func runAIRouterRelay(
 
 	routeCtx := ai_router.NewRouteContext(demand, policyMaxAttempts(group, relayInfo.OriginModelName, settings.MaxAttempts))
 	routeCtx.Context = c.Request.Context()
-	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) &&
-		common.GetContextKeyString(c, constant.ContextKeyVideoOriginalModality) == string(ai_router.ModalityVideo) {
+	if demand.OriginalModality == ai_router.ModalityVideo {
 		routeCtx.LogModality = ai_router.ModalityVideo
 	}
 	routeCtx.RequestID = c.GetString(common.RequestIdKey)

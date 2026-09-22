@@ -33,6 +33,7 @@ export interface AIRouterSettings {
 
 // Capability values are tri-state: null means "unset" (channel default).
 export interface ChannelRoutingProfile {
+  video_priority?: number | null
   enabled: boolean
   router_set?: boolean
   supports_text?: boolean | null
@@ -46,6 +47,7 @@ export interface ChannelRoutingProfile {
 }
 
 export interface TargetPolicyChannelInfo {
+  video_priority?: number | null
   id: number
   name: string
   status: number

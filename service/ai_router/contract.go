@@ -17,6 +17,9 @@ const (
 )
 
 type RouteDemand struct {
+	// OriginalModality is trusted server-side provenance, before preprocessing.
+	// Modality continues to describe the actual upstream capability required.
+	OriginalModality    Modality `json:"-"`
 	Model               string   `json:"model"`
 	Modality            Modality `json:"modality"`
 	HasTools            bool     `json:"has_tools"`
@@ -25,6 +28,7 @@ type RouteDemand struct {
 }
 
 type ChannelRouteConstraints struct {
+	VideoRequest        bool     `json:"video_request"`
 	RequiredModality    Modality `json:"required_modality"`
 	RequireTools        bool     `json:"require_tools"`
 	UnknownFallbackOnly bool     `json:"unknown_fallback_only"`

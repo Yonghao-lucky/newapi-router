@@ -1,6 +1,7 @@
 package model
 
 import (
+	"os"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -8,6 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 // The target policy tables back the V1.5 Router scheduling contract:
@@ -71,4 +75,55 @@ func TestChannelRoutingProfileMaxRetryDefaultsAndBounds(t *testing.T) {
 	negative := dto.ChannelOtherSettings{}
 	require.NoError(t, common.UnmarshalJsonStr(`{"router":{"enabled":true,"max_retry":-1}}`, &negative))
 	require.Error(t, negative.ValidateRouter())
+}
+
+func TestVideoPrioritySettingsDatabaseMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name, dsn string
+		dialector gorm.Dialector
+	}{
+		{name: "sqlite"},
+		{name: "mysql", dsn: os.Getenv("AI_ROUTER_TEST_MYSQL_DSN"), dialector: mysql.Open(os.Getenv("AI_ROUTER_TEST_MYSQL_DSN"))},
+		{name: "postgres", dsn: os.Getenv("AI_ROUTER_TEST_POSTGRES_DSN"), dialector: postgres.Open(os.Getenv("AI_ROUTER_TEST_POSTGRES_DSN"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := DB
+			if tc.name != "sqlite" {
+				if tc.dsn == "" {
+					t.Skip("isolated database DSN not configured")
+				}
+				var err error
+				db, err = gorm.Open(tc.dialector, &gorm.Config{})
+				require.NoError(t, err)
+				sqlDB, err := db.DB()
+				require.NoError(t, err)
+				defer sqlDB.Close()
+			}
+			previous := DB
+			DB = db
+			defer func() { DB = previous }()
+			require.NoError(t, db.AutoMigrate(&Channel{}))
+			ch := Channel{Name: "video-priority-fixture", Key: "mock-only", Group: "default", Models: "kimi-k3", OtherSettings: `{"router":{"enabled":true,"max_retry":2,"retry_status_codes":[],"switch_status_codes":[502]}}`}
+			require.NoError(t, db.Create(&ch).Error)
+			defer db.Delete(&ch)
+			var before Channel
+			require.NoError(t, db.First(&before, ch.Id).Error)
+			legacySettings := before.GetOtherSettings()
+			assert.Nil(t, legacySettings.RoutingProfile().VideoPriority)
+			zero, high := int64(0), int64(100)
+			for _, priority := range []*int64{&high, &zero, nil} {
+				settings := before.GetOtherSettings()
+				settings.Router.VideoPriority = priority
+				before.SetOtherSettings(settings)
+				require.NoError(t, db.Model(&Channel{}).Where("id = ?", ch.Id).Update("settings", before.OtherSettings).Error)
+				infos, err := BuildTargetPolicyChannelInfos([]int{ch.Id})
+				require.NoError(t, err)
+				require.Contains(t, infos, ch.Id)
+				assert.Equal(t, priority, infos[ch.Id].VideoPriority)
+				assert.Equal(t, 2, infos[ch.Id].MaxRetry)
+				assert.Equal(t, []int{}, infos[ch.Id].RetryStatusCodes)
+				assert.Equal(t, []int{502}, infos[ch.Id].SwitchStatusCodes)
+			}
+		})
+	}
 }

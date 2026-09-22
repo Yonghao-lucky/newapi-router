@@ -894,37 +894,46 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.advanced_custom
   }
 
-  // AI Router capability settings
-  const hasRouterConfig =
-    formData.router_enabled !== 'unset' ||
-    formData.router_supports_text !== 'unset' ||
-    formData.router_supports_image !== 'unset' ||
-    formData.router_supports_video !== 'unset' ||
-    formData.router_unknown_fallback !== 'unset' ||
-    formData.router_tool_support !== 'unset'
-
-  if (hasRouterConfig) {
-    const router: Record<string, unknown> = {}
-    if (formData.router_enabled !== 'unset') {
-      router.enabled = formData.router_enabled === 'true'
-    }
-    if (formData.router_supports_text !== 'unset') {
-      router.supports_text = formData.router_supports_text === 'true'
-    }
-    if (formData.router_supports_image !== 'unset') {
-      router.supports_image = formData.router_supports_image === 'true'
-    }
-    if (formData.router_supports_video !== 'unset') {
-      router.supports_video = formData.router_supports_video === 'true'
-    }
-    if (formData.router_unknown_fallback !== 'unset') {
-      router.unknown_fallback = formData.router_unknown_fallback === 'true'
-    }
-    if (formData.router_tool_support !== 'unset') {
-      router.tool_support = formData.router_tool_support
-    }
+  // This form owns capability fields only. Preserve scheduling and retry
+  // settings managed by the AI Router drawer, including explicit empty arrays.
+  const storedRouter = settingsObj.router
+  const router: Record<string, unknown> =
+    storedRouter &&
+    typeof storedRouter === 'object' &&
+    !Array.isArray(storedRouter)
+      ? { ...storedRouter }
+      : {}
+  for (const key of [
+    'enabled',
+    'supports_text',
+    'supports_image',
+    'supports_video',
+    'unknown_fallback',
+    'tool_support',
+  ]) {
+    delete router[key]
+  }
+  if (formData.router_enabled !== 'unset') {
+    router.enabled = formData.router_enabled === 'true'
+  }
+  if (formData.router_supports_text !== 'unset') {
+    router.supports_text = formData.router_supports_text === 'true'
+  }
+  if (formData.router_supports_image !== 'unset') {
+    router.supports_image = formData.router_supports_image === 'true'
+  }
+  if (formData.router_supports_video !== 'unset') {
+    router.supports_video = formData.router_supports_video === 'true'
+  }
+  if (formData.router_unknown_fallback !== 'unset') {
+    router.unknown_fallback = formData.router_unknown_fallback === 'true'
+  }
+  if (formData.router_tool_support !== 'unset') {
+    router.tool_support = formData.router_tool_support
+  }
+  if (Object.keys(router).length > 0) {
     settingsObj.router = router
-  } else if ('router' in settingsObj) {
+  } else {
     delete settingsObj.router
   }
 

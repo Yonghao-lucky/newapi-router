@@ -14,6 +14,7 @@ type TargetPolicyChannelInfo struct {
 	Group             string `json:"group"`
 	Models            string `json:"models"`
 	Priority          int64  `json:"priority"`
+	VideoPriority     *int64 `json:"video_priority"`
 	Weight            int    `json:"weight"`
 	RouterEnabled     bool   `json:"router_enabled"`
 	RouterSet         bool   `json:"router_set"`
@@ -49,6 +50,7 @@ func BuildTargetPolicyChannelInfos(channelIDs []int) (map[int]*TargetPolicyChann
 			Group:             ch.Group,
 			Models:            ch.Models,
 			Priority:          ch.GetPriority(),
+			VideoPriority:     profile.VideoPriority,
 			Weight:            ch.GetWeight(),
 			RouterEnabled:     profile.Enabled,
 			RouterSet:         otherSettings.Router != nil,

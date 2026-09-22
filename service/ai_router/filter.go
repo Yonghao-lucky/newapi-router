@@ -20,6 +20,7 @@ type RouterChannel struct {
 // BuildConstraints converts a RouteDemand into filtering constraints.
 func BuildConstraints(demand RouteDemand, settings ai_router_setting.Settings) ChannelRouteConstraints {
 	return ChannelRouteConstraints{
+		VideoRequest:        demand.Modality == ModalityVideo || demand.OriginalModality == ModalityVideo,
 		RequiredModality:    demand.Modality,
 		RequireTools:        settings.ToolFilterEnabled && demand.HasTools,
 		UnknownFallbackOnly: demand.Modality == ModalityUnknown,
@@ -67,17 +68,41 @@ func SelectChannel(candidates []RouterChannel, constraints ChannelRouteConstrain
 		return nil, fmt.Errorf("no compatible channels for modality %s", constraints.RequiredModality)
 	}
 
-	maxPriority := candidates[0].Priority
-	for _, c := range candidates[1:] {
-		if c.Priority > maxPriority {
-			maxPriority = c.Priority
+	// Build the preferred pool only after capability/policy/exclusion filtering.
+	// Once exhausted, ordinary channels retain their native priority ordering.
+	videoTier := false
+	if constraints.VideoRequest {
+		var preferred []RouterChannel
+		for _, c := range candidates {
+			if c.RoutingProfile.VideoPriority != nil {
+				preferred = append(preferred, c)
+			}
 		}
+		if len(preferred) > 0 {
+			candidates = preferred
+			videoTier = true
+		}
+	}
+	maxPriority := candidates[0].Priority
+	if videoTier {
+		maxPriority = *candidates[0].RoutingProfile.VideoPriority
+	}
+	for _, c := range candidates[1:] {
+		priority := c.Priority
+		if videoTier {
+			priority = *c.RoutingProfile.VideoPriority
+		}
+		maxPriority = max(maxPriority, priority)
 	}
 
 	var sameTier []RouterChannel
 	totalWeight := 0
 	for _, c := range candidates {
-		if c.Priority == maxPriority {
+		priority := c.Priority
+		if videoTier {
+			priority = *c.RoutingProfile.VideoPriority
+		}
+		if priority == maxPriority {
 			sameTier = append(sameTier, c)
 			totalWeight += max(c.Weight, 1)
 		}
@@ -93,12 +118,16 @@ func SelectChannel(candidates []RouterChannel, constraints ChannelRouteConstrain
 		}
 	}
 
+	selectionReason := "capability_match"
+	if videoTier {
+		selectionReason = "video_priority"
+	}
 	return &RouteDecision{
 		ChannelID:       selected.ID,
 		Priority:        selected.Priority,
 		Weight:          selected.Weight,
 		Modality:        constraints.RequiredModality,
-		SelectionReason: "capability_match",
+		SelectionReason: selectionReason,
 		AttemptIndex:    attemptIndex,
 	}, nil
 }
