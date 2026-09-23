@@ -176,6 +176,11 @@ export function GlobalConfigTab() {
             'Exact client model names, such as kimi-k3. Empty disables rewriting. For AI Router Chat Completions only, restore the response model to the requested name in JSON and every SSE event. Other fields and upstream requests stay unchanged.'
           )}
         </p>
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Disabled by default. Empty channel model tags disable restoration. Global settings apply only to channels that explicitly follow them.'
+          )}
+        </p>
       </div>
 
       <div className='grid gap-4 sm:grid-cols-2'>

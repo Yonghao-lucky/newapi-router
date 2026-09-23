@@ -71,6 +71,79 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 beforeEach(() => vi.clearAllMocks())
 
+it('configures channel model restoration even without a Router profile and can explicitly follow global settings', async () => {
+  const user = userEvent.setup()
+  render(
+    <ChannelDrawer
+      open
+      onOpenChange={vi.fn()}
+      channel={{ ...channel, router: { ...channel.router, router_set: false } }}
+    />,
+    { wrapper }
+  )
+  const models = screen.getByRole('combobox', { name: 'Models to restore' })
+  expect(models).toBeEnabled()
+  await user.type(models, 'custom-model')
+  await user.keyboard('{Enter}')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(1, null, {
+      mode: 'channel',
+      models: ['custom-model'],
+    })
+  )
+  await waitFor(() =>
+    expect(
+      screen.getByRole('combobox', { name: 'Restore response model names' })
+    ).toBeEnabled()
+  )
+  await user.click(
+    screen.getByRole('combobox', { name: 'Restore response model names' })
+  )
+  await user.click(
+    screen.getByRole('option', { name: 'Follow global settings' })
+  )
+  expect(
+    screen.queryByRole('combobox', { name: 'Models to restore' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(1, null, {
+      mode: 'global',
+      models: ['custom-model'],
+    })
+  )
+})
+
+it('reads channel model tags back and disables restoration when the final tag is removed', async () => {
+  const user = userEvent.setup()
+  render(
+    <ChannelDrawer
+      open
+      onOpenChange={vi.fn()}
+      channel={{
+        ...channel,
+        response_model_alias: { mode: 'channel', models: ['kimi-k3'] },
+      }}
+    />,
+    { wrapper }
+  )
+  const chip = screen
+    .getAllByText('kimi-k3')
+    .map((element) => element.closest('[data-slot="combobox-chip"]'))
+    .find(Boolean)
+  if (!chip) throw new Error('Expected the response model chip')
+  await user.click(within(chip as HTMLElement).getByRole('button'))
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(
+      1,
+      expect.objectContaining({ max_retry: 2 }),
+      { mode: 'channel', models: [] }
+    )
+  )
+})
+
 it('saves defaults for legacy channels and preserves explicit empty groups', async () => {
   const user = userEvent.setup()
   const view = render(
@@ -85,7 +158,8 @@ it('saves defaults for legacy channels and preserves explicit empty groups', asy
         max_retry: 2,
         retry_status_codes: [429, 500, 503],
         switch_status_codes: [401, 402, 403, 404, 405, 502],
-      })
+      }),
+      { mode: 'channel', models: [] }
     )
   )
   view.unmount()
@@ -111,7 +185,8 @@ it('saves defaults for legacy channels and preserves explicit empty groups', asy
       expect.objectContaining({
         retry_status_codes: [],
         switch_status_codes: [],
-      })
+      }),
+      { mode: 'channel', models: [] }
     )
   )
 })
@@ -129,7 +204,8 @@ it('removes status tags and rejects overlapping groups', async () => {
   await waitFor(() =>
     expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
       1,
-      expect.objectContaining({ retry_status_codes: [500, 503] })
+      expect.objectContaining({ retry_status_codes: [500, 503] }),
+      { mode: 'channel', models: [] }
     )
   )
   view.unmount()
@@ -257,7 +333,8 @@ it.each([
     await waitFor(() =>
       expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
         1,
-        expect.objectContaining({ video_priority: expected, max_retry: 2 })
+        expect.objectContaining({ video_priority: expected, max_retry: 2 }),
+        { mode: 'channel', models: [] }
       )
     )
     expect(api.updateAIRouterChannelScheduling).toHaveBeenCalledWith(1, {

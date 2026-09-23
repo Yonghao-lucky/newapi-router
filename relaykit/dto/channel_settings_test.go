@@ -11,6 +11,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestChannelResponseModelAliasSettings(t *testing.T) {
+	for _, tc := range []struct {
+		input, global, want string
+		invalid             bool
+	}{
+		{`{}`, "kimi-k3", "", false},
+		{`{"response_model_alias":null}`, "kimi-k3", "", false},
+		{`{"response_model_alias":{"mode":"channel","models":[]}}`, "kimi-k3", "", false},
+		{`{"response_model_alias":{"mode":"channel","models":["kimi-k3"]}}`, "", "kimi-k3", false},
+		{`{"response_model_alias":{"mode":"channel","models":["Kimi-K3"]}}`, "kimi-k3", "", false},
+		{`{"response_model_alias":{"mode":"global"}}`, "kimi-k3", "kimi-k3", false},
+		{`{"response_model_alias":{"mode":"global"}}`, "", "", false},
+		{`{"response_model_alias":{"mode":"all"}}`, "", "", true},
+		{`{"response_model_alias":{"mode":"channel","models":[" "]}}`, "", "", true},
+	} {
+		t.Run(tc.input+tc.global, func(t *testing.T) {
+			var settings ChannelOtherSettings
+			require.NoError(t, kitutil.Unmarshal([]byte(tc.input), &settings))
+			if tc.invalid {
+				require.Error(t, settings.ValidateRouter())
+				return
+			}
+			require.NoError(t, settings.ValidateRouter())
+			assert.Equal(t, tc.want, settings.ResponseModelAlias.Resolve(tc.global, "kimi-k3"))
+			encoded, err := kitutil.Marshal(settings)
+			require.NoError(t, err)
+			var restored ChannelOtherSettings
+			require.NoError(t, kitutil.Unmarshal(encoded, &restored))
+			assert.Equal(t, settings, restored)
+			assert.Nil(t, restored.Router, "alias configuration must not create a routing profile")
+		})
+	}
+}
+
 func TestChannelRetryStatusRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		json        string

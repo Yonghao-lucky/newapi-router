@@ -1,5 +1,27 @@
 # Chat Completions 响应模型名统一化
 
+## 2026-09-23 渠道级配置（当前行为）
+
+本节取代下文首版的全局启用语义。开发基线 `7bd1798c5`，分支 `feat/channel-response-model-alias`。本次用户已授权测试后推送并更新生产 13000 应用，保留回退镜像；其他服务、数据库、计费和视频配置不在修改范围。
+
+进入 **AI Router → 渠道配置 → 对应渠道的配置 → 响应模型名还原**：
+
+- **渠道单独配置**：默认选项；“需要还原的模型”标签留空表示关闭。添加 `kimi-k3` 后保存，仅该渠道处理的对应客户模型响应会还原。
+- **跟随全局设置**：必须主动选择并保存，才使用“AI Router → 全局设置 → 响应模型名还原”的模型标签。
+- 所有旧渠道缺少新配置时一律关闭，即使全局已经配置也不自动启用。无需批量写库或删除全局配置。要关闭一个已跟随全局的渠道，切换至渠道单独配置并清空标签。
+- 标签精确匹配客户模型名，区分大小写。客户调用 `kimi-k3`，命中时返回 `kimi-k3`；不是任意名称映射。
+- 配置仅作用于 AI Router 的 Chat Completions，涵盖非流式与流式。只改已有的顶层字符串 `model`，其余字段及上游请求不变。
+
+存储使用既有渠道 `settings` JSON 中的 `response_model_alias: {mode: "channel" | "global", models: []}`，独立于 `router`。设置此功能不会创建 Router profile；旧管理客户端只更新 Router 时保留该设置。没有数据库迁移。
+
+每次实际选中渠道后决定本次尝试的规则；切换到未启用的渠道会清除上次尝试的规则。全局列表在请求开始时取得快照；流式事件沿用已选中渠道的规则，不逐事件查询配置或数据库。原有最终写出替换器保持不变，没有新增整段流缓冲。
+
+本次验证涵盖旧配置默认关闭、渠道开启/关闭/跟随全局、精确匹配、非法配置拒绝、保存回显、Router profile 独立、其他渠道不受影响、切换渠道清除规则、JSON/SSE 其余字节保护，以及既有 Stop/usage/取消/视频路由回归。前端复用既有 SideDrawerSection、Select、MultiSelect 和表单保存流程；新增文案覆盖七种语言。
+
+实际通过：`GOWORK=off go test ./dto`、`GOWORK=off go build ./...`（relaykit），根模块 common/settings/relay/controller/service 回归及相关 race 检查。`TestAIRouterChannelManagementDatabaseMatrix` 在 SQLite 3.50.4、MySQL 8.0.46、PostgreSQL 15.19 均通过，使用下文相同隔离 DSN；没有 schema 修改。前端 AI Router 三文件 18 项测试通过，最终修改后相关设置 10 项再次通过；typecheck、涉及五文件 oxlint（0 warning/error）、生产构建通过；七语言 missingCount 均为 0。测试数据没有使用真实客户或付费上游。
+
+## 首版记录（历史，仅供追溯）
+
 ## 范围与工作边界
 
 - 基线：`8f23cfb55284967104c579cbea2122328c640451`；开发分支：`feat/chat-response-model-alias`。

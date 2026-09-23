@@ -13,11 +13,46 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestChatResponseModelChannelFallbackClearsPreviousAlias(t *testing.T) {
+	input := `{"model":"FW-Kimi-K3","choices":[],"usage":{"total_tokens":7}}`
+	for _, stream := range []bool{false, true} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		for _, attempt := range []struct {
+			name   string
+			config *dto.ChannelResponseModelAlias
+			want   string
+		}{
+			{"legacy despite enabled global", nil, input},
+			{"channel enabled", &dto.ChannelResponseModelAlias{Mode: "channel", Models: []string{"kimi-k3"}}, strings.Replace(input, "FW-Kimi-K3", "kimi-k3", 1)},
+			{"fallback legacy", nil, input},
+			{"fallback follows global", &dto.ChannelResponseModelAlias{Mode: "global"}, strings.Replace(input, "FW-Kimi-K3", "kimi-k3", 1)},
+			{"fallback explicitly disabled", &dto.ChannelResponseModelAlias{Mode: "channel", Models: []string{}}, input},
+			{"fallback other model", &dto.ChannelResponseModelAlias{Mode: "channel", Models: []string{"other-model"}}, input},
+		} {
+			t.Run(strconv.FormatBool(stream)+"/"+attempt.name, func(t *testing.T) {
+				common.SetChatResponseModelAlias(c, attempt.config.Resolve("kimi-k3", "kimi-k3"))
+				w := httptest.NewRecorder()
+				output, _ := gin.CreateTestContext(w)
+				c.Writer = output.Writer
+				if stream {
+					require.NoError(t, helper.StringData(c, input))
+					assert.Equal(t, "data: "+attempt.want+"\n\n", w.Body.String())
+				} else {
+					require.NoError(t, service.IOCopyBytesChecked(c, nil, []byte(input)))
+					assert.Equal(t, attempt.want, w.Body.String())
+				}
+			})
+		}
+	}
+}
 
 func TestChatResponseModelOnlyChangesTopLevelString(t *testing.T) {
 	for _, tc := range []struct{ name, input, want string }{

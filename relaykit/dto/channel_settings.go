@@ -103,6 +103,45 @@ type ChannelOtherSettings struct {
 	// "", "allow", "safe", "strict".
 	ToolLossPolicy string                 `json:"tool_loss_policy,omitempty"`
 	Router         *ChannelRoutingProfile `json:"router,omitempty"`
+	// Independent from Router: configuring response names must not enable or
+	// disable routing/capabilities. Missing configuration is opt-out, even when
+	// the global model list is populated.
+	ResponseModelAlias *ChannelResponseModelAlias `json:"response_model_alias,omitempty"`
+}
+
+type ChannelResponseModelAlias struct {
+	Mode   string   `json:"mode"`
+	Models []string `json:"models"`
+}
+
+func (s *ChannelResponseModelAlias) Resolve(globalAlias, clientModel string) string {
+	if s == nil {
+		return ""
+	}
+	switch s.Mode {
+	case "global":
+		return globalAlias
+	case "channel":
+		if slices.Contains(s.Models, clientModel) {
+			return clientModel
+		}
+	}
+	return ""
+}
+
+func (s *ChannelResponseModelAlias) Validate() error {
+	if s == nil {
+		return nil
+	}
+	if s.Mode != "global" && s.Mode != "channel" {
+		return fmt.Errorf("response_model_alias.mode must be global or channel")
+	}
+	for _, name := range s.Models {
+		if name == "" || strings.TrimSpace(name) != name {
+			return fmt.Errorf("response_model_alias.models must contain non-empty, trimmed model names")
+		}
+	}
+	return nil
 }
 
 type ChannelRoutingProfile struct {
@@ -215,6 +254,9 @@ func (p *ChannelRoutingProfile) Validate() error {
 func (s *ChannelOtherSettings) ValidateRouter() error {
 	if s == nil {
 		return nil
+	}
+	if err := s.ResponseModelAlias.Validate(); err != nil {
+		return err
 	}
 	return s.Router.Validate()
 }

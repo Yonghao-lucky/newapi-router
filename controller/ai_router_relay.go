@@ -31,7 +31,8 @@ func runAIRouterRelay(
 	newAPIError **types.NewAPIError,
 ) {
 	settings := ai_router_setting.GetSettings()
-	common.SetChatResponseModelAlias(c, settings.ResponseModelAlias(c.Request.URL.Path, relayInfo.OriginModelName))
+	globalResponseAlias := settings.ResponseModelAlias(c.Request.URL.Path, relayInfo.OriginModelName)
+	isChatCompletions := c.Request.URL.Path == "/v1/chat/completions"
 
 	// Build the RouteDemand by detecting request capabilities.
 	bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -103,6 +104,12 @@ func runAIRouterRelay(
 		if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 			call.Err = setupErr
 			return setupErr
+		}
+		// Resolve once per selected channel; never let a previous attempt's
+		// alias leak into a channel that opts out. Stream events use this snapshot.
+		if isChatCompletions {
+			alias := channel.GetOtherSettings().ResponseModelAlias.Resolve(globalResponseAlias, relayInfo.OriginModelName)
+			common.SetChatResponseModelAlias(c, alias)
 		}
 		addUsedChannel(c, channel.Id)
 

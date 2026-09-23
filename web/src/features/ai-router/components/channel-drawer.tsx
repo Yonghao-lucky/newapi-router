@@ -102,6 +102,8 @@ const capabilityValue = (
 }
 
 const channelFormSchema = z.object({
+  responseModelAliasMode: z.enum(['global', 'channel']),
+  responseModelAliasModels: z.array(z.string().trim().min(1)),
   retryStatusCodes: z.array(z.number().int().min(400).max(599)),
   switchStatusCodes: z.array(z.number().int().min(400).max(599)),
   routerEnabled: z.enum([ROUTER_UNSET, ROUTER_ON, ROUTER_OFF]),
@@ -143,6 +145,8 @@ const routerEnabledValue = (
 
 const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
   return {
+    responseModelAliasMode: channel.response_model_alias?.mode ?? 'channel',
+    responseModelAliasModels: channel.response_model_alias?.models ?? [],
     routerEnabled: routerEnabledValue(channel),
     maxRetry: channel.router.max_retry ?? 0,
     retryStatusCodes: channel.router.retry_status_codes ?? [429, 500, 503],
@@ -191,7 +195,7 @@ function TriStateSelect(props: {
 }
 
 // ChannelDrawer edits one channel's Router profile and scheduling fields.
-// Only the "router" settings key and group/priority/weight change; models,
+// Only routing, response model restoration and group/priority/weight change; models,
 // keys and every other channel setting stay untouched.
 export function ChannelDrawer(props: {
   open: boolean
@@ -251,7 +255,11 @@ export function ChannelDrawer(props: {
                   : formValues.videoPriority,
               retry_status_codes: formValues.retryStatusCodes,
               switch_status_codes: formValues.switchStatusCodes,
-            }
+            },
+        {
+          mode: formValues.responseModelAliasMode,
+          models: formValues.responseModelAliasModels,
+        }
       )
       await updateAIRouterChannelScheduling(channel.id, {
         group: formValues.group,
@@ -403,6 +411,84 @@ export function ChannelDrawer(props: {
                     )}
                   />
                 </div>
+              </SideDrawerSection>
+
+              <SideDrawerSection>
+                <FormField
+                  control={form.control}
+                  name='responseModelAliasMode'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Restore response model names')}</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        disabled={save.isPending}
+                      >
+                        <FormControl>
+                          <SelectTrigger className='w-full'>
+                            <SelectValue>
+                              {field.value === 'global'
+                                ? t('Follow global settings')
+                                : t('Channel-specific settings')}
+                            </SelectValue>
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value='channel'>
+                              {t('Channel-specific settings')}
+                            </SelectItem>
+                            <SelectItem value='global'>
+                              {t('Follow global settings')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        {t(
+                          'Disabled by default. Empty channel model tags disable restoration. Global settings apply only to channels that explicitly follow them.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {values.responseModelAliasMode === 'channel' && (
+                  <FormField
+                    control={form.control}
+                    name='responseModelAliasModels'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Models to restore')}</FormLabel>
+                        <FormControl>
+                          <MultiSelect
+                            aria-label={t('Models to restore')}
+                            selected={field.value}
+                            onChange={field.onChange}
+                            options={[
+                              ...new Set([
+                                ...(channel?.models ?? '')
+                                  .split(',')
+                                  .map((model) => model.trim())
+                                  .filter(Boolean),
+                                ...field.value,
+                              ]),
+                            ].map((value) => ({ value, label: value }))}
+                            allowCreate
+                            disabled={save.isPending}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Exact client model names, such as kimi-k3. Empty disables rewriting. For AI Router Chat Completions only, restore the response model to the requested name in JSON and every SSE event. Other fields and upstream requests stay unchanged.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
               </SideDrawerSection>
 
               <SideDrawerSection>

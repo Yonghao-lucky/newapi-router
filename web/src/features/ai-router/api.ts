@@ -34,6 +34,7 @@ import type {
   AIRouterTrendPoint,
   AIRouterValidationResult,
   ChannelRoutingProfile,
+  ChannelResponseModelAlias,
   TargetPolicyInput,
 } from './types'
 
@@ -155,12 +156,17 @@ export async function getAIRouterChannels(params: {
 
 export async function updateAIRouterChannelRouter(
   id: number,
-  router: ChannelRoutingProfile | null
+  router: ChannelRoutingProfile | null,
+  responseModelAlias?: ChannelResponseModelAlias
 ): Promise<{ id: number; router: ChannelRoutingProfile | null }> {
   const response = await api.put<{
     success: boolean
     data: { id: number; router: ChannelRoutingProfile | null }
-  }>(`/api/ai-router/channels/${id}/router`, { router }, mutationConfig())
+  }>(
+    `/api/ai-router/channels/${id}/router`,
+    { router, response_model_alias: responseModelAlias },
+    mutationConfig()
+  )
   return requireServerSuccess(response.data).data
 }
 

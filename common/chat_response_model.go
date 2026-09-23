@@ -8,14 +8,19 @@ import (
 const chatResponseModelAliasKey = "chat_response_model_alias"
 
 // This is a response-only request snapshot. It never changes provider, routing
-// or billing model identities, and is not refreshed between channel attempts.
+// or billing model identities. Each channel attempt replaces this value before
+// sending its upstream request, including clearing the previous attempt's rule.
 type chatResponseModelAlias struct {
 	name   string
 	quoted string
 }
 
 func SetChatResponseModelAlias(c *gin.Context, model string) {
-	if c == nil || model == "" {
+	if c == nil {
+		return
+	}
+	if model == "" {
+		c.Set(chatResponseModelAliasKey, nil)
 		return
 	}
 	quoted, err := Marshal(model)

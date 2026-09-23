@@ -526,15 +526,16 @@ func ValidateAIRouterTargetPolicy(c *gin.Context) {
 
 // aiRouterChannelView is the list-row shape for the Router channel tab.
 type aiRouterChannelView struct {
-	Id             int                       `json:"id"`
-	Name           string                    `json:"name"`
-	Status         int                       `json:"status"`
-	Group          string                    `json:"group"`
-	Models         string                    `json:"models"`
-	Priority       int64                     `json:"priority"`
-	Weight         int                       `json:"weight"`
-	RoutingProfile aiRouterChannelRouterView `json:"router"`
-	ReferencedBy   []aiRouterPolicyRef       `json:"referenced_by"`
+	Id                 int                            `json:"id"`
+	Name               string                         `json:"name"`
+	Status             int                            `json:"status"`
+	Group              string                         `json:"group"`
+	Models             string                         `json:"models"`
+	Priority           int64                          `json:"priority"`
+	Weight             int                            `json:"weight"`
+	RoutingProfile     aiRouterChannelRouterView      `json:"router"`
+	ResponseModelAlias *dto.ChannelResponseModelAlias `json:"response_model_alias"`
+	ReferencedBy       []aiRouterPolicyRef            `json:"referenced_by"`
 }
 
 type aiRouterChannelRouterView struct {
@@ -610,13 +611,14 @@ func GetAIRouterChannels(c *gin.Context) {
 		otherSettings := ch.GetOtherSettings()
 		profile := otherSettings.RoutingProfile()
 		items = append(items, aiRouterChannelView{
-			Id:       ch.Id,
-			Name:     ch.Name,
-			Status:   ch.Status,
-			Group:    ch.Group,
-			Models:   ch.Models,
-			Priority: ch.GetPriority(),
-			Weight:   ch.GetWeight(),
+			Id:                 ch.Id,
+			Name:               ch.Name,
+			Status:             ch.Status,
+			Group:              ch.Group,
+			Models:             ch.Models,
+			Priority:           ch.GetPriority(),
+			Weight:             ch.GetWeight(),
+			ResponseModelAlias: otherSettings.ResponseModelAlias,
 			RoutingProfile: aiRouterChannelRouterView{
 				VideoPriority:     profile.VideoPriority,
 				Enabled:           profile.Enabled,
@@ -704,7 +706,8 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Router *dto.ChannelRoutingProfile `json:"router"`
+		Router             *dto.ChannelRoutingProfile     `json:"router"`
+		ResponseModelAlias *dto.ChannelResponseModelAlias `json:"response_model_alias"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
 		common.ApiErrorMsg(c, "无效的参数")
@@ -719,6 +722,11 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 
 	otherSettings := channel.GetOtherSettings()
 	otherSettings.Router = req.Router
+	// Legacy clients that only edit routing must preserve this independent
+	// setting. Explicit channel mode with an empty list disables restoration.
+	if req.ResponseModelAlias != nil {
+		otherSettings.ResponseModelAlias = req.ResponseModelAlias
+	}
 	if err := otherSettings.ValidateRouter(); err != nil {
 		common.ApiErrorMsg(c, err.Error())
 		return
@@ -734,7 +742,7 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
-	common.ApiSuccess(c, gin.H{"id": channel.Id, "router": req.Router})
+	common.ApiSuccess(c, gin.H{"id": channel.Id, "router": req.Router, "response_model_alias": otherSettings.ResponseModelAlias})
 }
 
 // UpdateAIRouterChannelScheduling updates the channel's existing group,

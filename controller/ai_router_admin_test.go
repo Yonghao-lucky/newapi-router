@@ -150,6 +150,62 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 			router.GET("/channels", GetAIRouterChannels)
 			router.PUT("/channels/:id/router", UpdateAIRouterChannelRouter)
 			router.GET("/policies/:id", GetAIRouterTargetPolicy)
+			t.Run("channel_response_model_alias", func(t *testing.T) {
+				path := fmt.Sprintf("/channels/%d/router", channels[0].Id)
+				list := "/channels?name=channel-admin-fixture-A"
+				var page struct {
+					Items []aiRouterChannelView `json:"items"`
+				}
+				require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, list, ""), &page))
+				require.Len(t, page.Items, 1)
+				assert.Nil(t, page.Items[0].ResponseModelAlias, "legacy channels default off")
+				original := channels[0].GetOtherSettings()
+				for _, config := range []*dto.ChannelResponseModelAlias{
+					{Mode: "channel", Models: []string{"kimi-k3"}},
+					{Mode: "global", Models: []string{}},
+					{Mode: "channel", Models: []string{}},
+				} {
+					body, err := common.Marshal(map[string]any{"router": original.Router, "response_model_alias": config})
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, list, ""), &page))
+					assert.Equal(t, config, page.Items[0].ResponseModelAlias)
+					stored, err := model.GetChannelById(channels[0].Id, true)
+					require.NoError(t, err)
+					assert.Equal(t, config, stored.GetOtherSettings().ResponseModelAlias)
+					assert.Equal(t, original.Router, stored.GetOtherSettings().Router)
+					assert.True(t, stored.GetOtherSettings().AllowServiceTier)
+					assert.Equal(t, channels[0].Priority, stored.Priority)
+					assert.Equal(t, channels[0].Key, stored.Key)
+					// Old clients that only update the Router profile preserve alias settings.
+					body, err = common.Marshal(map[string]any{"router": original.Router})
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					stored, err = model.GetChannelById(channels[0].Id, true)
+					require.NoError(t, err)
+					assert.Equal(t, config, stored.GetOtherSettings().ResponseModelAlias)
+				}
+				aiRouterAdminRequest(t, router, http.MethodPut, path, `{"router":null,"response_model_alias":{"mode":"channel","models":["kimi-k3"]}}`)
+				stored, err := model.GetChannelById(channels[0].Id, true)
+				require.NoError(t, err)
+				assert.Nil(t, stored.GetOtherSettings().Router)
+				assert.Equal(t, "kimi-k3", stored.GetOtherSettings().ResponseModelAlias.Resolve("", "kimi-k3"))
+				before := stored.OtherSettings
+				w := httptest.NewRecorder()
+				router.ServeHTTP(w, httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{"router":null,"response_model_alias":{"mode":"invalid"}}`)))
+				var result struct {
+					Success bool `json:"success"`
+				}
+				require.NoError(t, common.Unmarshal(w.Body.Bytes(), &result))
+				assert.False(t, result.Success)
+				stored, err = model.GetChannelById(channels[0].Id, true)
+				require.NoError(t, err)
+				assert.Equal(t, before, stored.OtherSettings)
+				other, err := model.GetChannelById(channels[1].Id, true)
+				require.NoError(t, err)
+				assert.Equal(t, channels[1].OtherSettings, other.OtherSettings)
+				require.NoError(t, tx.Model(&channels[0]).Update("settings", channels[0].OtherSettings).Error)
+			})
 
 			for _, priority := range []string{"100", "0", "-9", "null"} {
 				t.Run("roundtrip_"+priority, func(t *testing.T) {

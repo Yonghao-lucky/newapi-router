@@ -49,6 +49,11 @@ export interface ChannelRoutingProfile {
   switch_status_codes?: number[] | null
 }
 
+export interface ChannelResponseModelAlias {
+  mode: 'global' | 'channel'
+  models: string[]
+}
+
 export interface TargetPolicyChannelInfo {
   video_priority?: number | null
   id: number
@@ -122,6 +127,7 @@ export interface AIRouterPolicyRef {
 }
 
 export interface AIRouterChannel {
+  response_model_alias?: ChannelResponseModelAlias | null
   id: number
   name: string
   status: number
