@@ -78,6 +78,8 @@ type Error struct {
 	// Callers classify on Code and Message, and must never emit Error() back to
 	// a client.
 	cause error
+	// Only constructors with fixed templates may set this client-facing detail.
+	publicMessage string
 }
 
 func (e *Error) Error() string {
@@ -330,9 +332,48 @@ func HTTPStatusForError(err error) int {
 	}
 }
 
-// PublicMessageForError deliberately ignores diagnostic text. Media tools and
-// recovered panics can contain customer data or local paths even when wrapped.
+// PublicMessageForError only exposes fixed allowlisted messages or details
+// assembled by safe constructors. Arbitrary diagnostics are never reflected.
 func PublicMessageForError(err error) string {
+	var detail *Error
+	if errors.As(err, &detail) && detail.publicMessage != "" {
+		return detail.publicMessage
+	}
+	switch message := MessageOf(err); message {
+	case "video MIME type is not enabled", "video codec is not enabled",
+		"video media is invalid or damaged",
+		"video container format is not enabled", "downloaded video container is not enabled",
+		"video MIME type contradicts its container", "decoded video has no recognizable container magic",
+		"media has no video stream", "only one video and at most one audio stream are supported",
+		"video duration could not be determined", "video dimensions could not be determined",
+		"video frame rate could not be determined safely", "video rotation must be a right angle",
+		"remote video URLs are disabled", "remote video size is unknown and unknown sizes are disabled",
+		"remote video URLs must use port 443", "remote video hostname is not in the allowed list",
+		"remote video hostname resolves to a non-public address", "remote video URL hostname is not allowed",
+		"remote video requires an HTTPS URL without credentials or a fragment",
+		"remote video exceeded the redirect limit", "remote video redirect contains a fragment",
+		"remote video hostname could not be resolved", "remote video server could not be reached",
+		"remote video HTTP request failed", "remote video content encoding is not supported",
+		"remote video range response is invalid", "remote video range size is invalid",
+		"remote video range response has an invalid length", "remote video exceeds the configured byte limit",
+		"remote video size changed between probe and download", "remote video download ended before completion",
+		"remote video download length does not match the expected size":
+		return message
+	}
+	switch CodeOf(err) {
+	case CodeInvalidBase64:
+		return "video Base64 payload is invalid"
+	case CodeTooLong:
+		return "video duration exceeds the configured limit"
+	case CodeResolutionExceeded:
+		return "video dimensions or pixel count exceed the configured limit"
+	case CodeImageLimitExceeded:
+		return "video frames and existing images exceed the configured image limit"
+	case CodeOutputTooLarge:
+		return "video frames or rewritten request exceed the configured output byte limit"
+	case CodeTooLarge:
+		return "video input size or analyzed frame count exceeds the configured limit"
+	}
 	switch HTTPStatusForError(err) {
 	case http.StatusBadRequest:
 		return "video input is invalid or exceeds the configured media constraints"

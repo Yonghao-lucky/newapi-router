@@ -191,7 +191,7 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	videoPath := ws.path("video.bin")
 
 	// Sanity check: sniff container magic bytes
-	head, err := readHead(videoPath, 12)
+	head, err := readHead(videoPath, 4096)
 	if err != nil {
 		return result, wrapError(CodeDecodeFailed, "failed to read decoded video", err)
 	}
@@ -199,13 +199,15 @@ func processVideoStage(ctx context.Context, input ProcessVideoInput, opts Option
 	if sniffed == "" {
 		return result, newError(CodeUnsupportedFormat, "decoded video has no recognizable container magic")
 	}
-	if ((dataURL.mime == "video/mp4" || dataURL.mime == "video/quicktime") && sniffed != "mov") || (dataURL.mime == "video/webm" && sniffed != "matroska") {
+	// Preserve existing explicitly configured custom Data URL MIME aliases;
+	// known MIME families must match, and remote files require a known family.
+	if expected := videoContainerForMIME(dataURL.mime); !remote && expected != "" && expected != sniffed {
 		return result, newError(CodeUnsupportedFormat, "video MIME type contradicts its container")
 	}
 	if remote && len(opts.AllowedMIMETypes) > 0 {
 		allowed := false
 		for _, mime := range opts.AllowedMIMETypes {
-			if (sniffed == "mov" && (mime == "video/mp4" || mime == "video/quicktime")) || (sniffed == "matroska" && mime == "video/webm") {
+			if sniffed == videoContainerForMIME(mime) {
 				allowed = true
 			}
 		}

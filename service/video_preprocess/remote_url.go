@@ -119,17 +119,17 @@ func (d remoteVideoDownloader) download(ctx context.Context, rawURL string, dst 
 		return result, requestErr
 	}
 	response.Body.Close()
-	if err = validateRemoteVideoEncoding(response); err != nil {
-		return result, err
-	}
 	expected := int64(-1)
 	switch {
 	case response.StatusCode >= 200 && response.StatusCode < 300:
+		if err = validateRemoteVideoEncoding(response); err != nil {
+			return result, err
+		}
 		expected = response.ContentLength
 	case response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusNotImplemented || response.StatusCode == http.StatusForbidden:
 		// Some signed object-store GET URLs do not authorize HEAD.
 	default:
-		return result, newError(CodeDecodeFailed, "remote video size probe was rejected")
+		return result, remoteVideoStatusError("HEAD", response.StatusCode)
 	}
 	if expected > maxBytes {
 		return result, newError(CodeTooLarge, "remote video exceeds the configured byte limit")
@@ -142,7 +142,10 @@ func (d remoteVideoDownloader) download(ctx context.Context, rawURL string, dst 
 		if requestErr != nil {
 			return result, requestErr
 		}
-		if err = validateRemoteVideoEncoding(response); err != nil {
+		if response.StatusCode == http.StatusOK || response.StatusCode == http.StatusPartialContent {
+			err = validateRemoteVideoEncoding(response)
+		}
+		if err != nil {
 			response.Body.Close()
 			return result, err
 		}
@@ -166,14 +169,25 @@ func (d remoteVideoDownloader) download(ctx context.Context, rawURL string, dst 
 			if err != nil {
 				return result, err
 			}
-		case http.StatusMethodNotAllowed, http.StatusNotImplemented, http.StatusRequestedRangeNotSatisfiable:
+		case http.StatusRequestedRangeNotSatisfiable:
 			response.Body.Close()
-			// A server may support GET without Range. Unknown-size policy and
-			// the bounded full download still apply.
+			expected = -1
+			if value := response.Header.Get("Content-Range"); value != "" {
+				total, valid := strings.CutPrefix(value, "bytes */")
+				size, parseErr := strconv.ParseInt(total, 10, 64)
+				if !valid || parseErr != nil || size < 0 || strings.Trim(total, "0123456789") != "" {
+					return result, newError(CodeDecodeFailed, "remote video range response is invalid")
+				}
+				expected = size
+			}
+		case http.StatusBadRequest, http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+			response.Body.Close()
+			// Some signed GET URLs reject Range. Only the existing unknown-size
+			// opt-in permits one ordinary GET, still subject to all safety caps.
 			expected = -1
 		default:
 			response.Body.Close()
-			return result, newError(CodeDecodeFailed, "remote video range probe was rejected")
+			return result, remoteVideoStatusError("Range", response.StatusCode)
 		}
 	}
 	if download != nil {
@@ -194,7 +208,7 @@ func (d remoteVideoDownloader) download(ctx context.Context, rawURL string, dst 
 		defer download.Body.Close()
 	}
 	if download.StatusCode != http.StatusOK {
-		return result, newError(CodeDecodeFailed, "remote video download was rejected")
+		return result, remoteVideoStatusError("GET", download.StatusCode)
 	}
 	if err = validateRemoteVideoEncoding(download); err != nil {
 		return result, err
@@ -400,6 +414,18 @@ func validateRemoteVideoEncoding(response *http.Response) error {
 		return newError(CodeDecodeFailed, "remote video content encoding is not supported")
 	}
 	return nil
+}
+
+// These are source-file HTTP failures, not model-provider statuses. Keep the
+// existing preprocessing code/status and never include the source URL/body.
+func remoteVideoStatusError(stage string, status int) *Error {
+	if stage != "HEAD" && stage != "Range" && stage != "GET" {
+		stage = "HTTP"
+	}
+	message := "remote video source rejected " + stage + " request (HTTP " + strconv.Itoa(status) + ")"
+	err := newError(CodeDecodeFailed, message)
+	err.publicMessage = message
+	return err
 }
 
 func remoteVideoRangeSize(value string) (int64, error) {

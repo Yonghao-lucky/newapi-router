@@ -41,7 +41,13 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 
-import { booleanFields, numericFields, settingsGroups } from './constants'
+import {
+  booleanFields,
+  numericFields,
+  settingsGroups,
+  videoCodecOptions,
+  videoFormatOptions,
+} from './constants'
 import type { VideoSettings } from './types'
 
 const listFields = [
@@ -54,13 +60,13 @@ const listFields = [
   {
     key: 'allowed_mime_types',
     labelKey: 'Allowed video formats',
-    options: ['video/mp4', 'video/webm', 'video/quicktime'],
+    options: videoFormatOptions,
     allowCreate: false,
   },
   {
     key: 'allowed_codecs',
     labelKey: 'Allowed video codecs',
-    options: ['h264', 'hevc', 'vp9', 'av1'],
+    options: videoCodecOptions,
     allowCreate: false,
   },
 ] as const

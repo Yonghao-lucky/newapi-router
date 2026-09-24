@@ -16,6 +16,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+// Candidates only: adding a choice never enables it in saved settings.
+export const videoCodecOptions = [
+  'h264',
+  'hevc',
+  'vp9',
+  'av1',
+  'mpeg4',
+  'vp8',
+  'mjpeg',
+  'mpeg2video',
+  'h263',
+  'flv1',
+  'prores',
+  'ffv1',
+] as const
+
+export const videoFormatOptions = [
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/x-msvideo',
+  'video/avi',
+  'video/x-matroska',
+  'video/x-flv',
+] as const
+
 export const numericFields = [
   {
     key: 'remote_url_download_timeout_seconds',

@@ -334,10 +334,18 @@ func TestSniffContainer(t *testing.T) {
 			want:  "mov",
 		},
 		{
-			name:  "webm matroska",
-			magic: []byte{0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0},
+			name:  "matroska DocType",
+			magic: append([]byte{0x1a, 0x45, 0xdf, 0xa3, 0x8b, 0x42, 0x82, 0x88}, []byte("matroska")...),
 			want:  "matroska",
 		},
+		{
+			name:  "webm DocType",
+			magic: append([]byte{0x1a, 0x45, 0xdf, 0xa3, 0x87, 0x42, 0x82, 0x84}, []byte("webm")...),
+			want:  "webm",
+		},
+		{name: "truncated EBML", magic: []byte{0x1a, 0x45, 0xdf, 0xa3, 0xff}},
+		{name: "invalid EBML length", magic: []byte{0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0}},
+		{name: "duplicate DocType", magic: append([]byte{0x1a, 0x45, 0xdf, 0xa3, 0x92, 0x42, 0x82, 0x84}, []byte("webm\x42\x82\x88matroska")...)},
 		{
 			name:  "unknown format",
 			magic: []byte{0xff, 0xff, 0xff, 0xff},

@@ -82,6 +82,7 @@ func TestRemoteVideoSizeProbesAndBoundedDownload(t *testing.T) {
 		{name: "head oversize", headLength: "5", wantCode: CodeTooLarge, wantMethods: []string{"HEAD"}},
 		{name: "range size", headStatus: 405, rangeSize: "bytes 0-0/3", body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
 		{name: "signed GET denies HEAD", headStatus: 403, rangeSize: "bytes 0-0/3", body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
+		{name: "encoded HEAD denial is not video encoding", headStatus: 403, headEncoded: true, encoding: "gzip", rangeSize: "bytes 0-0/5", wantCode: CodeTooLarge, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
 		{name: "range oversize", rangeSize: "bytes 0-0/5", wantCode: CodeTooLarge, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
 		{name: "ignored range reuses body", rangeIgnored: true, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0"}},
 		{name: "unknown chunked", rangeIgnored: true, chunked: true, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0"}},
@@ -90,6 +91,17 @@ func TestRemoteVideoSizeProbesAndBoundedDownload(t *testing.T) {
 		{name: "invalid range", rangeSize: "bytes 0-1/3", wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
 		{name: "unknown range total", rangeSize: "bytes 0-0/*", body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
 		{name: "range unsupported", rangeStatus: 405, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
+		{name: "range forbidden permits bounded GET", headStatus: 403, rangeStatus: 403, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
+		{name: "range bad request permits bounded GET", rangeStatus: 400, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
+		{name: "range forbidden unknown disabled", rangeStatus: 403, unknownRejected: true, wantCode: CodeInvalidDataURL, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
+		{name: "range fallback GET rejected", rangeStatus: 403, getStatus: 403, wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
+		{name: "range fallback hard cap", rangeStatus: 400, chunked: true, body: "abcde", wantCode: CodeTooLarge, wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
+		{name: "range unauthorized does not fallback", rangeStatus: 401, wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
+		{name: "range missing does not fallback", rangeStatus: 404, wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
+		{name: "range throttled does not fallback", rangeStatus: 429, wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
+		{name: "range unavailable does not fallback", rangeStatus: 503, wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
+		{name: "unsatisfied oversize", rangeStatus: 416, rangeSize: "bytes */5", wantCode: CodeTooLarge, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
+		{name: "unsatisfied known size", rangeStatus: 416, rangeSize: "bytes */3", unknownRejected: true, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
 		{name: "range unsupported unknown denied", rangeStatus: 501, unknownRejected: true, wantCode: CodeInvalidDataURL, wantMethods: []string{"HEAD", "GET bytes=0-0"}},
 		{name: "range not satisfiable", rangeStatus: 416, body: "abc", wantMethods: []string{"HEAD", "GET bytes=0-0", "GET"}},
 		{name: "changed length", headLength: "3", getLength: "4", body: "abcd", wantCode: CodeDecodeFailed, wantMethods: []string{"HEAD", "GET"}},
@@ -165,6 +177,7 @@ func TestRemoteVideoSizeProbesAndBoundedDownload(t *testing.T) {
 				require.Error(t, err)
 				assert.Equal(t, tc.wantCode, CodeOf(err))
 				assert.NotContains(t, err.Error(), "signature")
+				assert.NotContains(t, PublicMessageForError(err), "signature")
 				assert.NotEmpty(t, result.FailureStage)
 			}
 			assert.LessOrEqual(t, stored.Len(), 4)
@@ -311,6 +324,22 @@ func TestRemoteVideoRedirectAndDNSValidation(t *testing.T) {
 }
 
 func TestRemoteVideoCancellationAndTLS(t *testing.T) {
+	t.Run("range fallback retains public DNS policy", func(t *testing.T) {
+		var requests, resolutions atomic.Int32
+		d := newRemoteVideoTLSFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		d.resolver = remoteVideoResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if resolutions.Add(1) == 3 {
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			}
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		})
+		_, err := d.download(context.Background(), "https://video.example.test/a", io.Discard, 4, RemoteURLConfig{Enabled: true, AllowUnknownSize: true, DownloadTimeout: 5 * time.Second})
+		assert.Equal(t, CodeInvalidDataURL, CodeOf(err))
+		assert.EqualValues(t, 2, requests.Load(), "fallback must not reach the private address")
+	})
 	t.Run("one deadline includes DNS and every HTTP stage", func(t *testing.T) {
 		var mu sync.Mutex
 		var deadlines []time.Time

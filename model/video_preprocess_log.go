@@ -107,7 +107,7 @@ func (f VideoPreprocessLogFilter) Validate() error {
 	if f.Status != "" && !slices.Contains([]string{"succeeded", "failed", "timed_out", "canceled", "rejected"}, f.Status) {
 		return errors.New("invalid status filter")
 	}
-	if f.Codec != "" && !slices.Contains([]string{"h264", "hevc", "vp9", "av1", "mixed"}, f.Codec) {
+	if f.Codec != "" && !slices.Contains([]string{"h264", "hevc", "vp9", "av1", "mpeg4", "vp8", "mjpeg", "mpeg2video", "h263", "flv1", "prores", "ffv1", "mixed"}, f.Codec) {
 		return errors.New("invalid codec filter")
 	}
 	if len(f.Model) > 255 || len(f.RequestID) > 64 || len(f.ErrorCode) > 64 {

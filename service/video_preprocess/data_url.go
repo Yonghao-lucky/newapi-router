@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"math/bits"
 	"os"
 	"strings"
 )
@@ -207,10 +208,76 @@ func sniffContainer(head []byte) string {
 	case len(head) >= 12 && string(head[4:8]) == "ftyp":
 		return "mov"
 	case len(head) >= 4 && string(head[0:4]) == "\x1a\x45\xdf\xa3":
-		return "matroska"
+		_, header, _, ok := readEBMLElement(head)
+		if !ok {
+			return ""
+		}
+		var docType string
+		for len(header) > 0 {
+			id, value, rest, valid := readEBMLElement(header)
+			if !valid {
+				return ""
+			}
+			if id == 0x4282 { // EBML DocType, not the shared demuxer name.
+				if docType != "" || (string(value) != "webm" && string(value) != "matroska") {
+					return ""
+				}
+				docType = string(value)
+			}
+			header = rest
+		}
+		return docType
 	case len(head) >= 12 && string(head[0:4]) == "RIFF" && string(head[8:12]) == "AVI ":
 		return "avi"
 	case len(head) >= 4 && string(head[0:4]) == "FLV\x01":
+		return "flv"
+	default:
+		return ""
+	}
+}
+
+// readEBMLElement only accepts fully contained, known-size elements. The caller
+// supplies a bounded header, so neither sizes nor allocations trust the file.
+func readEBMLElement(data []byte) (uint64, []byte, []byte, bool) {
+	if len(data) == 0 || data[0] == 0 {
+		return 0, nil, nil, false
+	}
+	idBytes := 9 - bits.Len8(data[0])
+	if idBytes > 4 || len(data) <= idBytes || data[idBytes] == 0 {
+		return 0, nil, nil, false
+	}
+	var id uint64
+	for _, b := range data[:idBytes] {
+		id = id<<8 | uint64(b)
+	}
+	sizeBytes := 9 - bits.Len8(data[idBytes])
+	if len(data) < idBytes+sizeBytes {
+		return 0, nil, nil, false
+	}
+	size := uint64(data[idBytes] & (0xff >> sizeBytes))
+	for _, b := range data[idBytes+1 : idBytes+sizeBytes] {
+		size = size<<8 | uint64(b)
+	}
+	data = data[idBytes+sizeBytes:]
+	if size == uint64(1)<<(7*sizeBytes)-1 || size > uint64(len(data)) {
+		return 0, nil, nil, false
+	}
+	return id, data[:size], data[size:], true
+}
+
+// MIME/container matching is shared by Data URLs and downloaded files. MP4
+// and MOV retain their existing family behavior; MKV is not WebM.
+func videoContainerForMIME(mime string) string {
+	switch strings.ToLower(mime) {
+	case "video/mp4", "video/quicktime":
+		return "mov"
+	case "video/webm":
+		return "webm"
+	case "video/x-matroska":
+		return "matroska"
+	case "video/x-msvideo", "video/avi":
+		return "avi"
+	case "video/x-flv":
 		return "flv"
 	default:
 		return ""

@@ -87,6 +87,45 @@ beforeEach(() => {
 })
 
 describe('video settings workflow', () => {
+  it('saves new media choices only when selected and preserves all other settings', async () => {
+    const user = userEvent.setup()
+    renderSettings()
+    const formats = await screen.findByRole('combobox', {
+      name: 'Allowed video formats',
+    })
+    await user.click(formats)
+    await user.type(formats, 'video/x-matroska')
+    const mkv = await screen.findByRole('option', { name: 'video/x-matroska' })
+    expect(mkv).toHaveAttribute('aria-selected', 'false')
+    await user.click(mkv)
+    const codecs = screen.getByRole('combobox', {
+      name: 'Allowed video codecs',
+    })
+    await user.click(codecs)
+    await user.type(codecs, 'mpeg4')
+    const mpeg4 = await screen.findByRole('option', {
+      name: 'mpeg4',
+    })
+    expect(mpeg4).toHaveAttribute('aria-selected', 'false')
+    await user.click(mpeg4)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith('/api/ai-router/video/settings', {
+        expected_version: videoDocument.version,
+        settings: {
+          ...videoDocument.settings,
+          allowed_mime_types: [
+            ...videoDocument.settings.allowed_mime_types,
+            'video/x-matroska',
+          ],
+          allowed_codecs: [...videoDocument.settings.allowed_codecs, 'mpeg4'],
+        },
+      })
+    )
+  })
+
   it('saves URL downloads with optional allowlist, batch domains and versioned settings, then reloads them', async () => {
     const user = userEvent.setup()
     renderSettings()

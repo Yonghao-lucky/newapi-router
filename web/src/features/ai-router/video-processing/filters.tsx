@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/select'
 import { CompactDateTimeRangePicker } from '@/features/usage-logs/components/compact-date-time-range-picker'
 
-import { statusLabels } from './constants'
+import { statusLabels, videoCodecOptions } from './constants'
 import { initialVideoFilters } from './lib/filters'
 import type { VideoFilters } from './types'
 
@@ -146,7 +146,7 @@ export function VideoFilterBar(props: {
           <Select
             items={[
               { value: '', label: t('All codecs') },
-              ...['h264', 'hevc', 'vp9', 'av1', 'mixed'].map((value) => ({
+              ...[...videoCodecOptions, 'mixed'].map((value) => ({
                 value,
                 label: value === 'mixed' ? t('Mixed') : value,
               })),
@@ -165,7 +165,7 @@ export function VideoFilterBar(props: {
             <SelectContent>
               <SelectGroup>
                 <SelectItem value=''>{t('All codecs')}</SelectItem>
-                {['h264', 'hevc', 'vp9', 'av1', 'mixed'].map((codec) => (
+                {[...videoCodecOptions, 'mixed'].map((codec) => (
                   <SelectItem key={codec} value={codec}>
                     {codec === 'mixed' ? t('Mixed') : codec}
                   </SelectItem>

@@ -23,6 +23,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
+import { VideoFilterBar } from '../filters'
 import { VideoLogsTable } from '../logs-table'
 import type { VideoLog } from '../types'
 
@@ -69,6 +70,24 @@ function renderLogs() {
 }
 
 describe('video processing logs', () => {
+  it('applies a newly supported codec while retaining the current filters', async () => {
+    const user = userEvent.setup()
+    const onApply = vi.fn()
+    const filters = {
+      start_time: 100,
+      end_time: 200,
+      model: 'kimi-k3',
+      user_id: 8,
+    }
+    render(
+      <VideoFilterBar filters={filters} onApply={onApply} onRefresh={vi.fn()} />
+    )
+    await user.click(screen.getByRole('combobox', { name: 'Codec' }))
+    await user.click(await screen.findByRole('option', { name: 'mpeg4' }))
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    expect(onApply).toHaveBeenCalledWith({ ...filters, codec: 'mpeg4' })
+  })
+
   it('shows a useful empty state when no completed requests match the range', async () => {
     vi.spyOn(api, 'get').mockResolvedValue({
       data: {

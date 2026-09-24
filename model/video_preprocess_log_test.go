@@ -124,6 +124,17 @@ func TestVideoPreprocessDatabase(t *testing.T) {
 			require.NoError(t, err)
 			require.EqualValues(t, 1, total)
 			assert.Equal(t, rows[0].Id, page[0].Id)
+			for _, codec := range []string{"mpeg4", "vp8", "mjpeg", "mpeg2video", "h263", "flv1", "prores", "ffv1"} {
+				filter.Codec = codec
+				require.NoError(t, filter.Validate())
+				row := VideoPreprocessLog{RequestId: "video-matrix-" + codec, Codec: codec, Codecs: "," + codec + ",", Status: "succeeded", CreatedAt: now}
+				require.NoError(t, InsertVideoPreprocessLog(context.Background(), &row))
+				matching, count, queryErr := GetVideoPreprocessLogs(context.Background(), filter, 1, 20)
+				require.NoError(t, queryErr)
+				require.EqualValues(t, 1, count)
+				assert.Equal(t, row.Id, matching[0].Id)
+				require.NoError(t, DB.Delete(&row).Error)
+			}
 			filter.Codec = ""
 			filter.UserID = 71
 			_, total, err = GetVideoPreprocessLogs(context.Background(), filter, 1, 20)

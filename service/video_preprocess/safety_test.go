@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -60,6 +61,27 @@ func TestBase64ExactBoundsAndCancellation(t *testing.T) {
 		_, _, err := parseVideoDataURL(url, []string{"video/mp4"})
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), "SECRET")
+	}
+}
+
+func TestVideoPublicErrorsKeepCodesAndDoNotExposeDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		err     error
+		status  int
+		message string
+	}{
+		{newError(CodeUnsupportedFormat, "video codec is not enabled"), 400, "video codec is not enabled"},
+		{newError(CodeUnsupportedFormat, "video MIME type contradicts its container"), 400, "video MIME type contradicts its container"},
+		{newError(CodeInvalidDataURL, "remote video URLs are disabled"), 400, "remote video URLs are disabled"},
+		{newError(CodeInvalidDataURL, "remote video size is unknown and unknown sizes are disabled"), 400, "remote video size is unknown and unknown sizes are disabled"},
+		{remoteVideoStatusError("Range", 403), 503, "remote video source rejected Range request (HTTP 403)"},
+		{newError(CodeOutputTooLarge, "SECRET"), 413, "video frames or rewritten request exceed the configured output byte limit"},
+		{wrapError(CodeProbeFailed, "stderr /tmp/SECRET", fmt.Errorf("https://private.test/?signature=SECRET")), 503, "video preprocessing is temporarily unavailable"},
+	} {
+		wrapped := &StageError{Err: tc.err}
+		assert.Equal(t, tc.status, HTTPStatusForError(wrapped))
+		assert.Equal(t, tc.message, PublicMessageForError(wrapped))
+		assert.NotContains(t, PublicMessageForError(wrapped), "SECRET")
 	}
 }
 
@@ -207,6 +229,18 @@ func TestMediaCodecAndConstraintMatrix(t *testing.T) {
 		{"hevc", "hevc", "video/mp4", "testsrc2=s=160x120:r=4:d=1", "mp4", []string{"-c:v", "libx265", "-x265-params", "pools=1:frame-threads=1:log-level=error"}},
 		{"vp9", "vp9", "video/webm", "testsrc2=s=160x120:r=4:d=1", "webm", []string{"-c:v", "libvpx-vp9", "-deadline", "realtime"}},
 		{"av1", "av1", "video/webm", "testsrc2=s=160x120:r=4:d=1", "webm", []string{"-c:v", "libaom-av1", "-cpu-used", "8"}},
+		{"mpeg4_mp4", "mpeg4", "video/mp4", "testsrc2=s=160x120:r=4:d=1", "mp4", []string{"-c:v", "mpeg4"}},
+		{"existing_custom_mime", "h264", "video/custom", "testsrc2=s=160x120:r=4:d=1", "mp4", []string{"-c:v", "libx264"}},
+		{"mpeg4_avi", "mpeg4", "video/x-msvideo", "testsrc2=s=160x120:r=4:d=1", "avi", []string{"-c:v", "mpeg4"}},
+		{"avi_mime_alias", "mpeg4", "video/avi", "testsrc2=s=160x120:r=4:d=1", "avi", []string{"-c:v", "mpeg4"}},
+		{"vp9_mkv", "vp9", "video/x-matroska", "testsrc2=s=160x120:r=4:d=1", "mkv", []string{"-c:v", "libvpx-vp9", "-deadline", "realtime"}},
+		{"vp8", "vp8", "video/webm", "testsrc2=s=160x120:r=4:d=1", "webm", []string{"-c:v", "libvpx", "-deadline", "realtime"}},
+		{"mjpeg", "mjpeg", "video/x-msvideo", "testsrc2=s=160x120:r=4:d=1", "avi", []string{"-c:v", "mjpeg"}},
+		{"mpeg2video", "mpeg2video", "video/x-matroska", "testsrc2=s=160x120:r=25:d=0.2", "mkv", []string{"-c:v", "mpeg2video"}},
+		{"h263", "h263", "video/x-msvideo", "testsrc2=s=176x144:r=25:d=0.2", "avi", []string{"-c:v", "h263"}},
+		{"flv1", "flv1", "video/x-flv", "testsrc2=s=160x120:r=4:d=1", "flv", []string{"-c:v", "flv"}},
+		{"prores", "prores", "video/quicktime", "testsrc2=s=160x120:r=4:d=1", "mov", []string{"-c:v", "prores_ks", "-profile:v", "0"}},
+		{"ffv1", "ffv1", "video/x-matroska", "testsrc2=s=160x120:r=4:d=1", "mkv", []string{"-c:v", "ffv1"}},
 		{"4k", "h264", "video/mp4", "color=gray:s=3840x2160:r=1:d=1", "mp4", []string{"-c:v", "libx264", "-preset", "ultrafast"}},
 		{"multiple_video_tracks", "h264", "video/mp4", "testsrc2=s=160x120:r=4:d=1", "mp4", []string{"-map", "0:v", "-map", "0:v", "-c:v", "libx264"}},
 	} {
@@ -223,6 +257,15 @@ func TestMediaCodecAndConstraintMatrix(t *testing.T) {
 			require.NoError(t, err)
 			url := "data:" + tc.mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 			cfg := testEngineConfig(t)
+			// New choices are opt-in. Defaults must still reject disabled codecs.
+			if !containsFold(cfg.Media.AllowedVideoCodecs, tc.codec) || !containsFold(cfg.AllowedMIMETypes, tc.mime) {
+				rejected, createErr := NewProcessor(cfg)
+				require.NoError(t, createErr)
+				_, rejectErr := rejected.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, url))})
+				assert.Equal(t, CodeUnsupportedFormat, CodeOf(rejectErr))
+			}
+			cfg.Media.AllowedVideoCodecs = append(cfg.Media.AllowedVideoCodecs, tc.codec)
+			cfg.AllowedMIMETypes = append(cfg.AllowedMIMETypes, tc.mime)
 			p, err := NewProcessor(cfg)
 			require.NoError(t, err)
 			result, err := p.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, url))})
@@ -242,6 +285,35 @@ func TestMediaCodecAndConstraintMatrix(t *testing.T) {
 				_, err = p.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, strings.Replace(url, "video/webm", "video/mp4", 1)))})
 				assert.Equal(t, CodeUnsupportedFormat, CodeOf(err))
 			}
+			if tc.mime == "video/x-matroska" {
+				_, err = p.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, strings.Replace(url, tc.mime, "video/webm", 1)))})
+				assert.Equal(t, CodeUnsupportedFormat, CodeOf(err), "MKV must not impersonate WebM")
+			}
+			// The same configured format must work through the protected URL pipeline.
+			downloader := newRemoteVideoTLSFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+				if r.Method == http.MethodGet {
+					_, _ = w.Write(data)
+				}
+			}))
+			cfg.RemoteURL = RemoteURLConfig{Enabled: true, AllowUnknownSize: true, DownloadTimeout: 5 * time.Second, MaxDownloads: 1, downloader: &downloader}
+			if tc.name == "vp9_mkv" {
+				disabled := testEngineConfig(t)
+				disabled.RemoteURL = cfg.RemoteURL
+				denied, createErr := NewProcessor(disabled)
+				require.NoError(t, createErr)
+				_, denyErr := denied.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, "https://video.example.test/fixture"))})
+				assert.Equal(t, CodeUnsupportedFormat, CodeOf(denyErr))
+				assert.Equal(t, "downloaded video container is not enabled", PublicMessageForError(denyErr))
+				assert.Zero(t, denied.Snapshot().TempStorageBytes)
+			}
+			remoteProcessor, err := NewProcessor(cfg)
+			require.NoError(t, err)
+			remoteResult, err := remoteProcessor.Process(ctx, ProcessInput{Model: "kimi-k3", Body: []byte(videoBody("kimi-k3", 0, "https://video.example.test/fixture?signature=SECRET"))})
+			require.NoError(t, err)
+			assert.Greater(t, remoteResult.ExtractedFrames, 0)
+			assert.Equal(t, tc.codec, remoteResult.Videos[0].Codec)
+			assert.Zero(t, remoteProcessor.Snapshot().TempStorageBytes)
 		})
 	}
 	// Structural metadata validation covers values a hostile file can advertise.
