@@ -275,6 +275,7 @@ const SENSITIVE_FORM_FIELDS = [
   'thinking_to_content',
   'strict_chat_tool_messages',
   'k3_parameter_validation',
+  'k3_reasoning_compatibility',
   'gateway_visible_content_stop',
   'chat_compatibility_models',
   'proxy',

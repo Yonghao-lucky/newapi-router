@@ -2,6 +2,7 @@ package controller
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -535,7 +536,13 @@ type aiRouterChannelView struct {
 	Weight             int                            `json:"weight"`
 	RoutingProfile     aiRouterChannelRouterView      `json:"router"`
 	ResponseModelAlias *dto.ChannelResponseModelAlias `json:"response_model_alias"`
+	ChatCompatibility  aiRouterChatCompatibility      `json:"chat_compatibility"`
 	ReferencedBy       []aiRouterPolicyRef            `json:"referenced_by"`
+}
+
+type aiRouterChatCompatibility struct {
+	K3ReasoningCompatibility bool     `json:"k3_reasoning_compatibility"`
+	Models                   []string `json:"chat_compatibility_models"`
 }
 
 type aiRouterChannelRouterView struct {
@@ -596,7 +603,7 @@ func GetAIRouterChannels(c *gin.Context) {
 	// Settings are portable JSON text. Read only the administration view's
 	// columns (never credentials), then filter and order before pagination.
 	// This avoids database-specific JSON expressions and group LIKE matching.
-	if err := query.Select("id", "name", "status", "group", "models", "priority", "weight", "settings").
+	if err := query.Select("id", "name", "status", "group", "models", "priority", "weight", "settings", "setting").
 		Find(&channels).Error; err != nil {
 		common.ApiError(c, err)
 		return
@@ -609,6 +616,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			continue
 		}
 		otherSettings := ch.GetOtherSettings()
+		settings := ch.GetSetting()
 		profile := otherSettings.RoutingProfile()
 		items = append(items, aiRouterChannelView{
 			Id:                 ch.Id,
@@ -619,6 +627,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			Priority:           ch.GetPriority(),
 			Weight:             ch.GetWeight(),
 			ResponseModelAlias: otherSettings.ResponseModelAlias,
+			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, Models: settings.ChatCompatibilityModels},
 			RoutingProfile: aiRouterChannelRouterView{
 				VideoPriority:     profile.VideoPriority,
 				Enabled:           profile.Enabled,
@@ -694,7 +703,8 @@ func GetAIRouterChannels(c *gin.Context) {
 }
 
 // UpdateAIRouterChannelRouter merges Router capability fields into the
-// channel's existing settings JSON. Only the "router" key changes; every
+// channel's existing settings JSON. Explicit compatibility and response model
+// settings can also be updated; omitted settings are preserved. Every
 // other setting key is preserved as-is. Sending "router": null removes the
 // Router profile entirely (falls back to the default profile). Scheduling
 // fields live on the Channel itself and are updated via the scheduling
@@ -708,6 +718,7 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 	var req struct {
 		Router             *dto.ChannelRoutingProfile     `json:"router"`
 		ResponseModelAlias *dto.ChannelResponseModelAlias `json:"response_model_alias"`
+		ChatCompatibility  *aiRouterChatCompatibility     `json:"chat_compatibility"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
 		common.ApiErrorMsg(c, "无效的参数")
@@ -732,12 +743,47 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 		return
 	}
 	channel.SetOtherSettings(otherSettings)
+	updates := map[string]any{"settings": channel.OtherSettings}
+	if req.ChatCompatibility != nil {
+		// Merge only these fields, preserving unknown and unrelated settings.
+		settings := map[string]json.RawMessage{}
+		if channel.Setting != nil && *channel.Setting != "" {
+			if err := common.UnmarshalJsonStr(*channel.Setting, &settings); err != nil {
+				common.ApiErrorMsg(c, "invalid existing channel setting")
+				return
+			}
+		}
+		if settings == nil {
+			settings = map[string]json.RawMessage{}
+		}
+		models := make([]string, 0, len(req.ChatCompatibility.Models))
+		for _, name := range req.ChatCompatibility.Models {
+			name = strings.TrimSpace(name)
+			if name != "" && !slices.Contains(models, name) {
+				models = append(models, name)
+			}
+		}
+		settings["k3_reasoning_compatibility"] = json.RawMessage(strconv.FormatBool(req.ChatCompatibility.K3ReasoningCompatibility))
+		modelJSON, err := common.Marshal(models)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		settings["chat_compatibility_models"] = modelJSON
+		encoded, err := common.Marshal(settings)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		channel.Setting = common.GetPointer(string(encoded))
+		updates["setting"] = *channel.Setting
+	}
 	if err := channel.ValidateSettings(); err != nil {
 		common.ApiErrorMsg(c, err.Error())
 		return
 	}
 
-	if err := model.DB.Model(channel).Update("settings", channel.OtherSettings).Error; err != nil {
+	if err := model.DB.Model(channel).Updates(updates).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}

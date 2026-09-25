@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -17,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/stretchr/testify/assert"
@@ -95,15 +98,166 @@ func TestChatCompatibilityK3Parameters(t *testing.T) {
 	}
 }
 
+func TestK3ReasoningCompatibilityDispatch(t *testing.T) {
+	service.InitHttpClient()
+	for _, stream := range []bool{false, true} {
+		for _, passthrough := range []bool{false, true} {
+			for _, tc := range []struct {
+				name, fields, want string
+				status             int
+			}{
+				{"medium", `,"reasoning_effort":"medium"`, "high", 502},
+				{"ultra", `,"reasoning_effort":"ultra"`, "high", 502},
+				{"empty", `,"reasoning_effort":""`, "high", 502},
+				{"null", `,"reasoning_effort":null`, "high", 502},
+				{"omitted", ``, "", 502},
+				{"other K3 validation", `,"reasoning_effort":"medium","temperature":0`, "", 400},
+				{"type validation", `,"reasoning_effort":12`, "", 400},
+			} {
+				t.Run(fmt.Sprintf("stream=%t/passthrough=%t/%s", stream, passthrough, tc.name), func(t *testing.T) {
+					var captured []byte
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						captured, _ = io.ReadAll(r.Body)
+						// A sentinel failure avoids invoking settlement; this test
+						// verifies the actual outbound HTTP request for both modes.
+						w.WriteHeader(http.StatusBadGateway)
+						_, _ = io.WriteString(w, `{"error":{"message":"fixture upstream reached"}}`)
+					}))
+					t.Cleanup(upstream.Close)
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					body := fmt.Sprintf(`{"model":"kimi-k3","stream":%t,"messages":[{"role":"user","content":"Hi"}]%s}`, stream, tc.fields)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+					c.Request.Header.Set("Content-Type", "application/json")
+					t.Cleanup(func() { common.CleanupBodyStorage(c) })
+					common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+					common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
+					common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{
+						K3ParameterValidation: true, K3ReasoningCompatibility: true, StrictChatToolMessages: true,
+						ChatCompatibilityModels: []string{"kimi-k3"}, PassThroughBodyEnabled: passthrough,
+					})
+					request, err := helper.GetAndValidateTextRequest(c, relayconstant.RelayModeChatCompletions)
+					if tc.name == "type validation" {
+						require.Error(t, err)
+						assert.Empty(t, captured)
+						return
+					}
+					require.NoError(t, err)
+					info := &relaycommon.RelayInfo{Request: request, OriginModelName: "kimi-k3", RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI, RequestURLPath: c.Request.URL.Path, IsStream: stream}
+					apiErr := TextHelper(c, info)
+					require.NotNil(t, apiErr)
+					assert.Equal(t, tc.status, apiErr.StatusCode, apiErr.Error())
+					if tc.status == 400 {
+						assert.Empty(t, captured)
+						return
+					}
+					require.NotEmpty(t, captured)
+					var fields map[string]any
+					require.NoError(t, common.Unmarshal(captured, &fields))
+					if tc.want == "" {
+						assert.NotContains(t, fields, "reasoning_effort")
+					} else {
+						assert.Equal(t, tc.want, fields["reasoning_effort"])
+					}
+					assert.Equal(t, stream, fields["stream"])
+					assert.Equal(t, "Hi", fields["messages"].([]any)[0].(map[string]any)["content"])
+				})
+			}
+		}
+	}
+}
+
+func TestK3ReasoningCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, original, outgoing, want                     string
+		disabled, noValidation, outsideScope, viaResponses bool
+		status                                             int
+	}{
+		{name: "medium", original: `"medium"`, outgoing: `"medium"`, want: `"high"`},
+		{name: "ultra", original: `"ultra"`, outgoing: `"ultra"`, want: `"high"`},
+		{name: "none", original: `"none"`, outgoing: `"none"`, want: `"high"`},
+		{name: "null omitted by DTO", original: `null`, want: `"high"`},
+		{name: "empty omitted by DTO", original: `""`, want: `"high"`},
+		{name: "whitespace", original: `"  "`, outgoing: `"  "`, want: `"high"`},
+		{name: "low", original: `"low"`, outgoing: `"low"`, want: `"low"`},
+		{name: "high", original: `"high"`, outgoing: `"high"`, want: `"high"`},
+		{name: "max", original: `"max"`, outgoing: `"max"`, want: `"max"`},
+		{name: "absent stays absent"},
+		{name: "legal channel override wins", original: `"medium"`, outgoing: `"max"`, want: `"max"`},
+		{name: "outgoing override normalized", original: `"low"`, outgoing: `"ultra"`, want: `"high"`},
+		{name: "independent from validation", original: `"medium"`, outgoing: `"medium"`, want: `"high"`, noValidation: true},
+		{name: "disabled retains rejection", original: `"medium"`, outgoing: `"medium"`, disabled: true, status: 400},
+		{name: "different model unchanged", original: `"medium"`, outgoing: `"medium"`, want: `"medium"`, outsideScope: true},
+		{name: "numeric client rejected", original: `1`, outgoing: `"high"`, status: 400},
+		{name: "boolean client rejected", original: `false`, outgoing: `"high"`, noValidation: true, status: 400},
+		{name: "array client rejected", original: `[]`, outgoing: `"high"`, status: 400},
+		{name: "object client rejected", original: `{}`, outgoing: `"high"`, status: 400},
+		{name: "invalid override type rejected", original: `"medium"`, outgoing: `1`, status: 500},
+		{name: "Responses conversion not bypassed", original: `"medium"`, outgoing: `"medium"`, viaResponses: true, noValidation: true, status: 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := map[string]json.RawMessage{"model": json.RawMessage(`"kimi-k3"`), "messages": json.RawMessage(`[{"role":"user","content":"Hi"}]`), "temperature": json.RawMessage(`1`)}
+			outgoing := maps.Clone(original)
+			if tc.original != "" {
+				original["reasoning_effort"] = json.RawMessage(tc.original)
+			}
+			if tc.outgoing != "" {
+				outgoing["reasoning_effort"] = json.RawMessage(tc.outgoing)
+			}
+			originalJSON, err := common.Marshal(original)
+			require.NoError(t, err)
+			outgoingJSON, err := common.Marshal(outgoing)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(originalJSON))
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI,
+				ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{
+					K3ParameterValidation: !tc.noValidation, K3ReasoningCompatibility: !tc.disabled, ChatCompatibilityModels: []string{"kimi-k3"},
+				}},
+			}
+			if tc.outsideScope {
+				info.ChannelSetting.ChatCompatibilityModels = []string{"other"}
+			}
+			result, apiErr := applyChatCompatibility(c, info, outgoingJSON, tc.viaResponses)
+			if tc.status != 0 {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.status, apiErr.StatusCode)
+				assert.Equal(t, tc.status == 400, types.IsSkipRetryError(apiErr))
+				return
+			}
+			require.Nil(t, apiErr)
+			var fields map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal(result, &fields))
+			assert.Equal(t, tc.want, string(fields["reasoning_effort"]))
+			delete(fields, "reasoning_effort")
+			delete(outgoing, "reasoning_effort")
+			assert.Equal(t, outgoing, fields, "only reasoning_effort may change")
+			storage, err := common.GetBodyStorage(c)
+			require.NoError(t, err)
+			stored, err := storage.Bytes()
+			require.NoError(t, err)
+			assert.Equal(t, originalJSON, stored, "retry input must remain byte-identical")
+			if tc.name == "medium" {
+				assert.Equal(t, "high", info.ReasoningEffort)
+				assert.NotEmpty(t, info.ParamOverrideAudit)
+				info.ChannelSetting.K3ReasoningCompatibility = false
+				_, fallbackErr := applyChatCompatibility(c, info, outgoingJSON, false)
+				require.NotNil(t, fallbackErr)
+				assert.Equal(t, 400, fallbackErr.StatusCode, "a fallback with compatibility off sees the original medium")
+			}
+		})
+	}
+}
+
 func TestChatCompatibilityAttemptIsolation(t *testing.T) {
-	original := `{"model":"customer-alias","messages":[{"role":"user","content":"hello"}],"stop":["END","结束"],"temperature":null,"stream":false}`
+	original := `{"model":"customer-alias","messages":[{"role":"user","content":"hello"}],"stop":["END","结束"],"temperature":null,"stream":false,"reasoning_effort":"medium"}`
 	outgoing := strings.Replace(original, "customer-alias", "upstream-model", 1)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(original))
 	info := &relaycommon.RelayInfo{
 		RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI,
 		ChannelMeta: &relaycommon.ChannelMeta{ApiType: constant.APITypeOpenAI, ChannelSetting: dto.ChannelSettings{
-			StrictChatToolMessages: true, K3ParameterValidation: true, GatewayVisibleContentStop: true,
+			StrictChatToolMessages: true, K3ParameterValidation: true, K3ReasoningCompatibility: true, GatewayVisibleContentStop: true,
 			ChatCompatibilityModels: []string{"upstream-model"},
 		}},
 	}
@@ -111,6 +265,7 @@ func TestChatCompatibilityAttemptIsolation(t *testing.T) {
 	require.Nil(t, apiErr)
 	assert.NotContains(t, string(body), `"stop"`)
 	assert.Contains(t, string(body), `"temperature":null`)
+	assert.Contains(t, string(body), `"reasoning_effort":"high"`)
 	assert.Equal(t, []string{"END", "结束"}, info.VisibleStop)
 	storage, err := common.GetBodyStorage(c)
 	require.NoError(t, err)

@@ -33,6 +33,36 @@ import { Switch } from '@/components/ui/switch'
 
 import type { ChannelFormValues } from '../lib/channel-form'
 
+export function K3ReasoningCompatibilityControl(props: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  disabled?: boolean
+}) {
+  const { t } = useTranslation()
+  return (
+    <FormItem
+      data-disabled={props.disabled}
+      className='flex items-center justify-between gap-4'
+    >
+      <div className='min-w-0'>
+        <FormLabel>{t('Kimi K3 reasoning effort compatibility')}</FormLabel>
+        <FormDescription>
+          {t(
+            'Before K3 validation, replace unsupported reasoning_effort strings (including none), empty strings and null with high. Keep low/high/max and omitted fields unchanged; reject other types. May change reasoning time and token usage. Other validation stays enabled.'
+          )}
+        </FormDescription>
+      </div>
+      <FormControl>
+        <Switch
+          disabled={props.disabled}
+          checked={props.checked}
+          onCheckedChange={props.onCheckedChange}
+        />
+      </FormControl>
+    </FormItem>
+  )
+}
+
 export function ChatCompatibilitySettings(props: { disabled?: boolean }) {
   const { t } = useTranslation()
   const form = useFormContext<ChannelFormValues>()
@@ -85,6 +115,17 @@ export function ChatCompatibilitySettings(props: { disabled?: boolean }) {
                 />
               </FormControl>
             </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='k3_reasoning_compatibility'
+          render={({ field }) => (
+            <K3ReasoningCompatibilityControl
+              disabled={props.disabled}
+              checked={field.value === true}
+              onCheckedChange={field.onChange}
+            />
           )}
         />
         <FormField

@@ -21,7 +21,7 @@ func chatCompatibilityConfigured(info *relaycommon.RelayInfo) bool {
 	settings := info.ChannelSetting
 	return info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		info.RelayFormat == types.RelayFormatOpenAI && len(settings.ChatCompatibilityModels) > 0 &&
-		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.GatewayVisibleContentStop)
+		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.GatewayVisibleContentStop)
 }
 
 func chatCompatibilityClientError(param, message string) *types.NewAPIError {
@@ -87,6 +87,36 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 			}
 		}
 	}
+	if info.ChannelSetting.K3ReasoningCompatibility {
+		// Normalize only attempt-local maps. Body storage must remain untouched
+		// so another channel can enforce its own compatibility policy.
+		originalChanged, err := normalizeK3ReasoningEffort(original)
+		if err != nil {
+			return nil, chatCompatibilityClientError("reasoning_effort", err.Error())
+		}
+		outgoingChanged, err := normalizeK3ReasoningEffort(outgoing)
+		if err != nil {
+			return nil, chatCompatibilityConfigurationError(err.Error())
+		}
+		// The DTO omits empty strings and null. Preserve their explicit
+		// compatibility default without filling an originally absent field.
+		if originalChanged && len(outgoing["reasoning_effort"]) == 0 {
+			outgoing["reasoning_effort"] = json.RawMessage(`"high"`)
+			outgoingChanged = true
+		}
+		if outgoingChanged {
+			body, err = common.Marshal(outgoing)
+			if err != nil {
+				return nil, chatCompatibilityConfigurationError("cannot encode reasoning compatibility")
+			}
+		}
+		if originalChanged || outgoingChanged {
+			var effort string
+			_ = common.Unmarshal(outgoing["reasoning_effort"], &effort)
+			info.SetReasoningEffort(effort)
+			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 reasoning compatibility applied; outgoing reasoning_effort = "+effort)
+		}
+	}
 	if info.ChannelSetting.K3ParameterValidation {
 		if param, err := validateK3Parameters(original); err != nil {
 			return nil, chatCompatibilityClientError(param, err.Error())
@@ -97,7 +127,7 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 	}
 	// Chat-to-Responses changes both the outgoing protocol and response handler.
 	// Do not silently bypass a channel's Chat compatibility contract.
-	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation) {
+	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility) {
 		return nil, chatCompatibilityConfigurationError("Chat-to-Responses conversion is not supported with the selected compatibility policy")
 	}
 	if !info.ChannelSetting.GatewayVisibleContentStop {
@@ -128,6 +158,24 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 	}
 	info.VisibleStop = stops
 	return modified, nil
+}
+
+// normalizeK3ReasoningEffort accepts only strings or explicit null. Invalid
+// strings and null become high; an absent field stays absent.
+func normalizeK3ReasoningEffort(fields map[string]json.RawMessage) (bool, error) {
+	raw, exists := fields["reasoning_effort"]
+	if !exists {
+		return false, nil
+	}
+	var effort string
+	if err := common.Unmarshal(raw, &effort); err != nil {
+		return false, fmt.Errorf("reasoning_effort must be a string or null")
+	}
+	if slices.Contains([]string{"low", "high", "max"}, effort) {
+		return false, nil
+	}
+	fields["reasoning_effort"] = json.RawMessage(`"high"`)
+	return true, nil
 }
 
 // restoreDynamicToolContentOmission undoes only the DTO-generated content:null

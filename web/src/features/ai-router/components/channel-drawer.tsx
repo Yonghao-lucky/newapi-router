@@ -63,6 +63,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { K3ReasoningCompatibilityControl } from '@/features/channels/components/chat-compatibility-settings'
 
 import {
   updateAIRouterChannelRouter,
@@ -102,6 +103,8 @@ const capabilityValue = (
 }
 
 const channelFormSchema = z.object({
+  k3ReasoningCompatibility: z.boolean(),
+  chatCompatibilityModels: z.string(),
   responseModelAliasMode: z.enum(['global', 'channel']),
   responseModelAliasModels: z.array(z.string().trim().min(1)),
   retryStatusCodes: z.array(z.number().int().min(400).max(599)),
@@ -145,6 +148,10 @@ const routerEnabledValue = (
 
 const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
   return {
+    k3ReasoningCompatibility:
+      channel.chat_compatibility?.k3_reasoning_compatibility === true,
+    chatCompatibilityModels:
+      channel.chat_compatibility?.chat_compatibility_models?.join(', ') ?? '',
     responseModelAliasMode: channel.response_model_alias?.mode ?? 'channel',
     responseModelAliasModels: channel.response_model_alias?.models ?? [],
     routerEnabled: routerEnabledValue(channel),
@@ -195,7 +202,7 @@ function TriStateSelect(props: {
 }
 
 // ChannelDrawer edits one channel's Router profile and scheduling fields.
-// Only routing, response model restoration and group/priority/weight change; models,
+// Only routing, explicit compatibility, response restoration and scheduling change; models,
 // keys and every other channel setting stay untouched.
 export function ChannelDrawer(props: {
   open: boolean
@@ -259,7 +266,21 @@ export function ChannelDrawer(props: {
         {
           mode: formValues.responseModelAliasMode,
           models: formValues.responseModelAliasModels,
-        }
+        },
+        form.getFieldState('k3ReasoningCompatibility').isDirty ||
+          form.getFieldState('chatCompatibilityModels').isDirty
+          ? {
+              k3_reasoning_compatibility: formValues.k3ReasoningCompatibility,
+              chat_compatibility_models: [
+                ...new Set(
+                  formValues.chatCompatibilityModels
+                    .split(/[,\n]/)
+                    .map((model) => model.trim())
+                    .filter(Boolean)
+                ),
+              ],
+            }
+          : undefined
       )
       await updateAIRouterChannelScheduling(channel.id, {
         group: formValues.group,
@@ -489,6 +510,38 @@ export function ChannelDrawer(props: {
                     )}
                   />
                 )}
+              </SideDrawerSection>
+
+              <SideDrawerSection>
+                <FormField
+                  control={form.control}
+                  name='chatCompatibilityModels'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Exact upstream models')}</FormLabel>
+                      <FormControl>
+                        <Input {...field} disabled={save.isPending} />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Shared Chat compatibility scope for this channel. Comma-separated exact outgoing model names after mapping; an empty list disables compatibility. Changing this scope also affects existing K3, tool and stop checks.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3ReasoningCompatibility'
+                  render={({ field }) => (
+                    <K3ReasoningCompatibilityControl
+                      disabled={save.isPending}
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  )}
+                />
               </SideDrawerSection>
 
               <SideDrawerSection>

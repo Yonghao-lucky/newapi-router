@@ -39,6 +39,7 @@ const ADVANCED_SETTINGS_FIELDS = new Set<FieldPath<ChannelFormValues>>([
   'thinking_to_content',
   'strict_chat_tool_messages',
   'k3_parameter_validation',
+  'k3_reasoning_compatibility',
   'gateway_visible_content_stop',
   'chat_compatibility_models',
   'pass_through_body_enabled',

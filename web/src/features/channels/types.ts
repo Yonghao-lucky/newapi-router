@@ -85,6 +85,7 @@ export interface ChannelSettings {
   thinking_to_content?: boolean
   strict_chat_tool_messages?: boolean
   k3_parameter_validation?: boolean
+  k3_reasoning_compatibility?: boolean
   gateway_visible_content_stop?: boolean
   chat_compatibility_models?: string[]
   proxy?: string

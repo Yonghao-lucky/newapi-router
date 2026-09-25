@@ -87,10 +87,15 @@ it('configures channel model restoration even without a Router profile and can e
   await user.keyboard('{Enter}')
   await user.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() =>
-    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(1, null, {
-      mode: 'channel',
-      models: ['custom-model'],
-    })
+    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(
+      1,
+      null,
+      {
+        mode: 'channel',
+        models: ['custom-model'],
+      },
+      undefined
+    )
   )
   await waitFor(() =>
     expect(
@@ -108,10 +113,15 @@ it('configures channel model restoration even without a Router profile and can e
   ).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() =>
-    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(1, null, {
-      mode: 'global',
-      models: ['custom-model'],
-    })
+    expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(
+      1,
+      null,
+      {
+        mode: 'global',
+        models: ['custom-model'],
+      },
+      undefined
+    )
   )
 })
 
@@ -139,7 +149,8 @@ it('reads channel model tags back and disables restoration when the final tag is
     expect(api.updateAIRouterChannelRouter).toHaveBeenLastCalledWith(
       1,
       expect.objectContaining({ max_retry: 2 }),
-      { mode: 'channel', models: [] }
+      { mode: 'channel', models: [] },
+      undefined
     )
   )
 })
@@ -159,7 +170,8 @@ it('saves defaults for legacy channels and preserves explicit empty groups', asy
         retry_status_codes: [429, 500, 503],
         switch_status_codes: [401, 402, 403, 404, 405, 502],
       }),
-      { mode: 'channel', models: [] }
+      { mode: 'channel', models: [] },
+      undefined
     )
   )
   view.unmount()
@@ -186,7 +198,8 @@ it('saves defaults for legacy channels and preserves explicit empty groups', asy
         retry_status_codes: [],
         switch_status_codes: [],
       }),
-      { mode: 'channel', models: [] }
+      { mode: 'channel', models: [] },
+      undefined
     )
   )
 })
@@ -205,7 +218,8 @@ it('removes status tags and rejects overlapping groups', async () => {
     expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
       1,
       expect.objectContaining({ retry_status_codes: [500, 503] }),
-      { mode: 'channel', models: [] }
+      { mode: 'channel', models: [] },
+      undefined
     )
   )
   view.unmount()
@@ -334,7 +348,8 @@ it.each([
       expect(api.updateAIRouterChannelRouter).toHaveBeenCalledWith(
         1,
         expect.objectContaining({ video_priority: expected, max_retry: 2 }),
-        { mode: 'channel', models: [] }
+        { mode: 'channel', models: [] },
+        undefined
       )
     )
     expect(api.updateAIRouterChannelScheduling).toHaveBeenCalledWith(1, {

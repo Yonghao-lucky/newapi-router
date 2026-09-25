@@ -262,6 +262,7 @@ export const channelFormSchema = z
     thinking_to_content: z.boolean().optional(),
     strict_chat_tool_messages: z.boolean().optional(),
     k3_parameter_validation: z.boolean().optional(),
+    k3_reasoning_compatibility: z.boolean().optional(),
     gateway_visible_content_stop: z.boolean().optional(),
     chat_compatibility_models: z.string().optional(),
     proxy: z
@@ -466,6 +467,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   thinking_to_content: false,
   strict_chat_tool_messages: false,
   k3_parameter_validation: false,
+  k3_reasoning_compatibility: false,
   gateway_visible_content_stop: false,
   chat_compatibility_models: '',
   proxy: '',
@@ -520,6 +522,7 @@ export function transformChannelToFormDefaults(
     thinking_to_content: false,
     strict_chat_tool_messages: false,
     k3_parameter_validation: false,
+    k3_reasoning_compatibility: false,
     gateway_visible_content_stop: false,
     chat_compatibility_models: '',
     proxy: '',
@@ -544,6 +547,7 @@ export function transformChannelToFormDefaults(
         thinking_to_content: parsed.thinking_to_content || false,
         strict_chat_tool_messages: parsed.strict_chat_tool_messages === true,
         k3_parameter_validation: parsed.k3_parameter_validation === true,
+        k3_reasoning_compatibility: parsed.k3_reasoning_compatibility === true,
         gateway_visible_content_stop:
           parsed.gateway_visible_content_stop === true,
         chat_compatibility_models: Array.isArray(
@@ -718,6 +722,7 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     thinking_to_content: formData.thinking_to_content || false,
     strict_chat_tool_messages: formData.strict_chat_tool_messages === true,
     k3_parameter_validation: formData.k3_parameter_validation === true,
+    k3_reasoning_compatibility: formData.k3_reasoning_compatibility === true,
     gateway_visible_content_stop:
       formData.gateway_visible_content_stop === true,
     chat_compatibility_models: [

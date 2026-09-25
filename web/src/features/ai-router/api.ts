@@ -157,14 +157,19 @@ export async function getAIRouterChannels(params: {
 export async function updateAIRouterChannelRouter(
   id: number,
   router: ChannelRoutingProfile | null,
-  responseModelAlias?: ChannelResponseModelAlias
+  responseModelAlias?: ChannelResponseModelAlias,
+  chatCompatibility?: AIRouterChannel['chat_compatibility']
 ): Promise<{ id: number; router: ChannelRoutingProfile | null }> {
   const response = await api.put<{
     success: boolean
     data: { id: number; router: ChannelRoutingProfile | null }
   }>(
     `/api/ai-router/channels/${id}/router`,
-    { router, response_model_alias: responseModelAlias },
+    {
+      router,
+      response_model_alias: responseModelAlias,
+      chat_compatibility: chatCompatibility,
+    },
     mutationConfig()
   )
   return requireServerSuccess(response.data).data

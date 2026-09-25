@@ -150,6 +150,42 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 			router.GET("/channels", GetAIRouterChannels)
 			router.PUT("/channels/:id/router", UpdateAIRouterChannelRouter)
 			router.GET("/policies/:id", GetAIRouterTargetPolicy)
+			t.Run("channel_reasoning_compatibility", func(t *testing.T) {
+				channel := &channels[0]
+				path := fmt.Sprintf("/channels/%d/router", channel.Id)
+				originalSetting := `{"k3_parameter_validation":true,"strict_chat_tool_messages":true,"gateway_visible_content_stop":true,"chat_compatibility_models":["kimi-k3"],"proxy":"","unknown_future_setting":9007199254740993}`
+				require.NoError(t, tx.Model(channel).Update("setting", originalSetting).Error)
+				t.Cleanup(func() { require.NoError(t, tx.Model(channel).Update("setting", nil).Error) })
+				var page struct {
+					Items []aiRouterChannelView `json:"items"`
+				}
+				list := "/channels?name=channel-admin-fixture-A"
+				require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, list, ""), &page))
+				require.Len(t, page.Items, 1)
+				assert.False(t, page.Items[0].ChatCompatibility.K3ReasoningCompatibility)
+				for _, enabled := range []bool{true, false} {
+					body, err := common.Marshal(map[string]any{"router": channel.GetOtherSettings().Router, "chat_compatibility": aiRouterChatCompatibility{K3ReasoningCompatibility: enabled, Models: []string{"kimi-k3", " kimi-k3 "}}})
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, list, ""), &page))
+					assert.Equal(t, enabled, page.Items[0].ChatCompatibility.K3ReasoningCompatibility)
+					assert.Equal(t, []string{"kimi-k3"}, page.Items[0].ChatCompatibility.Models)
+					stored, err := model.GetChannelById(channel.Id, true)
+					require.NoError(t, err)
+					assert.True(t, stored.GetSetting().K3ParameterValidation)
+					assert.True(t, stored.GetSetting().StrictChatToolMessages)
+					assert.True(t, stored.GetSetting().GatewayVisibleContentStop)
+					assert.Contains(t, *stored.Setting, `9007199254740993`)
+					assert.Equal(t, channel.GetOtherSettings(), stored.GetOtherSettings())
+					before := *stored.Setting
+					body, err = common.Marshal(map[string]any{"router": channel.GetOtherSettings().Router})
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					stored, err = model.GetChannelById(channel.Id, true)
+					require.NoError(t, err)
+					assert.Equal(t, before, *stored.Setting, "older clients must preserve compatibility settings")
+				}
+			})
 			t.Run("channel_response_model_alias", func(t *testing.T) {
 				path := fmt.Sprintf("/channels/%d/router", channels[0].Id)
 				list := "/channels?name=channel-admin-fixture-A"

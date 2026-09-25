@@ -59,6 +59,7 @@ const CONFIGURATION_BLOCKS = {
       'thinking_to_content',
       'strict_chat_tool_messages',
       'k3_parameter_validation',
+      'k3_reasoning_compatibility',
       'gateway_visible_content_stop',
       'chat_compatibility_models',
       'pass_through_body_enabled',
@@ -156,6 +157,7 @@ export function getChannelConfigurationState(
       values.thinking_to_content ||
       values.strict_chat_tool_messages ||
       values.k3_parameter_validation ||
+      values.k3_reasoning_compatibility ||
       values.gateway_visible_content_stop ||
       values.chat_compatibility_models?.trim() ||
       values.pass_through_body_enabled ||

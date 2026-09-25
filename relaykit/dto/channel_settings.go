@@ -24,6 +24,7 @@ type ChannelSettings struct {
 	// An empty model list matches no models; client aliases are not matched.
 	StrictChatToolMessages    bool     `json:"strict_chat_tool_messages,omitempty"`
 	K3ParameterValidation     bool     `json:"k3_parameter_validation,omitempty"`
+	K3ReasoningCompatibility  bool     `json:"k3_reasoning_compatibility,omitempty"`
 	GatewayVisibleContentStop bool     `json:"gateway_visible_content_stop,omitempty"`
 	ChatCompatibilityModels   []string `json:"chat_compatibility_models,omitempty"`
 	// HTTPProtocol controls outbound HTTP version negotiation for this channel.
