@@ -541,8 +541,9 @@ type aiRouterChannelView struct {
 }
 
 type aiRouterChatCompatibility struct {
-	K3ReasoningCompatibility bool     `json:"k3_reasoning_compatibility"`
-	Models                   []string `json:"chat_compatibility_models"`
+	K3ReasoningCompatibility  bool     `json:"k3_reasoning_compatibility"`
+	K3ToolChoiceCompatibility *bool    `json:"k3_tool_choice_compatibility,omitempty"`
+	Models                    []string `json:"chat_compatibility_models"`
 }
 
 type aiRouterChannelRouterView struct {
@@ -627,7 +628,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			Priority:           ch.GetPriority(),
 			Weight:             ch.GetWeight(),
 			ResponseModelAlias: otherSettings.ResponseModelAlias,
-			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, Models: settings.ChatCompatibilityModels},
+			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, K3ToolChoiceCompatibility: common.GetPointer(settings.K3ToolChoiceCompatibility), Models: settings.ChatCompatibilityModels},
 			RoutingProfile: aiRouterChannelRouterView{
 				VideoPriority:     profile.VideoPriority,
 				Enabled:           profile.Enabled,
@@ -764,6 +765,9 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 			}
 		}
 		settings["k3_reasoning_compatibility"] = json.RawMessage(strconv.FormatBool(req.ChatCompatibility.K3ReasoningCompatibility))
+		if req.ChatCompatibility.K3ToolChoiceCompatibility != nil {
+			settings["k3_tool_choice_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3ToolChoiceCompatibility))
+		}
 		modelJSON, err := common.Marshal(models)
 		if err != nil {
 			common.ApiError(c, err)

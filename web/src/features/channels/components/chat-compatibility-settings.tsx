@@ -63,6 +63,36 @@ export function K3ReasoningCompatibilityControl(props: {
   )
 }
 
+export function K3ToolChoiceCompatibilityControl(props: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  disabled?: boolean
+}) {
+  const { t } = useTranslation()
+  return (
+    <FormItem
+      data-disabled={props.disabled}
+      className='flex items-center justify-between gap-4'
+    >
+      <div className='min-w-0'>
+        <FormLabel>{t('Kimi K3 tool choice compatibility')}</FormLabel>
+        <FormDescription>
+          {t(
+            'Remove empty tool_choice and redundant auto/none without tools. Normalize supported selector aliases; unsupported strings use auto when tools exist. Required or named tool calls still need matching tools. May change tool selection. Does not fix every upstream tool error.'
+          )}
+        </FormDescription>
+      </div>
+      <FormControl>
+        <Switch
+          disabled={props.disabled}
+          checked={props.checked}
+          onCheckedChange={props.onCheckedChange}
+        />
+      </FormControl>
+    </FormItem>
+  )
+}
+
 export function ChatCompatibilitySettings(props: { disabled?: boolean }) {
   const { t } = useTranslation()
   const form = useFormContext<ChannelFormValues>()
@@ -122,6 +152,17 @@ export function ChatCompatibilitySettings(props: { disabled?: boolean }) {
           name='k3_reasoning_compatibility'
           render={({ field }) => (
             <K3ReasoningCompatibilityControl
+              disabled={props.disabled}
+              checked={field.value === true}
+              onCheckedChange={field.onChange}
+            />
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='k3_tool_choice_compatibility'
+          render={({ field }) => (
+            <K3ToolChoiceCompatibilityControl
               disabled={props.disabled}
               checked={field.value === true}
               onCheckedChange={field.onChange}

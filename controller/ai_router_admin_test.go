@@ -186,6 +186,40 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 					assert.Equal(t, before, *stored.Setting, "older clients must preserve compatibility settings")
 				}
 			})
+			t.Run("channel_tool_choice_compatibility", func(t *testing.T) {
+				// Compatibility fields share the existing JSON column and must
+				// round-trip independently across all supported database engines.
+				channel := &channels[1]
+				path := fmt.Sprintf("/channels/%d/router", channel.Id)
+				originalOtherSettings := channel.OtherSettings
+				require.NoError(t, tx.Model(channel).Update("setting", `{"k3_reasoning_compatibility":true,"chat_compatibility_models":["kimi-k3"],"unknown_future_setting":9007199254740993}`).Error)
+				t.Cleanup(func() {
+					require.NoError(t, tx.Model(channel).Updates(map[string]any{"setting": nil, "settings": originalOtherSettings}).Error)
+				})
+				assert.False(t, channel.GetSetting().K3ToolChoiceCompatibility)
+				for _, enabled := range []bool{true, false} {
+					body, err := common.Marshal(map[string]any{"router": channel.GetOtherSettings().Router, "chat_compatibility": aiRouterChatCompatibility{K3ReasoningCompatibility: true, K3ToolChoiceCompatibility: &enabled, Models: []string{"kimi-k3"}}})
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					var page struct {
+						Items []aiRouterChannelView `json:"items"`
+					}
+					require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, "/channels?name=channel-admin-fixture-B", ""), &page))
+					require.Len(t, page.Items, 1)
+					require.NotNil(t, page.Items[0].ChatCompatibility.K3ToolChoiceCompatibility)
+					assert.Equal(t, enabled, *page.Items[0].ChatCompatibility.K3ToolChoiceCompatibility)
+					// Older UI sends only reasoning compatibility; it must not
+					// silently reset the newer tool-choice switch.
+					body, err = common.Marshal(map[string]any{"router": channel.GetOtherSettings().Router, "chat_compatibility": aiRouterChatCompatibility{K3ReasoningCompatibility: true, Models: []string{"kimi-k3"}}})
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					stored, err := model.GetChannelById(channel.Id, true)
+					require.NoError(t, err)
+					assert.Equal(t, enabled, stored.GetSetting().K3ToolChoiceCompatibility)
+					assert.True(t, stored.GetSetting().K3ReasoningCompatibility)
+					assert.Contains(t, *stored.Setting, `9007199254740993`)
+				}
+			})
 			t.Run("channel_response_model_alias", func(t *testing.T) {
 				path := fmt.Sprintf("/channels/%d/router", channels[0].Id)
 				list := "/channels?name=channel-admin-fixture-A"

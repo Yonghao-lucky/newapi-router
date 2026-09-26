@@ -129,6 +129,7 @@ export interface AIRouterPolicyRef {
 export interface AIRouterChannel {
   chat_compatibility?: {
     k3_reasoning_compatibility: boolean
+    k3_tool_choice_compatibility?: boolean
     chat_compatibility_models: string[] | null
   }
   response_model_alias?: ChannelResponseModelAlias | null

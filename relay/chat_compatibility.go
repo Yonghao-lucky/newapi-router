@@ -21,7 +21,7 @@ func chatCompatibilityConfigured(info *relaycommon.RelayInfo) bool {
 	settings := info.ChannelSetting
 	return info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		info.RelayFormat == types.RelayFormatOpenAI && len(settings.ChatCompatibilityModels) > 0 &&
-		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.GatewayVisibleContentStop)
+		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.K3ToolChoiceCompatibility || settings.GatewayVisibleContentStop)
 }
 
 func chatCompatibilityClientError(param, message string) *types.NewAPIError {
@@ -117,6 +117,27 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 reasoning compatibility applied; outgoing reasoning_effort = "+effort)
 		}
 	}
+	if info.ChannelSetting.K3ToolChoiceCompatibility {
+		switch info.ApiType {
+		case constant.APITypeOpenAI, constant.APITypeOpenRouter, constant.APITypeMoonshot, constant.APITypeNewAPI:
+		default:
+			return nil, chatCompatibilityConfigurationError("tool choice compatibility requires an OpenAI-compatible upstream protocol")
+		}
+		if _, err := normalizeK3ToolChoice(original); err != nil {
+			return nil, chatCompatibilityClientError("tool_choice", err.Error())
+		}
+		changed, err := normalizeK3ToolChoice(outgoing)
+		if err != nil {
+			return nil, chatCompatibilityConfigurationError("outgoing tool_choice: " + err.Error())
+		}
+		if changed {
+			body, err = common.Marshal(outgoing)
+			if err != nil {
+				return nil, chatCompatibilityConfigurationError("cannot encode tool choice compatibility")
+			}
+			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 tool_choice compatibility applied")
+		}
+	}
 	if info.ChannelSetting.K3ParameterValidation {
 		if param, err := validateK3Parameters(original); err != nil {
 			return nil, chatCompatibilityClientError(param, err.Error())
@@ -127,7 +148,7 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 	}
 	// Chat-to-Responses changes both the outgoing protocol and response handler.
 	// Do not silently bypass a channel's Chat compatibility contract.
-	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility) {
+	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility || info.ChannelSetting.K3ToolChoiceCompatibility) {
 		return nil, chatCompatibilityConfigurationError("Chat-to-Responses conversion is not supported with the selected compatibility policy")
 	}
 	if !info.ChannelSetting.GatewayVisibleContentStop {

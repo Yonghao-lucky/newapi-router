@@ -63,7 +63,10 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
-import { K3ReasoningCompatibilityControl } from '@/features/channels/components/chat-compatibility-settings'
+import {
+  K3ReasoningCompatibilityControl,
+  K3ToolChoiceCompatibilityControl,
+} from '@/features/channels/components/chat-compatibility-settings'
 
 import {
   updateAIRouterChannelRouter,
@@ -104,6 +107,7 @@ const capabilityValue = (
 
 const channelFormSchema = z.object({
   k3ReasoningCompatibility: z.boolean(),
+  k3ToolChoiceCompatibility: z.boolean(),
   chatCompatibilityModels: z.string(),
   responseModelAliasMode: z.enum(['global', 'channel']),
   responseModelAliasModels: z.array(z.string().trim().min(1)),
@@ -150,6 +154,8 @@ const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
   return {
     k3ReasoningCompatibility:
       channel.chat_compatibility?.k3_reasoning_compatibility === true,
+    k3ToolChoiceCompatibility:
+      channel.chat_compatibility?.k3_tool_choice_compatibility === true,
     chatCompatibilityModels:
       channel.chat_compatibility?.chat_compatibility_models?.join(', ') ?? '',
     responseModelAliasMode: channel.response_model_alias?.mode ?? 'channel',
@@ -268,9 +274,12 @@ export function ChannelDrawer(props: {
           models: formValues.responseModelAliasModels,
         },
         form.getFieldState('k3ReasoningCompatibility').isDirty ||
+          form.getFieldState('k3ToolChoiceCompatibility').isDirty ||
           form.getFieldState('chatCompatibilityModels').isDirty
           ? {
               k3_reasoning_compatibility: formValues.k3ReasoningCompatibility,
+              k3_tool_choice_compatibility:
+                formValues.k3ToolChoiceCompatibility,
               chat_compatibility_models: [
                 ...new Set(
                   formValues.chatCompatibilityModels
@@ -536,6 +545,17 @@ export function ChannelDrawer(props: {
                   name='k3ReasoningCompatibility'
                   render={({ field }) => (
                     <K3ReasoningCompatibilityControl
+                      disabled={save.isPending}
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3ToolChoiceCompatibility'
+                  render={({ field }) => (
+                    <K3ToolChoiceCompatibilityControl
                       disabled={save.isPending}
                       checked={field.value}
                       onCheckedChange={field.onChange}

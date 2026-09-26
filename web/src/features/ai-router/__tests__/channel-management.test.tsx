@@ -88,77 +88,89 @@ beforeEach(() => {
   }))
 })
 
-it('saves reasoning compatibility from its default off state and reloads both enabled and disabled values', async () => {
-  const user = userEvent.setup()
-  const saved = structuredClone(channel)
-  vi.mocked(api.get).mockImplementation(async (url) => ({
-    data: {
-      success: true,
-      data:
-        url === '/api/group/'
-          ? ['default', 'vip']
-          : {
-              items: [structuredClone(saved)],
-              total: 1,
-              page: 1,
-              page_size: 20,
-            },
-    },
-  }))
-  const put = vi.spyOn(api, 'put').mockImplementation(async (url, body) => {
-    if (url.endsWith('/router')) {
-      const payload = body as {
-        chat_compatibility: AIRouterChannel['chat_compatibility']
+it.each([
+  ['Kimi K3 reasoning effort compatibility', 'k3_reasoning_compatibility'],
+  ['Kimi K3 tool choice compatibility', 'k3_tool_choice_compatibility'],
+] as const)(
+  'saves %s from its default off state and reloads both enabled and disabled values',
+  async (label, key) => {
+    const user = userEvent.setup()
+    const saved = structuredClone(channel)
+    vi.mocked(api.get).mockImplementation(async (url) => ({
+      data: {
+        success: true,
+        data:
+          url === '/api/group/'
+            ? ['default', 'vip']
+            : {
+                items: [structuredClone(saved)],
+                total: 1,
+                page: 1,
+                page_size: 20,
+              },
+      },
+    }))
+    const put = vi.spyOn(api, 'put').mockImplementation(async (url, body) => {
+      if (url.endsWith('/router')) {
+        const payload = body as {
+          chat_compatibility: AIRouterChannel['chat_compatibility']
+        }
+        if (payload.chat_compatibility) {
+          saved.chat_compatibility = payload.chat_compatibility
+        }
       }
-      if (payload.chat_compatibility) {
-        saved.chat_compatibility = payload.chat_compatibility
-      }
+      return { data: { success: true, data: {} } }
+    })
+    renderWithClient(<ChannelConfigTab />)
+    for (const enabled of [true, false]) {
+      const row = await screen.findByRole('row', { name: /Video A/ })
+      await user.click(within(row).getByRole('button', { name: 'Configure' }))
+      const toggle = screen.getByRole('switch', {
+        name: label,
+      })
+      expect(toggle).toHaveAttribute('aria-checked', String(!enabled))
+      toggle.focus()
+      await user.keyboard(' ')
+      expect(toggle).toHaveAttribute('aria-checked', String(enabled))
+      const models = screen.getByRole('textbox', {
+        name: 'Exact upstream models',
+      })
+      if (enabled) await user.type(models, 'kimi-k3')
+      expect(models).toHaveValue('kimi-k3')
+      await user.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      )
+      expect(put).toHaveBeenCalledWith(
+        '/api/ai-router/channels/1/router',
+        expect.objectContaining({
+          chat_compatibility: {
+            k3_reasoning_compatibility:
+              key === 'k3_reasoning_compatibility' && enabled,
+            k3_tool_choice_compatibility:
+              key === 'k3_tool_choice_compatibility' && enabled,
+            chat_compatibility_models: ['kimi-k3'],
+          },
+          router: expect.objectContaining({
+            video_priority: 100,
+            max_retry: 2,
+          }),
+        }),
+        expect.anything()
+      )
     }
-    return { data: { success: true, data: {} } }
-  })
-  renderWithClient(<ChannelConfigTab />)
-  for (const enabled of [true, false]) {
-    const row = await screen.findByRole('row', { name: /Video A/ })
-    await user.click(within(row).getByRole('button', { name: 'Configure' }))
-    const toggle = screen.getByRole('switch', {
-      name: 'Kimi K3 reasoning effort compatibility',
-    })
-    expect(toggle).toHaveAttribute('aria-checked', String(!enabled))
-    toggle.focus()
-    await user.keyboard(' ')
-    expect(toggle).toHaveAttribute('aria-checked', String(enabled))
-    const models = screen.getByRole('textbox', {
-      name: 'Exact upstream models',
-    })
-    if (enabled) await user.type(models, 'kimi-k3')
-    expect(models).toHaveValue('kimi-k3')
-    await user.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() =>
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.click(
+      within(screen.getByRole('row', { name: /Video A/ })).getByRole('button', {
+        name: 'Configure',
+      })
     )
-    expect(put).toHaveBeenCalledWith(
-      '/api/ai-router/channels/1/router',
-      expect.objectContaining({
-        chat_compatibility: {
-          k3_reasoning_compatibility: enabled,
-          chat_compatibility_models: ['kimi-k3'],
-        },
-        router: expect.objectContaining({ video_priority: 100, max_retry: 2 }),
-      }),
-      expect.anything()
-    )
+    expect(
+      screen.getByRole('switch', {
+        name: label,
+      })
+    ).not.toBeChecked()
   }
-  await user.click(
-    within(screen.getByRole('row', { name: /Video A/ })).getByRole('button', {
-      name: 'Configure',
-    })
-  )
-  expect(
-    screen.getByRole('switch', {
-      name: 'Kimi K3 reasoning effort compatibility',
-    })
-  ).not.toBeChecked()
-})
+)
 
 it('sends group, status and priority order filters before pagination and resets to the first page', async () => {
   const user = userEvent.setup()

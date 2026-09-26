@@ -1,16 +1,20 @@
 package relay
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -98,6 +102,243 @@ func TestChatCompatibilityK3Parameters(t *testing.T) {
 	}
 }
 
+func TestK3ToolChoiceCompatibility(t *testing.T) {
+	const tools = `[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{}}}}]`
+	for _, tc := range []struct {
+		name, selector, want, override                            string
+		noTools, dynamic, disabled, outside, responses, anthropic bool
+		status                                                    int
+	}{
+		{name: "omitted"},
+		{name: "null", selector: `null`},
+		{name: "empty", selector: `" "`},
+		{name: "auto", selector: `"auto"`, want: `"auto"`},
+		{name: "none", selector: `"none"`, want: `"none"`},
+		{name: "required", selector: `"required"`, want: `"required"`},
+		{name: "trim and case", selector: `" AUTO "`, want: `"auto"`},
+		{name: "unsupported string", selector: `"bogus"`, want: `"auto"`},
+		{name: "any retains requirement", selector: `"any"`, want: `"required"`},
+		{name: "object any", selector: `{"type":"any"}`, want: `"required"`},
+		{name: "object auto", selector: `{"type":"auto"}`, want: `"auto"`},
+		{name: "object none", selector: `{"type":"none"}`, want: `"none"`},
+		{name: "named", selector: `{"type":"function","function":{"name":"lookup"}}`, want: `{"type":"function","function":{"name":"lookup"}}`},
+		{name: "flat function", selector: `{"type":"function","name":"lookup"}`, want: `{"type":"function","function":{"name":"lookup"}}`},
+		{name: "tool alias", selector: `{"type":"tool","name":"lookup"}`, want: `{"type":"function","function":{"name":"lookup"}}`},
+		{name: "auto without tools", selector: `"auto"`, noTools: true},
+		{name: "none without tools", selector: `"none"`, noTools: true},
+		{name: "invalid without tools", selector: `"bogus"`, noTools: true},
+		{name: "required without tools", selector: `"required"`, noTools: true, status: 400},
+		{name: "any without tools", selector: `"any"`, noTools: true, status: 400},
+		{name: "named without tools", selector: `{"type":"tool","name":"lookup"}`, noTools: true, status: 400},
+		{name: "unknown function", selector: `{"type":"function","function":{"name":"absent"}}`, status: 400},
+		{name: "numeric", selector: `0`, status: 400},
+		{name: "boolean", selector: `false`, status: 400},
+		{name: "array", selector: `[]`, status: 400},
+		{name: "empty object", selector: `{}`, status: 400},
+		{name: "unknown object", selector: `{"type":"bogus"}`, status: 400},
+		{name: "extra object options not lost", selector: `{"type":"any","disable_parallel_tool_use":true}`, status: 400},
+		{name: "empty function name", selector: `{"type":"tool","name":""}`, status: 400},
+		{name: "dynamic system tool", selector: `{"type":"tool","name":"lookup"}`, want: `{"type":"function","function":{"name":"lookup"}}`, dynamic: true},
+		{name: "off", selector: `"bogus"`, want: `"bogus"`, disabled: true},
+		{name: "unmatched model", selector: `"bogus"`, want: `"bogus"`, outside: true},
+		{name: "Responses boundary", selector: `"bogus"`, responses: true, status: 500},
+		{name: "Anthropic conversion not rewritten as OpenAI", selector: `"auto"`, anthropic: true, status: 500},
+		{name: "valid override wins", selector: `"bogus"`, override: `"none"`, want: `"none"`},
+		{name: "bad override type", selector: `"auto"`, override: `123`, status: 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]json.RawMessage{"model": json.RawMessage(`"kimi-k3"`), "messages": json.RawMessage(`[{"role":"user","content":"Hi"}]`), "parallel_tool_calls": json.RawMessage(`false`), "custom": json.RawMessage(`9007199254740993`)}
+			if !tc.noTools {
+				fields["tools"] = json.RawMessage(tools)
+			}
+			if tc.dynamic {
+				delete(fields, "tools")
+				fields["messages"] = json.RawMessage(`[{"role":"system","tools":` + tools + `},{"role":"user","content":"Hi"}]`)
+			}
+			if tc.selector != "" {
+				fields["tool_choice"] = json.RawMessage(tc.selector)
+			}
+			body, err := common.Marshal(fields)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{K3ToolChoiceCompatibility: !tc.disabled, ChatCompatibilityModels: []string{"kimi-k3"}}}}
+			if tc.outside {
+				info.ChannelSetting.ChatCompatibilityModels = []string{"different"}
+			}
+			if tc.anthropic {
+				info.ApiType = constant.APITypeAnthropic
+			}
+			outgoing := body
+			if tc.override != "" {
+				fields["tool_choice"] = json.RawMessage(tc.override)
+				outgoing, err = common.Marshal(fields)
+				require.NoError(t, err)
+			}
+			result, apiErr := applyChatCompatibility(c, info, outgoing, tc.responses)
+			if tc.status != 0 {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.status, apiErr.StatusCode)
+				assert.Equal(t, tc.status == 400, types.IsSkipRetryError(apiErr))
+				return
+			}
+			require.Nil(t, apiErr)
+			var actual map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal(result, &actual))
+			if tc.want == "" {
+				assert.NotContains(t, actual, "tool_choice")
+			} else {
+				assert.JSONEq(t, tc.want, string(actual["tool_choice"]))
+			}
+			delete(actual, "tool_choice")
+			delete(fields, "tool_choice")
+			assert.Equal(t, fields, actual, "only tool_choice may change")
+			storage, err := common.GetBodyStorage(c)
+			require.NoError(t, err)
+			stored, err := storage.Bytes()
+			require.NoError(t, err)
+			assert.Equal(t, body, stored)
+			info.ChannelSetting.K3ToolChoiceCompatibility = false
+			replayed, apiErr := applyChatCompatibility(c, info, body, false)
+			require.Nil(t, apiErr)
+			assert.Equal(t, body, replayed, "next channel with switch off sees original bytes")
+		})
+	}
+}
+
+// Opt-in, bounded supplier verification. Credentials arrive on stdin and are
+// never written to fixtures, test output, customer databases or channel settings.
+func TestK3ToolChoiceLive(t *testing.T) {
+	if os.Getenv("K3_TOOL_CHOICE_LIVE") != "1" {
+		t.Skip("explicit supplier verification not enabled")
+	}
+	var config struct {
+		URL string `json:"url"`
+		Key string `json:"key"`
+	}
+	require.NoError(t, common.DecodeJson(io.LimitReader(os.Stdin, 65536), &config))
+	require.NotEmpty(t, config.URL)
+	require.NotEmpty(t, config.Key)
+	for _, tc := range []struct {
+		name, selector         string
+		enabled, stream, named bool
+		status                 int
+	}{
+		{"off-invalid", `"bogus"`, false, false, false, 400},
+		{"on-invalid-nonstream", `"bogus"`, true, false, false, 200},
+		{"on-invalid-stream", `"bogus"`, true, true, false, 200},
+		{"on-named-nonstream", `{"type":"tool","name":"ping"}`, true, false, true, 200},
+		{"on-named-stream", `{"type":"tool","name":"ping"}`, true, true, true, 200},
+		{"on-required", `{"type":"any"}`, true, false, true, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]any{"model": "kimi-k3", "messages": []any{map[string]any{"role": "user", "content": "Call ping with value OK. Do not answer without calling the tool."}}, "max_tokens": 512, "reasoning_effort": "low", "stream": tc.stream,
+				"tools": []any{map[string]any{"type": "function", "function": map[string]any{"name": "ping", "description": "Echo a value", "parameters": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}, "required": []string{"value"}}}}}, "tool_choice": json.RawMessage(tc.selector)}
+			if tc.stream {
+				fields["stream_options"] = map[string]bool{"include_usage": true}
+			}
+			body, err := common.Marshal(fields)
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{K3ToolChoiceCompatibility: tc.enabled, ChatCompatibilityModels: []string{"kimi-k3"}}}}
+			outgoing, apiErr := applyChatCompatibility(c, info, body, false)
+			require.Nil(t, apiErr)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(config.URL, "/")+"/v1/chat/completions", bytes.NewReader(outgoing))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+config.Key)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			payload, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			require.NoError(t, err)
+			require.Equal(t, tc.status, resp.StatusCode, "unexpected supplier status (response omitted)")
+			if tc.status != 200 {
+				assert.Contains(t, string(payload), "tool_choice")
+				return
+			}
+			var events [][]byte
+			if tc.stream {
+				scanner := bufio.NewScanner(bytes.NewReader(payload))
+				scanner.Buffer(make([]byte, 4096), 2<<20)
+				done := false
+				for scanner.Scan() {
+					line := scanner.Text()
+					if line == "data: [DONE]" {
+						done = true
+						continue
+					}
+					if data, ok := strings.CutPrefix(line, "data: "); ok {
+						events = append(events, []byte(data))
+					}
+				}
+				require.NoError(t, scanner.Err())
+				require.True(t, done, "supplier stream must complete")
+			} else {
+				events = append(events, payload)
+			}
+			var content, names, arguments strings.Builder
+			usage := false
+			for _, event := range events {
+				var data struct {
+					Error   any            `json:"error"`
+					Usage   map[string]any `json:"usage"`
+					Choices []struct {
+						FinishReason string `json:"finish_reason"`
+						Message      struct {
+							Content   string `json:"content"`
+							ToolCalls []struct {
+								Function struct {
+									Name      string `json:"name"`
+									Arguments string `json:"arguments"`
+								} `json:"function"`
+							} `json:"tool_calls"`
+						} `json:"message"`
+						Delta struct {
+							Content   string `json:"content"`
+							ToolCalls []struct {
+								Function struct {
+									Name      string `json:"name"`
+									Arguments string `json:"arguments"`
+								} `json:"function"`
+							} `json:"tool_calls"`
+						} `json:"delta"`
+					} `json:"choices"`
+				}
+				require.NoError(t, common.Unmarshal(event, &data))
+				require.Nil(t, data.Error)
+				usage = usage || len(data.Usage) > 0
+				for _, choice := range data.Choices {
+					require.NotEqual(t, "error", choice.FinishReason)
+					content.WriteString(choice.Message.Content)
+					content.WriteString(choice.Delta.Content)
+					for _, call := range choice.Message.ToolCalls {
+						names.WriteString(call.Function.Name)
+						arguments.WriteString(call.Function.Arguments)
+					}
+					for _, call := range choice.Delta.ToolCalls {
+						names.WriteString(call.Function.Name)
+						arguments.WriteString(call.Function.Arguments)
+					}
+				}
+			}
+			require.True(t, content.Len() > 0 || names.Len() > 0, "must deliver business output, not only reasoning")
+			if tc.named {
+				require.Equal(t, "ping", names.String())
+				var args map[string]any
+				require.NoError(t, common.UnmarshalJsonStr(arguments.String(), &args))
+				assert.Equal(t, "OK", args["value"])
+			}
+			t.Logf("HTTP=%d stream=%t meaningful_output=true tool_name=%s usage_present=%t", resp.StatusCode, tc.stream, names.String(), usage)
+		})
+	}
+}
+
 func TestK3ReasoningCompatibilityDispatch(t *testing.T) {
 	service.InitHttpClient()
 	for _, stream := range []bool{false, true} {
@@ -111,6 +352,8 @@ func TestK3ReasoningCompatibilityDispatch(t *testing.T) {
 				{"empty", `,"reasoning_effort":""`, "high", 502},
 				{"null", `,"reasoning_effort":null`, "high", 502},
 				{"omitted", ``, "", 502},
+				{"tool choice invalid", `,"tool_choice":"bogus"`, "", 502},
+				{"tool choice required", `,"tool_choice":"required"`, "", 400},
 				{"other K3 validation", `,"reasoning_effort":"medium","temperature":0`, "", 400},
 				{"type validation", `,"reasoning_effort":12`, "", 400},
 			} {
@@ -132,7 +375,7 @@ func TestK3ReasoningCompatibilityDispatch(t *testing.T) {
 					common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
 					common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
 					common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{
-						K3ParameterValidation: true, K3ReasoningCompatibility: true, StrictChatToolMessages: true,
+						K3ParameterValidation: true, K3ReasoningCompatibility: true, K3ToolChoiceCompatibility: true, StrictChatToolMessages: true,
 						ChatCompatibilityModels: []string{"kimi-k3"}, PassThroughBodyEnabled: passthrough,
 					})
 					request, err := helper.GetAndValidateTextRequest(c, relayconstant.RelayModeChatCompletions)
@@ -159,6 +402,9 @@ func TestK3ReasoningCompatibilityDispatch(t *testing.T) {
 						assert.Equal(t, tc.want, fields["reasoning_effort"])
 					}
 					assert.Equal(t, stream, fields["stream"])
+					if tc.name == "tool choice invalid" {
+						assert.NotContains(t, fields, "tool_choice")
+					}
 					assert.Equal(t, "Hi", fields["messages"].([]any)[0].(map[string]any)["content"])
 				})
 			}
