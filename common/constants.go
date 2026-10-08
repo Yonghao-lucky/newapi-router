@@ -2,6 +2,7 @@ package common
 
 import (
 	"crypto/tls"
+	"math"
 	//"os"
 	//"strconv"
 	"sync"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// MaxRequestTokenLimit is shared by ingress and relay token-bound validation.
+const MaxRequestTokenLimit = math.MaxInt32 / 2
 
 var StartTime = time.Now().Unix() // unit: second
 var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change

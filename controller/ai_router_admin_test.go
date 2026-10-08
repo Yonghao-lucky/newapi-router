@@ -117,6 +117,37 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 				}
 			})
 
+			t.Run("unknown_model_groups_persistence", func(t *testing.T) {
+				previous := ai_router_setting.GetSettings()
+				groups, err := common.Marshal(previous.UnknownModel400Groups)
+				require.NoError(t, err)
+				previousOptions := common.OptionMap
+				common.OptionMap = maps.Clone(previousOptions)
+				if common.OptionMap == nil {
+					common.OptionMap = make(map[string]string)
+				}
+				t.Cleanup(func() {
+					common.OptionMap = previousOptions
+					require.NoError(t, ai_router_setting.Configure(map[string]string{"unknown_model_400_groups": string(groups)}))
+				})
+				router := gin.New()
+				router.GET("/settings", GetAIRouterSettings)
+				router.PUT("/settings", UpdateAIRouterSettings)
+				for _, value := range []string{`["default","vip"]`, `[]`} {
+					aiRouterAdminRequest(t, router, http.MethodPut, "/settings", `{"unknown_model_400_groups":`+value+`}`)
+					var stored model.Option
+					require.NoError(t, tx.Where(&model.Option{Key: "ai_router.unknown_model_400_groups"}).First(&stored).Error)
+					assert.JSONEq(t, value, stored.Value)
+					require.NoError(t, ai_router_setting.Configure(map[string]string{"unknown_model_400_groups": stored.Value}))
+					var settings ai_router_setting.Settings
+					require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, "/settings", ""), &settings))
+					var want []string
+					require.NoError(t, common.UnmarshalJsonStr(value, &want))
+					assert.Equal(t, want, settings.UnknownModel400Groups)
+					assert.Equal(t, previous.Enabled, settings.Enabled)
+				}
+			})
+
 			channels := make([]model.Channel, 0, 7)
 			for _, fixture := range []struct {
 				name, groups, video string
@@ -150,6 +181,33 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 			router.GET("/channels", GetAIRouterChannels)
 			router.PUT("/channels/:id/router", UpdateAIRouterChannelRouter)
 			router.GET("/policies/:id", GetAIRouterTargetPolicy)
+			router.POST("/policies", CreateAIRouterTargetPolicy)
+			router.PUT("/policies/:id", UpdateAIRouterTargetPolicy)
+			t.Run("strict_validation_policy", func(t *testing.T) {
+				input := ai_router.TargetPolicyInput{Model: "kimi-k3", GroupId: "default", Enabled: true, MaxAttempts: 3, Candidates: []ai_router.TargetPolicyCandidateInput{{ChannelID: channels[0].Id, Enabled: true}}}
+				body, err := common.Marshal(input)
+				require.NoError(t, err)
+				var result struct {
+					Policy model.AIRouterTargetPolicy `json:"policy"`
+				}
+				require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodPost, "/policies", string(body)), &result))
+				t.Cleanup(func() { require.NoError(t, ai_router.DeleteTargetPolicy(result.Policy.Id)) })
+				assert.False(t, result.Policy.K3StrictValidation)
+				path := fmt.Sprintf("/policies/%d", result.Policy.Id)
+				for _, value := range []*bool{common.GetPointer(true), nil, common.GetPointer(false)} {
+					input.K3StrictValidation = value
+					body, err = common.Marshal(input)
+					require.NoError(t, err)
+					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
+					var stored aiRouterTargetPolicyView
+					require.NoError(t, common.Unmarshal(aiRouterAdminRequest(t, router, http.MethodGet, path, ""), &stored))
+					want := value == nil || *value
+					assert.Equal(t, want, stored.K3StrictValidation)
+					assert.Equal(t, want, ai_router.GetTargetPolicySnapshot().GetPolicy("kimi-k3", "default").K3StrictValidation)
+					require.Len(t, stored.Candidates, 1)
+					assert.Equal(t, channels[0].Id, stored.Candidates[0].ChannelId)
+				}
+			})
 			t.Run("channel_reasoning_compatibility", func(t *testing.T) {
 				channel := &channels[0]
 				path := fmt.Sprintf("/channels/%d/router", channel.Id)

@@ -280,6 +280,9 @@ func validateChatToolMessages(raw json.RawMessage) error {
 	pending := make(map[string]bool)
 	remaining := 0
 	for index, message := range messages {
+		if message.Role == "" {
+			return fmt.Errorf("messages[%d].role is required", index)
+		}
 		if message.Role == "system" {
 			continue
 		}

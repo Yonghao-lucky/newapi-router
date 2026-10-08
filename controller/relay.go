@@ -115,6 +115,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				return
 			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			if relayFormat == types.RelayFormatOpenAI && c.Request.URL.Path == "/v1/chat/completions" {
+				// SSE headers may have been prepared before an upstream failure.
+				// No event has been written; the error body below is ordinary JSON.
+				c.Writer.Header().Del("Transfer-Encoding")
+				c.Writer.Header().Del("Content-Length")
+				c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -137,8 +144,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
 			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
 		} else if relayFormat == types.RelayFormatOpenAI && c.Request.URL.Path == "/v1/chat/completions" {
+			param, message := helper.ChatRequestErrorDetails(err)
 			newAPIError = types.WithOpenAIError(types.OpenAIError{
-				Type: "invalid_request_error", Message: err.Error(), Code: "invalid_request_error",
+				Type: "invalid_request_error", Message: message, Param: param, Code: "invalid_request_error",
 			}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		} else {
 			newAPIError = types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())

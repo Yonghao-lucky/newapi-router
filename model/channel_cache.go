@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +24,28 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 // path-aware selection avoids re-parsing JSON per request. Refreshed on full sync.
 var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
+
+// CachedChannelModelKnown deliberately includes disabled channels and all
+// groups. No candidate in the current group is not proof of a missing model.
+// Without a populated cache, callers must retain the existing error behavior.
+func CachedChannelModelKnown(name string) (known, ready bool) {
+	if !common.MemoryCacheEnabled {
+		return false, false
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	if channelsIDM == nil {
+		return false, false
+	}
+	normalized := ratio_setting.RoutingMatchModelName(name)
+	for _, channel := range channelsIDM {
+		models := channel.GetModels()
+		if slices.Contains(models, name) || slices.Contains(models, normalized) {
+			return true, true
+		}
+	}
+	return false, true
+}
 
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {

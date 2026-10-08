@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -121,7 +120,7 @@ func GetAndValidateEmbeddingRequest(c *gin.Context, relayMode int) (*dto.Embeddi
 // maxTokensLimit bounds user-supplied max token fields. These values feed
 // pre-consume quota math (preConsumedTokens * ratio); an unbounded value can
 // overflow the conversion and corrupt billing.
-const maxTokensLimit = math.MaxInt32 / 2
+const maxTokensLimit = common.MaxRequestTokenLimit
 
 // ExceedsMaxTokensLimit checks token limits before they reach billing arithmetic.
 func ExceedsMaxTokensLimit(values ...*uint) bool {
@@ -371,6 +370,28 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		}
 	}
 	return textRequest, nil
+}
+
+// ChatRequestErrorDetails removes Go codec internals and request values from
+// public validation errors. Body read/size failures retain their own handling.
+func ChatRequestErrorDetails(err error) (string, string) {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		param := typeErr.Field
+		switch param {
+		case "temperature", "top_p", "presence_penalty", "frequency_penalty":
+			return param, param + " must be a number"
+		case "max_tokens", "max_completion_tokens":
+			return param, param + " must be a positive integer"
+		default:
+			return param, "invalid value type for request field"
+		}
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return "", "request body must contain valid JSON"
+	}
+	return "", err.Error()
 }
 
 func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error) {

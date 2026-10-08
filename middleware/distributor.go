@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/ai_router"
+	"github.com/QuantumNous/new-api/setting/ai_router_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -171,6 +172,9 @@ func Distribute() func(c *gin.Context) {
 						Retry:       common.GetPointer(0),
 					})
 					if err != nil {
+						if channel == nil && usingGroup != "auto" && rejectUnknownChatModel(c, usingGroup, modelRequest.Model) {
+							return
+						}
 						showGroup := usingGroup
 						if usingGroup == "auto" {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
@@ -185,6 +189,9 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if channel == nil {
+						if rejectUnknownChatModel(c, usingGroup, modelRequest.Model) {
+							return
+						}
 						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, noAvailableChannelMessage(c, usingGroup, modelRequest.Model), types.ErrorCodeModelNotFound)
 						return
 					}
@@ -207,6 +214,31 @@ func Distribute() func(c *gin.Context) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+// Only a confirmed absent public model gets the opt-in 400. Existing models
+// in other groups, disabled channels, aliases and unknown cache state keep the
+// prior behavior. This runs after the existing token permission checks.
+func rejectUnknownChatModel(c *gin.Context, group, name string) bool {
+	settings := ai_router_setting.GetSettings()
+	if !settings.Enabled || c.Request.URL.Path != "/v1/chat/completions" || !slices.Contains(settings.UnknownModel400Groups, group) {
+		return false
+	}
+	known, ready := model.CachedChannelModelKnown(name)
+	if !ready || known || slices.Contains(settings.TargetModels, name) {
+		return false
+	}
+	if _, pinned := c.Get(jsplugin.ContextKeyPinnedPlugin); pinned || c.GetString("expected_task_plugin_key") != "" {
+		return false
+	}
+	for _, policy := range ai_router.GetTargetPolicySnapshot().Policies() {
+		if policy.Model == name {
+			return false
+		}
+	}
+	err := types.WithOpenAIError(types.OpenAIError{Type: "invalid_request_error", Code: "model_not_found", Param: "model", Message: "The requested model does not exist"}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	c.AbortWithStatusJSON(err.StatusCode, gin.H{"error": err.ToOpenAIError()})
+	return true
 }
 
 // noAvailableChannelMessage explains a 503 for a task-plugin-claimed model.

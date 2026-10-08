@@ -30,28 +30,30 @@ const (
 )
 
 type Settings struct {
-	Enabled              bool     `json:"enabled"`
-	TargetModels         []string `json:"target_models"`
-	MaxAttempts          int      `json:"max_attempts"`
-	UnknownPolicy        string   `json:"unknown_policy"`
-	ToolFilterEnabled    bool     `json:"tool_filter_enabled"`
-	TelemetryEnabled     bool     `json:"telemetry_enabled"`
-	RetentionDays        int      `json:"retention_days"`
-	IdleTimeoutSeconds   int      `json:"idle_timeout_seconds"`
-	ResponseModelAliases []string `json:"response_model_aliases"`
+	Enabled               bool     `json:"enabled"`
+	TargetModels          []string `json:"target_models"`
+	MaxAttempts           int      `json:"max_attempts"`
+	UnknownPolicy         string   `json:"unknown_policy"`
+	ToolFilterEnabled     bool     `json:"tool_filter_enabled"`
+	TelemetryEnabled      bool     `json:"telemetry_enabled"`
+	RetentionDays         int      `json:"retention_days"`
+	IdleTimeoutSeconds    int      `json:"idle_timeout_seconds"`
+	ResponseModelAliases  []string `json:"response_model_aliases"`
+	UnknownModel400Groups []string `json:"unknown_model_400_groups"`
 }
 
 func DefaultSettings() Settings {
 	return Settings{
-		Enabled:              false,
-		TargetModels:         []string{"kimi-k3"},
-		MaxAttempts:          3,
-		UnknownPolicy:        UnknownPolicyFullCapOnly,
-		ToolFilterEnabled:    false,
-		TelemetryEnabled:     true,
-		RetentionDays:        7,
-		IdleTimeoutSeconds:   1000,
-		ResponseModelAliases: []string{},
+		Enabled:               false,
+		TargetModels:          []string{"kimi-k3"},
+		MaxAttempts:           3,
+		UnknownPolicy:         UnknownPolicyFullCapOnly,
+		ToolFilterEnabled:     false,
+		TelemetryEnabled:      true,
+		RetentionDays:         7,
+		IdleTimeoutSeconds:    1000,
+		ResponseModelAliases:  []string{},
+		UnknownModel400Groups: []string{},
 	}
 }
 
@@ -73,6 +75,7 @@ func (s *Settings) Normalize() {
 	}
 	s.TargetModels = NormalizeTargetModels(s.TargetModels)
 	s.ResponseModelAliases = NormalizeTargetModels(s.ResponseModelAliases)
+	s.UnknownModel400Groups = NormalizeTargetModels(s.UnknownModel400Groups)
 	if s.IdleTimeoutSeconds == 0 {
 		s.IdleTimeoutSeconds = 1000
 	}
@@ -110,6 +113,7 @@ func (s *Settings) clone() Settings {
 	cloned := *s
 	cloned.TargetModels = slices.Clone(s.TargetModels)
 	cloned.ResponseModelAliases = slices.Clone(s.ResponseModelAliases)
+	cloned.UnknownModel400Groups = slices.Clone(s.UnknownModel400Groups)
 	return cloned
 }
 
@@ -189,6 +193,12 @@ func applyStrictValue(settings *Settings, key string, value string) error {
 			return fmt.Errorf("response_model_aliases must be an array of model names")
 		}
 		settings.ResponseModelAliases = models
+	case "unknown_model_400_groups":
+		var groups []string
+		if err := common.Unmarshal([]byte(value), &groups); err != nil || groups == nil {
+			return fmt.Errorf("unknown_model_400_groups must be an array of group names")
+		}
+		settings.UnknownModel400Groups = groups
 	case "max_attempts":
 		parsed, err := strconv.Atoi(value)
 		if err != nil {

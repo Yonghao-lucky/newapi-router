@@ -55,6 +55,10 @@ func (d *JSONTokenDecoder) More() bool {
 	return b != '}' && b != ']'
 }
 func (d *JSONTokenDecoder) Token() (json.Token, error) { return d.token(true) }
+
+// StructuralToken consumes one token without retaining string/number payloads.
+// Delimiters, booleans and null are preserved for structural inspection.
+func (d *JSONTokenDecoder) StructuralToken() (json.Token, error) { return d.token(false) }
 func (d *JSONTokenDecoder) invalid() (json.Token, error) {
 	d.err = errors.New("invalid JSON structure")
 	return nil, d.err

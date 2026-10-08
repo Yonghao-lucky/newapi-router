@@ -398,6 +398,24 @@ export function PolicyDrawer(props: {
                       </FormItem>
                     )}
                   />
+                  <FormField
+                    control={form.control}
+                    name='k3_strict_validation'
+                    render={({ field }) => (
+                      <FormItem className='flex items-center justify-between gap-3 sm:col-span-2'>
+                        <FormLabel>
+                          {t('K3 strict request validation')}
+                        </FormLabel>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                            disabled={isSubmitting}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
                 </div>
               </SideDrawerSection>
 

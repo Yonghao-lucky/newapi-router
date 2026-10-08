@@ -12,12 +12,13 @@ type TargetPolicyCandidate struct {
 
 // TargetPolicy is the immutable view of one (model, group) policy.
 type TargetPolicy struct {
-	Id          int
-	Model       string
-	GroupId     string
-	Enabled     bool
-	MaxAttempts int
-	Candidates  []TargetPolicyCandidate
+	Id                 int
+	Model              string
+	GroupId            string
+	Enabled            bool
+	MaxAttempts        int
+	K3StrictValidation bool
+	Candidates         []TargetPolicyCandidate
 }
 
 // TargetPolicySnapshot is the published runtime view of all target policies.
@@ -27,7 +28,8 @@ type TargetPolicy struct {
 type TargetPolicySnapshot struct {
 	// policies maps "model\x00group_id" to its policy. The NUL separator
 	// cannot appear in either identifier, so no pair can alias another.
-	policies map[string]*TargetPolicy
+	policies         map[string]*TargetPolicy
+	strictValidation bool
 }
 
 func targetPolicyKey(model, groupID string) string {
@@ -62,6 +64,10 @@ func (s *TargetPolicySnapshot) Len() int {
 	return len(s.policies)
 }
 
+func (s *TargetPolicySnapshot) HasStrictValidation() bool {
+	return s != nil && s.strictValidation
+}
+
 var targetPolicySnapshot atomic.Pointer[TargetPolicySnapshot]
 
 // GetTargetPolicySnapshot returns the currently published snapshot.
@@ -84,6 +90,7 @@ func BuildTargetPolicySnapshot(policies []TargetPolicy) *TargetPolicySnapshot {
 		copy(candidates, p.Candidates)
 		stored := p
 		stored.Candidates = candidates
+		snapshot.strictValidation = snapshot.strictValidation || (stored.Enabled && stored.K3StrictValidation)
 		snapshot.policies[targetPolicyKey(stored.Model, stored.GroupId)] = &stored
 	}
 	return snapshot

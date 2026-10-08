@@ -41,16 +41,20 @@ func runAIRouterRelay(
 		return
 	}
 
-	reader, readerErr := bodyStorage.NewReader()
-	if readerErr != nil {
-		*newAPIError = types.NewErrorWithStatusCode(readerErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
-		return
-	}
-	defer reader.Close()
-	demand, detectErr := ai_router.DetectRequest(c.Request.URL.Path, reader)
-	if detectErr != nil {
-		*newAPIError = types.NewError(fmt.Errorf("ai router detection failed: %w", detectErr), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
-		return
+	demand, cached := ai_router.CachedStoredChatDemand(c, bodyStorage)
+	if !cached {
+		reader, readerErr := bodyStorage.NewReader()
+		if readerErr != nil {
+			*newAPIError = types.NewErrorWithStatusCode(readerErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		var detectErr error
+		demand, detectErr = ai_router.DetectRequest(c.Request.URL.Path, reader)
+		_ = reader.Close()
+		if detectErr != nil {
+			*newAPIError = types.NewError(fmt.Errorf("ai router detection failed: %w", detectErr), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
 	}
 	demand.Model = relayInfo.OriginModelName
 	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) &&
@@ -65,9 +69,13 @@ func runAIRouterRelay(
 	// this path.
 	filters := service.GetChannelConstraints(c).Filters
 	group := resolveRouterGroup(c, relayInfo, filters)
-	allChannels := collectPolicyChannels(group, relayInfo.OriginModelName, filters, settings.MaxAttempts)
-
-	routeCtx := ai_router.NewRouteContext(demand, policyMaxAttempts(group, relayInfo.OriginModelName, settings.MaxAttempts))
+	policy := ai_router.RequestPolicySnapshot(c).GetPolicy(relayInfo.OriginModelName, group)
+	allChannels := collectPolicyChannelsWithPolicy(group, relayInfo.OriginModelName, filters, policy)
+	maxAttempts := settings.MaxAttempts
+	if policy != nil && policy.Enabled && policy.MaxAttempts >= 1 {
+		maxAttempts = policy.MaxAttempts
+	}
+	routeCtx := ai_router.NewRouteContext(demand, maxAttempts)
 	routeCtx.Context = c.Request.Context()
 	if demand.OriginalModality == ai_router.ModalityVideo {
 		routeCtx.LogModality = ai_router.ModalityVideo
@@ -209,21 +217,7 @@ func runAIRouterRelay(
 // "default", and "auto" expands to the first auto group that can serve the
 // model. The resolved auto group is published so billing uses its ratio.
 func resolveRouterGroup(c *gin.Context, relayInfo *relaycommon.RelayInfo, filters []dto.ChannelFilter) string {
-	group := relayInfo.TokenGroup
-	if group == "" {
-		group = "default"
-	}
-	if group != "auto" {
-		return group
-	}
-	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-	for _, autoGroup := range service.GetRequestAutoGroups(c, userGroup) {
-		if len(model.GetEnabledChannelsForGroupModel(autoGroup, relayInfo.OriginModelName, filters)) > 0 {
-			common.SetContextKey(c, constant.ContextKeyAutoGroup, autoGroup)
-			return autoGroup
-		}
-	}
-	return group
+	return service.ResolveAIRouterGroup(c, relayInfo.OriginModelName, relayInfo.TokenGroup, filters)
 }
 
 // collectChannelsForGroup converts the model-eligible channels of a group into
@@ -252,8 +246,12 @@ func collectChannelsForGroup(group, modelName string, filters []dto.ChannelFilte
 // enabled policy covers (model, group), it falls back to the V1-compatible
 // behavior of considering every model-eligible channel in the group.
 func collectPolicyChannels(group, modelName string, filters []dto.ChannelFilter, defaultMaxAttempts int) []ai_router.RouterChannel {
-	groupChannels := collectChannelsForGroup(group, modelName, filters)
 	policy := ai_router.GetTargetPolicySnapshot().GetPolicy(modelName, group)
+	return collectPolicyChannelsWithPolicy(group, modelName, filters, policy)
+}
+
+func collectPolicyChannelsWithPolicy(group, modelName string, filters []dto.ChannelFilter, policy *ai_router.TargetPolicy) []ai_router.RouterChannel {
+	groupChannels := collectChannelsForGroup(group, modelName, filters)
 	if policy == nil || !policy.Enabled || len(policy.Candidates) == 0 {
 		return groupChannels
 	}

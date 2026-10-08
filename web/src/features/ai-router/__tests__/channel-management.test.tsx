@@ -88,6 +88,64 @@ beforeEach(() => {
   }))
 })
 
+it('saves strict validation from its legacy off default and reloads enabled and disabled values without changing candidates', async () => {
+  const user = userEvent.setup()
+  let saved: AIRouterTargetPolicy = {
+    id: 7,
+    model: 'kimi-k3',
+    group_id: 'default',
+    enabled: true,
+    max_attempts: 3,
+    created_at: 0,
+    updated_at: 0,
+    candidates: [
+      { id: 1, policy_id: 7, channel_id: 1, enabled: true, channel: null },
+    ],
+  }
+  vi.mocked(api.get).mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url.endsWith('/targets/7')
+        ? structuredClone(saved)
+        : { items: [channel], total: 1 },
+    },
+  }))
+  const put = vi.spyOn(api, 'put').mockImplementation(async (_url, body) => {
+    saved = { ...saved, ...(body as Partial<AIRouterTargetPolicy>) }
+    return {
+      data: {
+        success: true,
+        data: { policy: saved, issues: [], blocking: false },
+      },
+    }
+  })
+  for (const enabled of [true, false]) {
+    const view = renderWithClient(
+      <PolicyDrawer open currentRow={saved} onOpenChange={vi.fn()} />
+    )
+    const toggle = await screen.findByRole('switch', {
+      name: 'K3 strict request validation',
+    })
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute('aria-checked', String(!enabled))
+    )
+    toggle.focus()
+    await user.keyboard(' ')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(put).toHaveBeenLastCalledWith(
+        '/api/ai-router/targets/7',
+        expect.objectContaining({
+          k3_strict_validation: enabled,
+          candidates: [{ channel_id: 1, enabled: true }],
+        }),
+        expect.anything()
+      )
+    )
+    view.unmount()
+  }
+})
+
 it.each([
   ['Kimi K3 reasoning effort compatibility', 'k3_reasoning_compatibility'],
   ['Kimi K3 tool choice compatibility', 'k3_tool_choice_compatibility'],

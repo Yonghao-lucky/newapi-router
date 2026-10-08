@@ -32,6 +32,7 @@ export interface AIRouterSettings {
   retention_days: number
   idle_timeout_seconds?: number
   response_model_aliases?: string[]
+  unknown_model_400_groups?: string[]
 }
 
 // Capability values are tri-state: null means "unset" (channel default).
@@ -90,6 +91,7 @@ export interface AIRouterTargetPolicy {
   group_id: string
   enabled: boolean
   max_attempts: number
+  k3_strict_validation?: boolean
   created_at: number
   updated_at: number
   candidates: AIRouterTargetCandidate[]
@@ -105,6 +107,7 @@ export interface TargetPolicyInput {
   group_id: string
   enabled: boolean
   max_attempts: number
+  k3_strict_validation?: boolean
   candidates: TargetPolicyCandidateInput[]
 }
 

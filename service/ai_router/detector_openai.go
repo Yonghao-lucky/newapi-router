@@ -21,6 +21,8 @@ type detectorState struct {
 	inspectAll          bool
 	videoCount          int
 	imageCount          int
+	validation          *chatValidation
+	modelNames          []string
 }
 
 func newDetectorState() *detectorState {
@@ -42,27 +44,45 @@ func (state *detectorState) stop() bool {
 // is used before video admission; it validates model ambiguity and trailing JSON
 // while sharing the router's content vocabulary and traversal.
 type ChatInspection struct {
-	Demand         RouteDemand
-	VideoCount     int
-	ExistingImages int
+	Demand          RouteDemand
+	VideoCount      int
+	ExistingImages  int
+	ValidationError *ChatValidationError
+	ModelNames      []string
 }
 
 func InspectChatRequest(body io.Reader) (ChatInspection, error) {
+	return inspectChatRequest(body, false)
+}
+
+// InspectChatRequestWithValidation shares the media scan without decoding or
+// retaining content/Base64. Validation is applied later to the matching policy.
+func InspectChatRequestWithValidation(body io.Reader) (ChatInspection, error) {
+	return inspectChatRequest(body, true)
+}
+
+func inspectChatRequest(body io.Reader, validate bool) (ChatInspection, error) {
 	if body == nil {
 		return ChatInspection{}, errNilBody
 	}
 	state := newDetectorState()
 	state.inspectAll = true
+	if validate {
+		state.validation = &chatValidation{}
+	}
 	decoder := common.NewJSONTokenDecoder(body)
 	if err := scanChatRequest(decoder, state); err != nil {
-		return ChatInspection{}, err
+		return ChatInspection{Demand: state.routeDemand(), ModelNames: state.modelNames}, err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return ChatInspection{}, fmt.Errorf("unexpected data after request")
+		return ChatInspection{Demand: state.routeDemand(), ModelNames: state.modelNames}, fmt.Errorf("unexpected data after request")
 	}
 	demand := state.routeDemand()
-	demand.UnknownContentTypes = nil
-	return ChatInspection{Demand: demand, VideoCount: state.videoCount, ExistingImages: state.imageCount}, nil
+	result := ChatInspection{Demand: demand, VideoCount: state.videoCount, ExistingImages: state.imageCount, ModelNames: state.modelNames}
+	if state.validation != nil {
+		result.ValidationError = state.validation.first
+	}
+	return result, nil
 }
 
 // detectOpenAIChat scans a Chat Completions request and reports the routing
@@ -97,14 +117,24 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 	}
 
 	messagesSeen := false
+	var seen map[string]bool
+	if state.validation != nil {
+		seen = make(map[string]bool)
+	}
 	for decoder.More() {
 		key, err := decodeKey(decoder)
 		if err != nil {
 			return err
 		}
+		if state.validation != nil && chatControlledField(key) {
+			if seen[key] {
+				state.validation.add(key, key+" must be provided once")
+			}
+			seen[key] = true
+		}
 		switch key {
 		case "model":
-			if state.inspectAll && state.modelSeen {
+			if state.inspectAll && state.modelSeen && state.validation == nil {
 				return fmt.Errorf("model must be provided once")
 			}
 			value, err := decoder.Token()
@@ -112,6 +142,9 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 				return err
 			}
 			if name, ok := value.(string); ok {
+				if state.validation != nil {
+					state.modelNames = append(state.modelNames, name)
+				}
 				state.model = name
 				state.modelSeen = true
 			} else if state.inspectAll {
@@ -121,13 +154,13 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 				return err
 			}
 		case "tools":
-			hasTools, err := scanTools(decoder)
+			hasTools, err := scanValidatedTools(decoder, state.validation, "tools")
 			if err != nil {
 				return err
 			}
 			state.hasTools = state.hasTools || hasTools
 		case "messages":
-			if state.inspectAll && messagesSeen {
+			if state.inspectAll && messagesSeen && state.validation == nil {
 				return fmt.Errorf("messages must be provided once")
 			}
 			messagesSeen = true
@@ -139,6 +172,12 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 				return nil
 			}
 		default:
+			if state.validation != nil && chatControlledField(key) {
+				if err := state.validation.parameter(decoder, key); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := skipValue(decoder); err != nil {
 				return err
 			}
@@ -146,6 +185,9 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 		if state.stop() {
 			return nil
 		}
+	}
+	if state.validation != nil && !messagesSeen {
+		state.validation.add("messages", "messages must be a non-empty array")
 	}
 	_, err = decoder.Token()
 	return err
@@ -157,25 +199,33 @@ func scanMessages(decoder *common.JSONTokenDecoder, state *detectorState) (bool,
 		return false, err
 	}
 	if delim, ok := opening.(json.Delim); !ok || delim != '[' {
+		state.validation.add("messages", "messages must be a non-empty array")
 		if err := skipRemainder(decoder, opening); err != nil {
 			return false, err
 		}
 		return false, nil
 	}
 
+	index := 0
 	for decoder.More() {
+		var path string
+		if state.validation != nil {
+			path = fmt.Sprintf("messages[%d]", index)
+		}
+		index++
 		message, err := decoder.Token()
 		if err != nil {
 			return false, err
 		}
 		delim, ok := message.(json.Delim)
 		if !ok || delim != '{' {
+			state.validation.add(path, path+" must be an object")
 			if err := skipRemainder(decoder, message); err != nil {
 				return false, err
 			}
 			continue
 		}
-		stopped, err := scanMessage(decoder, state)
+		stopped, err := scanMessage(decoder, state, path)
 		if err != nil {
 			return false, err
 		}
@@ -183,23 +233,49 @@ func scanMessages(decoder *common.JSONTokenDecoder, state *detectorState) (bool,
 			return true, nil
 		}
 	}
+	if index == 0 {
+		state.validation.add("messages", "messages must be a non-empty array")
+	}
 	if _, err := decoder.Token(); err != nil {
 		return false, err
 	}
 	return false, nil
 }
 
-func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
+func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path string) (bool, error) {
 	contentSeen := false
+	roleSeen := false
+	toolsSeen := false
 	for decoder.More() {
 		key, err := decodeKey(decoder)
 		if err != nil {
 			return false, err
 		}
 		switch key {
+		case "role":
+			if state.validation == nil {
+				if err := skipValue(decoder); err != nil {
+					return false, err
+				}
+				continue
+			}
+			if roleSeen {
+				state.validation.add(path+".role", path+".role must be provided once")
+			}
+			roleSeen = true
+			value, err := readChatScalar(decoder)
+			if err != nil {
+				return false, err
+			}
+			if !validChatRole(value) {
+				state.validation.add(path+".role", path+".role is not a supported role")
+			}
 		case "content":
 			if state.inspectAll && contentSeen {
-				return false, fmt.Errorf("content must be provided once")
+				if state.validation == nil {
+					return false, fmt.Errorf("content must be provided once")
+				}
+				state.validation.add(path+".content", path+".content must be provided once")
 			}
 			contentSeen = true
 			stopped, err := scanContent(decoder, state)
@@ -210,7 +286,11 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState) (bool, 
 				return true, nil
 			}
 		case "tools":
-			hasTools, err := scanTools(decoder)
+			if toolsSeen {
+				state.validation.add(path+".tools", path+".tools must be provided once")
+			}
+			toolsSeen = true
+			hasTools, err := scanValidatedTools(decoder, state.validation, path+".tools")
 			if err != nil {
 				return false, err
 			}
@@ -220,6 +300,9 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState) (bool, 
 				return false, err
 			}
 		}
+	}
+	if !roleSeen {
+		state.validation.add(path+".role", path+".role is required")
 	}
 	if _, err := decoder.Token(); err != nil {
 		return false, err
@@ -231,7 +314,7 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState) (bool, 
 // string is the text baseline; a list is walked part by part; anything else is
 // conservatively unknown.
 func scanContent(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
-	value, err := decoder.Token()
+	value, err := decoder.StructuralToken()
 	if err != nil {
 		return false, err
 	}
@@ -390,7 +473,7 @@ func skipRemainder(decoder *common.JSONTokenDecoder, first json.Token) error {
 	}
 	depth := 1
 	for depth > 0 {
-		token, err := decoder.Token()
+		token, err := decoder.StructuralToken()
 		if err != nil {
 			return err
 		}

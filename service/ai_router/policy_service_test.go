@@ -106,6 +106,19 @@ func TestSaveTargetPolicyPublishesSnapshot(t *testing.T) {
 	assert.Equal(t, policy.Id, stored.Id)
 	assert.Len(t, stored.Candidates, 2)
 	assert.Equal(t, 3, stored.MaxAttempts)
+	assert.False(t, stored.K3StrictValidation)
+	input.K3StrictValidation = common.GetPointer(true)
+	_, _, err = SaveTargetPolicy(input, policy.Id)
+	require.NoError(t, err)
+	assert.True(t, GetTargetPolicySnapshot().GetPolicy("kimi-k3", "default").K3StrictValidation)
+	input.K3StrictValidation = nil
+	_, _, err = SaveTargetPolicy(input, policy.Id)
+	require.NoError(t, err)
+	assert.True(t, GetTargetPolicySnapshot().GetPolicy("kimi-k3", "default").K3StrictValidation)
+	input.K3StrictValidation = common.GetPointer(false)
+	_, _, err = SaveTargetPolicy(input, policy.Id)
+	require.NoError(t, err)
+	assert.False(t, GetTargetPolicySnapshot().HasStrictValidation())
 }
 
 func TestSaveTargetPolicyValidationErrors(t *testing.T) {

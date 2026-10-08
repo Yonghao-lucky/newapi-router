@@ -48,6 +48,7 @@ export function GlobalConfigTab() {
   const [retentionDays, setRetentionDays] = useState(7)
   const [idleTimeout, setIdleTimeout] = useState(1000)
   const [responseModelAliases, setResponseModelAliases] = useState<string[]>([])
+  const [unknownModelGroups, setUnknownModelGroups] = useState<string[]>([])
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: [...AI_ROUTER_QUERY_KEYS.settings],
@@ -63,6 +64,7 @@ export function GlobalConfigTab() {
     setRetentionDays(data.retention_days)
     setIdleTimeout(data.idle_timeout_seconds ?? 1000)
     setResponseModelAliases(data.response_model_aliases ?? [])
+    setUnknownModelGroups(data.unknown_model_400_groups ?? [])
   }, [data])
 
   const save = useMutation({
@@ -76,6 +78,7 @@ export function GlobalConfigTab() {
         retention_days: retentionDays,
         idle_timeout_seconds: idleTimeout,
         response_model_aliases: responseModelAliases,
+        unknown_model_400_groups: unknownModelGroups,
       }),
     onSuccess: () => {
       toast.success(t('Settings saved'))
@@ -184,6 +187,23 @@ export function GlobalConfigTab() {
       </div>
 
       <div className='grid gap-4 sm:grid-cols-2'>
+        <div className='space-y-2 sm:col-span-2'>
+          <Label htmlFor='ai-router-unknown-model-groups'>
+            {t('Unknown model HTTP 400 groups')}
+          </Label>
+          <MultiSelect
+            id='ai-router-unknown-model-groups'
+            aria-label={t('Unknown model HTTP 400 groups')}
+            selected={unknownModelGroups}
+            onChange={setUnknownModelGroups}
+            options={unknownModelGroups.map((value) => ({
+              value,
+              label: value,
+            }))}
+            allowCreate
+            disabled={save.isPending}
+          />
+        </div>
         <div className='space-y-1.5'>
           <Label htmlFor='ai-router-idle-timeout'>
             {t('No-progress timeout (seconds)')}

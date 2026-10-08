@@ -71,6 +71,24 @@ function wrapper({ children }: { children: React.ReactNode }) {
 
 beforeEach(() => vi.clearAllMocks())
 
+it('leaves unknown model classification off for legacy settings and saves an explicit group scope', async () => {
+  const user = userEvent.setup()
+  render(<GlobalConfigTab />, { wrapper })
+  const groups = await screen.findByRole('combobox', {
+    name: 'Unknown model HTTP 400 groups',
+  })
+  await user.type(groups, 'default')
+  await user.keyboard('{Enter}')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.updateAIRouterSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        unknown_model_400_groups: ['default'],
+      })
+    )
+  )
+})
+
 it('configures channel model restoration even without a Router profile and can explicitly follow global settings', async () => {
   const user = userEvent.setup()
   render(

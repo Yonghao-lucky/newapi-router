@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -13,6 +14,94 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+// The old policy schema intentionally lacks the new column: upgrading it must
+// preserve candidate links and uniqueness, and leave existing policies off.
+type legacyStrictPolicy struct {
+	Id          int    `gorm:"primaryKey"`
+	Model       string `gorm:"type:varchar(191);uniqueIndex:uk_router_target_model_group"`
+	GroupId     string `gorm:"type:varchar(191);uniqueIndex:uk_router_target_model_group"`
+	Enabled     bool
+	MaxAttempts int
+	CreatedAt   int64 `gorm:"bigint"`
+	UpdatedAt   int64 `gorm:"bigint"`
+}
+
+func (legacyStrictPolicy) TableName() string { return "ai_router_target_policies" }
+
+func TestStrictPolicyMigrationDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := DB
+			if dialect != "sqlite" {
+				dsn := os.Getenv("AI_ROUTER_TEST_MYSQL_DSN")
+				if dialect == "postgres" {
+					dsn = os.Getenv("AI_ROUTER_TEST_POSTGRES_DSN")
+				}
+				if dsn == "" {
+					t.Skip("isolated database DSN not configured")
+				}
+				var dialector gorm.Dialector = mysql.Open(dsn)
+				if dialect == "postgres" {
+					dialector = postgres.Open(dsn)
+				}
+				var err error
+				db, err = gorm.Open(dialector, &gorm.Config{})
+				require.NoError(t, err)
+				sqlDB, err := db.DB()
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+			}
+			for _, upgrade := range []bool{false, true} {
+				t.Run(fmt.Sprintf("upgrade=%t", upgrade), func(t *testing.T) {
+					caseDB := db
+					if dialect != "sqlite" {
+						var err error
+						caseDB, err = gorm.Open(db.Dialector, &gorm.Config{})
+						require.NoError(t, err)
+						sqlDB, err := caseDB.DB()
+						require.NoError(t, err)
+						t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+					}
+					db := caseDB
+					require.NoError(t, db.Migrator().DropTable(&AIRouterTargetCandidate{}, &AIRouterTargetPolicy{}))
+					if upgrade {
+						require.NoError(t, db.AutoMigrate(&legacyStrictPolicy{}, &AIRouterTargetCandidate{}))
+						require.NoError(t, db.Create(&legacyStrictPolicy{Id: 99, Model: "kimi-k3", GroupId: "default", Enabled: true, MaxAttempts: 3}).Error)
+						require.NoError(t, db.Create(&AIRouterTargetCandidate{Id: 98, PolicyId: 99, ChannelId: 42, Enabled: true}).Error)
+					}
+					for range 2 {
+						require.NoError(t, db.AutoMigrate(&AIRouterTargetPolicy{}, &AIRouterTargetCandidate{}))
+					}
+					if !upgrade {
+						require.NoError(t, db.Create(&AIRouterTargetPolicy{Id: 99, Model: "kimi-k3", GroupId: "default", Enabled: true, MaxAttempts: 3}).Error)
+					}
+					var policy AIRouterTargetPolicy
+					require.NoError(t, db.Preload("Candidates").First(&policy, 99).Error)
+					assert.False(t, policy.K3StrictValidation)
+					assert.Equal(t, 3, policy.MaxAttempts)
+					if upgrade {
+						require.Len(t, policy.Candidates, 1)
+						assert.Equal(t, 42, policy.Candidates[0].ChannelId)
+					}
+					for _, enabled := range []bool{true, false} {
+						require.NoError(t, db.Model(&policy).Update("k3_strict_validation", enabled).Error)
+						require.NoError(t, db.First(&policy, 99).Error)
+						assert.Equal(t, enabled, policy.K3StrictValidation)
+					}
+					require.Error(t, db.Create(&AIRouterTargetPolicy{Model: "kimi-k3", GroupId: "default"}).Error)
+					if upgrade {
+						require.Error(t, db.Create(&AIRouterTargetCandidate{PolicyId: 99, ChannelId: 42}).Error)
+					}
+				})
+			}
+			t.Cleanup(func() {
+				require.NoError(t, db.Migrator().DropTable(&AIRouterTargetCandidate{}, &AIRouterTargetPolicy{}))
+				require.NoError(t, db.AutoMigrate(&AIRouterTargetPolicy{}, &AIRouterTargetCandidate{}))
+			})
+		})
+	}
+}
 
 // The target policy tables back the V1.5 Router scheduling contract:
 // (model, group) is unique, and (policy, channel) is unique per candidate.

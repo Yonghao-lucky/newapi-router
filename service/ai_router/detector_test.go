@@ -2,15 +2,134 @@ package ai_router
 
 import (
 	"errors"
+	"fmt"
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"io"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 )
 
 const detectorChatPath = "/v1/chat/completions"
+
+func TestStrictInspectionCacheAndPolicySnapshot(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body, err := common.CreateBodyStorage([]byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"Hi"}],"thinking":{"type":"disabled"}}`))
+	require.NoError(t, err)
+	defer body.Close()
+	first, err := InspectStoredChatRequest(c, body, true)
+	require.NoError(t, err)
+	require.NotNil(t, first.ValidationError)
+	second, err := InspectStoredChatRequest(c, body, true)
+	require.NoError(t, err)
+	assert.Same(t, first.ValidationError, second.ValidationError, "same body reuses inspection")
+	_, found := CachedStoredChatDemand(c, body)
+	assert.False(t, found)
+	rewritten, err := common.CreateBodyStorage([]byte(`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,AA"}}]}]}`))
+	require.NoError(t, err)
+	defer rewritten.Close()
+	third, err := InspectStoredChatRequest(c, rewritten, false)
+	require.NoError(t, err)
+	assert.Equal(t, ModalityImage, third.Demand.Modality)
+	assert.Nil(t, third.ValidationError)
+	demand, found := CachedStoredChatDemand(c, rewritten)
+	require.True(t, found)
+	assert.Equal(t, ModalityImage, demand.Modality)
+	previous := GetTargetPolicySnapshot()
+	t.Cleanup(func() { PublishTargetPolicySnapshot(previous) })
+	snapshot := BuildTargetPolicySnapshot([]TargetPolicy{{Model: "kimi-k3", GroupId: "default", Enabled: true, K3StrictValidation: true}})
+	PinRequestPolicySnapshot(c, snapshot)
+	PublishTargetPolicySnapshot(BuildTargetPolicySnapshot(nil))
+	assert.Same(t, snapshot, RequestPolicySnapshot(c))
+}
+
+func TestStrictChatInspection(t *testing.T) {
+	for _, tc := range []struct{ name, fields, messages, param string }{
+		{name: "bad role", messages: `[{"role":"badrole","content":"x"}]`, param: "messages[0].role"},
+		{name: "missing role", messages: `[{"content":"x"}]`, param: "messages[0].role"},
+		{name: "null role", messages: `[{"role":null}]`, param: "messages[0].role"},
+		{name: "empty messages", messages: `[]`, param: "messages"},
+		{name: "object messages", messages: `{}`, param: "messages"},
+		{name: "scalar message", messages: `[true]`, param: "messages[0]"},
+		{name: "tools missing type", fields: `,"tools":[{"bad":"x"}]`, param: "tools[0].type"},
+		{name: "tools missing function", fields: `,"tools":[{"type":"function"}]`, param: "tools[0].function"},
+		{name: "tools missing name", fields: `,"tools":[{"type":"function","function":{}}]`, param: "tools[0].function.name"},
+		{name: "tools wrong type", fields: `,"tools":{}`, param: "tools"},
+		{name: "thinking disabled", fields: `,"thinking":{"type":"disabled"}`, param: "thinking.type"},
+		{name: "thinking invalid", fields: `,"thinking":{"type":"bogus"}`, param: "thinking.type"},
+		{name: "thinking null", fields: `,"thinking":null`, param: "thinking"},
+		{name: "thinking keep", fields: `,"thinking":{"type":"enabled","keep":"bogus"}`, param: "thinking.keep"},
+		{name: "nonstandard thinking", fields: `,"enable_thinking":false`, param: "enable_thinking"},
+		{name: "null nonstandard thinking", fields: `,"enable_thinking":null`, param: "enable_thinking"},
+		{name: "invalid format", fields: `,"response_format":{"type":"bad"}`, param: "response_format.type"},
+		{name: "missing schema", fields: `,"response_format":{"type":"json_schema"}`, param: "response_format.json_schema"},
+		{name: "invalid schema", fields: `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":[]}}`, param: "response_format.json_schema.schema"},
+		{name: "zero tokens", fields: `,"max_tokens":0`, param: "max_tokens"},
+		{name: "negative tokens", fields: `,"max_tokens":-5`, param: "max_tokens"},
+		{name: "fractional tokens", fields: `,"max_tokens":0.5`, param: "max_tokens"},
+		{name: "null tokens", fields: `,"max_tokens":null`, param: "max_tokens"},
+		{name: "oversized tokens", fields: `,"max_tokens":18446744073686646784`, param: "max_tokens"},
+		{name: "string temperature", fields: `,"temperature":"1"`, param: "temperature"},
+		{name: "string top p", fields: `,"top_p":"0.95"`, param: "top_p"},
+		{name: "duplicate effort-independent field", fields: `,"thinking":{"type":"enabled","type":"enabled"}`, param: "thinking.type"},
+		{name: "duplicate messages", fields: `,"messages":[{"role":"user","content":"x"}]`, param: "messages"},
+		{name: "escaped duplicate role", messages: `[{"role":"user","\u0072ole":"user"}]`, param: "messages[0].role"},
+		{name: "duplicate model", fields: `,"model":"other"`, param: "model"},
+		{name: "valid omit"},
+		{name: "enabled thinking", fields: `,"thinking":{"type":"enabled","keep":"all"}`},
+		{name: "compatibility left to channel", fields: `,"reasoning_effort":"medium","tool_choice":"any"`},
+		{name: "valid custom", fields: `,"tools":[{"type":"custom","custom":{"name":"lookup","format":{"type":"text"}}}]`},
+		{name: "irrelevant schema envelope", fields: `,"response_format":{"type":"text","json_schema":null}`},
+		{name: "valid builtin", fields: `,"tools":[{"type":"builtin_function","function":{"name":"$web_search"}}]`},
+		{name: "dynamic tools", messages: `[{"role":"system","tools":[{"type":"function","function":{"name":"weather"}}]}]`},
+		{name: "valid schema refs", fields: `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"$defs":{"x":{"type":"string"}},"$ref":"#/$defs/x","thinking":{"type":"disabled"}}}}`},
+		{name: "boolean schema", fields: `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":true}}`},
+		{name: "payload not parameter", messages: `[{"role":"user","content":"thinking disabled enable_thinking false"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			messages := tc.messages
+			if messages == "" {
+				messages = `[{"role":"user","content":"Hi"}]`
+			}
+			body := `{"model":"kimi-k3","messages":` + messages + tc.fields + `}`
+			inspection, err := InspectChatRequestWithValidation(strings.NewReader(body))
+			require.NoError(t, err)
+			if tc.param == "" {
+				require.Nil(t, inspection.ValidationError)
+				return
+			}
+			require.NotNil(t, inspection.ValidationError)
+			assert.Equal(t, tc.param, inspection.ValidationError.Param)
+			apiErr := inspection.ValidationError.APIError()
+			assert.Equal(t, 400, apiErr.StatusCode)
+			assert.True(t, types.IsSkipRetryError(apiErr))
+			assert.Equal(t, "invalid_request_error", apiErr.ToOpenAIError().Type)
+			assert.Equal(t, "invalid_request", apiErr.ToOpenAIError().Code)
+		})
+	}
+}
+
+func BenchmarkChatIngressInspection(b *testing.B) {
+	for _, size := range []int{64, 128 * 1024, 16 * 1024 * 1024} {
+		body := `{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":"data:video/mp4;base64,` + strings.Repeat("A", size) + `"}}]}]}`
+		for _, strict := range []bool{false, true} {
+			b.Run(fmt.Sprintf("bytes=%d/strict=%t", size, strict), func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(body)))
+				for b.Loop() {
+					if _, err := inspectChatRequest(strings.NewReader(body), strict); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
 
 // TestDetectRequest covers the eight Phase 0 captures plus the detection rules
 // that protect them: modality precedence, history scanning, tools, unknown

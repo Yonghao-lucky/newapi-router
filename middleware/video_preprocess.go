@@ -47,13 +47,7 @@ func VideoPreprocess() gin.HandlerFunc {
 			handleVideoPreprocessError(c, &video_preprocess.Error{Code: code})
 			return
 		}
-		reader, err := storage.NewReader()
-		if err != nil {
-			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidRequest})
-			return
-		}
-		inspection, err := ai_router.InspectChatRequest(reader)
-		_ = reader.Close()
+		inspection, err := ai_router.InspectStoredChatRequest(c, storage, false)
 		if err != nil || inspection.Demand.Model == "" {
 			handleVideoPreprocessError(c, &video_preprocess.Error{Code: video_preprocess.CodeInvalidRequest})
 			return
