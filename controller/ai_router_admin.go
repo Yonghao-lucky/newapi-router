@@ -549,6 +549,7 @@ type aiRouterChatCompatibility struct {
 	K3PresencePenaltyCompatibility  *bool    `json:"k3_presence_penalty_compatibility,omitempty"`
 	K3FrequencyPenaltyCompatibility *bool    `json:"k3_frequency_penalty_compatibility,omitempty"`
 	K3AllowThinkingDisabled         *bool    `json:"k3_allow_thinking_disabled,omitempty"`
+	K3AllowReasoningEffortNone      *bool    `json:"k3_allow_reasoning_effort_none,omitempty"`
 	K3ReasoningCompatibility        bool     `json:"k3_reasoning_compatibility"`
 	K3ToolChoiceCompatibility       *bool    `json:"k3_tool_choice_compatibility,omitempty"`
 	Models                          []string `json:"chat_compatibility_models"`
@@ -636,7 +637,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			Priority:           ch.GetPriority(),
 			Weight:             ch.GetWeight(),
 			ResponseModelAlias: otherSettings.ResponseModelAlias,
-			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, K3ToolChoiceCompatibility: common.GetPointer(settings.K3ToolChoiceCompatibility), Models: settings.ChatCompatibilityModels, K3TemperatureCompatibility: common.GetPointer(settings.K3TemperatureCompatibility), K3TopPCompatibility: common.GetPointer(settings.K3TopPCompatibility), K3PresencePenaltyCompatibility: common.GetPointer(settings.K3PresencePenaltyCompatibility), K3FrequencyPenaltyCompatibility: common.GetPointer(settings.K3FrequencyPenaltyCompatibility), K3AllowThinkingDisabled: common.GetPointer(settings.K3AllowThinkingDisabled)},
+			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, K3ToolChoiceCompatibility: common.GetPointer(settings.K3ToolChoiceCompatibility), Models: settings.ChatCompatibilityModels, K3TemperatureCompatibility: common.GetPointer(settings.K3TemperatureCompatibility), K3TopPCompatibility: common.GetPointer(settings.K3TopPCompatibility), K3PresencePenaltyCompatibility: common.GetPointer(settings.K3PresencePenaltyCompatibility), K3FrequencyPenaltyCompatibility: common.GetPointer(settings.K3FrequencyPenaltyCompatibility), K3AllowThinkingDisabled: common.GetPointer(settings.K3AllowThinkingDisabled), K3AllowReasoningEffortNone: common.GetPointer(settings.K3AllowReasoningEffortNone)},
 			RoutingProfile: aiRouterChannelRouterView{
 				VideoPriority:     profile.VideoPriority,
 				Enabled:           profile.Enabled,
@@ -787,6 +788,9 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 		}
 		if req.ChatCompatibility.K3AllowThinkingDisabled != nil {
 			settings["k3_allow_thinking_disabled"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3AllowThinkingDisabled))
+		}
+		if req.ChatCompatibility.K3AllowReasoningEffortNone != nil {
+			settings["k3_allow_reasoning_effort_none"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3AllowReasoningEffortNone))
 		}
 		if req.ChatCompatibility.K3ToolChoiceCompatibility != nil {
 			settings["k3_tool_choice_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3ToolChoiceCompatibility))

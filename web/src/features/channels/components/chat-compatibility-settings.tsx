@@ -48,7 +48,39 @@ export function K3ReasoningCompatibilityControl(props: {
         <FormLabel>{t('Kimi K3 reasoning effort compatibility')}</FormLabel>
         <FormDescription>
           {t(
-            'Before K3 validation, replace unsupported reasoning_effort strings (including none), empty strings and null with high. Keep low/high/max and omitted fields unchanged; reject other types. May change reasoning time and token usage. Other validation stays enabled.'
+            'Before K3 validation, replace unsupported reasoning_effort values with high. The separate none switch preserves exact none for verified resources; other validation stays enabled.'
+          )}
+        </FormDescription>
+      </div>
+      <FormControl>
+        <Switch
+          disabled={props.disabled}
+          checked={props.checked}
+          onCheckedChange={props.onCheckedChange}
+        />
+      </FormControl>
+    </FormItem>
+  )
+}
+
+export function K3AllowReasoningEffortNoneControl(props: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  disabled?: boolean
+}) {
+  const { t } = useTranslation()
+  return (
+    <FormItem
+      data-disabled={props.disabled}
+      className='flex items-center justify-between gap-4'
+    >
+      <div className='min-w-0'>
+        <FormLabel>
+          {t('Allow reasoning_effort=none to disable thinking')}
+        </FormLabel>
+        <FormDescription>
+          {t(
+            'Only enable for verified upstream resources. Pass exact none unchanged through K3 compatibility and validation; route retries only to channels with this capability. Reasoning output and usage are never rewritten.'
           )}
         </FormDescription>
       </div>
@@ -152,6 +184,17 @@ export function ChatCompatibilitySettings(props: { disabled?: boolean }) {
           name='k3_reasoning_compatibility'
           render={({ field }) => (
             <K3ReasoningCompatibilityControl
+              disabled={props.disabled}
+              checked={field.value === true}
+              onCheckedChange={field.onChange}
+            />
+          )}
+        />
+        <FormField
+          control={form.control}
+          name='k3_allow_reasoning_effort_none'
+          render={({ field }) => (
+            <K3AllowReasoningEffortNoneControl
               disabled={props.disabled}
               checked={field.value === true}
               onCheckedChange={field.onChange}

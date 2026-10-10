@@ -64,6 +64,7 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import {
+  K3AllowReasoningEffortNoneControl,
   K3ReasoningCompatibilityControl,
   K3ToolChoiceCompatibilityControl,
 } from '@/features/channels/components/chat-compatibility-settings'
@@ -111,6 +112,7 @@ const channelFormSchema = z.object({
   k3PresencePenaltyCompatibility: z.boolean(),
   k3FrequencyPenaltyCompatibility: z.boolean(),
   k3AllowThinkingDisabled: z.boolean(),
+  k3AllowReasoningEffortNone: z.boolean(),
   k3ReasoningCompatibility: z.boolean(),
   k3ToolChoiceCompatibility: z.boolean(),
   chatCompatibilityModels: z.string(),
@@ -167,6 +169,8 @@ const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
       channel.chat_compatibility?.k3_frequency_penalty_compatibility === true,
     k3AllowThinkingDisabled:
       channel.chat_compatibility?.k3_allow_thinking_disabled === true,
+    k3AllowReasoningEffortNone:
+      channel.chat_compatibility?.k3_allow_reasoning_effort_none === true,
     k3ReasoningCompatibility:
       channel.chat_compatibility?.k3_reasoning_compatibility === true,
     k3ToolChoiceCompatibility:
@@ -294,6 +298,7 @@ export function ChannelDrawer(props: {
           form.getFieldState('k3PresencePenaltyCompatibility').isDirty ||
           form.getFieldState('k3FrequencyPenaltyCompatibility').isDirty ||
           form.getFieldState('k3AllowThinkingDisabled').isDirty ||
+          form.getFieldState('k3AllowReasoningEffortNone').isDirty ||
           form.getFieldState('k3ToolChoiceCompatibility').isDirty ||
           form.getFieldState('chatCompatibilityModels').isDirty
           ? {
@@ -306,6 +311,8 @@ export function ChannelDrawer(props: {
               k3_frequency_penalty_compatibility:
                 formValues.k3FrequencyPenaltyCompatibility,
               k3_allow_thinking_disabled: formValues.k3AllowThinkingDisabled,
+              k3_allow_reasoning_effort_none:
+                formValues.k3AllowReasoningEffortNone,
               k3_tool_choice_compatibility:
                 formValues.k3ToolChoiceCompatibility,
               chat_compatibility_models: [
@@ -573,6 +580,17 @@ export function ChannelDrawer(props: {
                   name='k3ReasoningCompatibility'
                   render={({ field }) => (
                     <K3ReasoningCompatibilityControl
+                      disabled={save.isPending}
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3AllowReasoningEffortNone'
+                  render={({ field }) => (
+                    <K3AllowReasoningEffortNoneControl
                       disabled={save.isPending}
                       checked={field.value}
                       onCheckedChange={field.onChange}

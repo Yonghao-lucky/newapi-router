@@ -136,6 +136,7 @@ export interface AIRouterChannel {
     k3_presence_penalty_compatibility?: boolean
     k3_frequency_penalty_compatibility?: boolean
     k3_allow_thinking_disabled?: boolean
+    k3_allow_reasoning_effort_none?: boolean
     k3_reasoning_compatibility: boolean
     k3_tool_choice_compatibility?: boolean
     chat_compatibility_models: string[] | null

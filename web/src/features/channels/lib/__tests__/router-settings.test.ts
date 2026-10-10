@@ -33,6 +33,7 @@ it('preserves independent K3 flags when saving through the ordinary channel edit
     k3_presence_penalty_compatibility: true,
     k3_frequency_penalty_compatibility: false,
     k3_allow_thinking_disabled: true,
+    k3_allow_reasoning_effort_none: true,
   }
   const channel = channelSchema.parse({
     id: 48,

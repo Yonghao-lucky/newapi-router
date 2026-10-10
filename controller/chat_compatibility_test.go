@@ -206,6 +206,28 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 			assert.Contains(t, w.Body.String(), `"total_tokens":3`)
 		}
 	}
+	for _, allowNone := range []bool{false, true} {
+		channel.SetSetting(dto.ChannelSettings{K3AllowReasoningEffortNone: allowNone, K3ReasoningCompatibility: true, K3ParameterValidation: true, ChatCompatibilityModels: []string{"kimi-k3"}})
+		require.NoError(t, model.DB.Model(channel).Update("setting", channel.Setting).Error)
+		model.InitChannelCache()
+		for _, stream := range []bool{false, true} {
+			before := calls.Load()
+			w := request(fmt.Sprintf(`{"model":"kimi-k3","stream":%t,"stream_options":{"include_usage":false},"max_tokens":16,"reasoning_effort":"none","messages":[{"role":"user","content":"Hi"}]}`, stream))
+			if !allowNone {
+				assert.Equal(t, 400, w.Code, w.Body.String())
+				assert.Contains(t, w.Body.String(), `"code":"unsupported_reasoning_effort"`)
+				assert.Equal(t, before, calls.Load())
+				continue
+			}
+			require.Equal(t, 200, w.Code, w.Body.String())
+			assert.Equal(t, "none", sent["reasoning_effort"])
+			if stream {
+				assert.Contains(t, w.Body.String(), `"finish_reason":"stop"`)
+				assert.Contains(t, w.Body.String(), "data: [DONE]")
+				assert.NotContains(t, w.Body.String(), `"usage":{"prompt_tokens"`)
+			}
+		}
+	}
 	configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP","auto":"Auto"}`))
 	require.NoError(t, model.DB.Model(channel).Update("group", "default,vip").Error)

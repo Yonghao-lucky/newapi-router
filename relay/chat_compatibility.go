@@ -21,7 +21,7 @@ func chatCompatibilityConfigured(info *relaycommon.RelayInfo) bool {
 	settings := info.ChannelSetting
 	return info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		info.RelayFormat == types.RelayFormatOpenAI && len(settings.ChatCompatibilityModels) > 0 &&
-		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.K3ToolChoiceCompatibility || settings.GatewayVisibleContentStop || settings.K3TemperatureCompatibility || settings.K3TopPCompatibility || settings.K3PresencePenaltyCompatibility || settings.K3FrequencyPenaltyCompatibility || settings.K3AllowThinkingDisabled)
+		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.K3ToolChoiceCompatibility || settings.GatewayVisibleContentStop || settings.K3TemperatureCompatibility || settings.K3TopPCompatibility || settings.K3PresencePenaltyCompatibility || settings.K3FrequencyPenaltyCompatibility || settings.K3AllowThinkingDisabled || settings.K3AllowReasoningEffortNone)
 }
 
 func chatCompatibilityClientError(param, message string) *types.NewAPIError {
@@ -69,6 +69,21 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 	if err := common.Unmarshal(originalBytes, &original); err != nil {
 		return nil, chatCompatibilityClientError("", "request must be a JSON object")
 	}
+	allowNone := info.ChannelSetting.K3AllowReasoningEffortNone
+	if allowNone && bytes.Equal(bytes.TrimSpace(original["reasoning_effort"]), []byte(`"none"`)) {
+		outgoingEffort := bytes.TrimSpace(outgoing["reasoning_effort"])
+		if len(outgoingEffort) > 0 && !bytes.Equal(outgoingEffort, []byte(`"none"`)) {
+			return nil, chatCompatibilityConfigurationError("outgoing reasoning_effort conflicts with the channel's none capability")
+		}
+		if len(outgoingEffort) == 0 {
+			outgoing["reasoning_effort"] = json.RawMessage(`"none"`)
+			body, err = common.Marshal(outgoing)
+			if err != nil {
+				return nil, chatCompatibilityConfigurationError("cannot preserve reasoning_effort none")
+			}
+		}
+		info.SetReasoningEffort("none")
+	}
 	if info.ChannelSetting.StrictChatToolMessages {
 		if err := validateChatToolMessages(original["messages"]); err != nil {
 			return nil, chatCompatibilityClientError("messages", err.Error())
@@ -90,11 +105,11 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 	if info.ChannelSetting.K3ReasoningCompatibility {
 		// Normalize only attempt-local maps. Body storage must remain untouched
 		// so another channel can enforce its own compatibility policy.
-		originalChanged, err := normalizeK3ReasoningEffort(original)
+		originalChanged, err := normalizeK3ReasoningEffort(original, allowNone)
 		if err != nil {
 			return nil, chatCompatibilityClientError("reasoning_effort", err.Error())
 		}
-		outgoingChanged, err := normalizeK3ReasoningEffort(outgoing)
+		outgoingChanged, err := normalizeK3ReasoningEffort(outgoing, allowNone)
 		if err != nil {
 			return nil, chatCompatibilityConfigurationError(err.Error())
 		}
@@ -201,16 +216,16 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 		}
 	}
 	if info.ChannelSetting.K3ParameterValidation {
-		if param, err := validateK3Parameters(original); err != nil {
+		if param, err := validateK3Parameters(original, allowNone); err != nil {
 			return nil, chatCompatibilityClientError(param, err.Error())
 		}
-		if param, err := validateK3Parameters(outgoing); err != nil {
+		if param, err := validateK3Parameters(outgoing, allowNone); err != nil {
 			return nil, chatCompatibilityConfigurationError("outgoing " + param + ": " + err.Error())
 		}
 	}
 	// Chat-to-Responses changes both the outgoing protocol and response handler.
 	// Do not silently bypass a channel's Chat compatibility contract.
-	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility || info.ChannelSetting.K3ToolChoiceCompatibility || info.ChannelSetting.K3AllowThinkingDisabled || info.ChannelSetting.K3TemperatureCompatibility || info.ChannelSetting.K3TopPCompatibility || info.ChannelSetting.K3PresencePenaltyCompatibility || info.ChannelSetting.K3FrequencyPenaltyCompatibility) {
+	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility || info.ChannelSetting.K3ToolChoiceCompatibility || info.ChannelSetting.K3AllowThinkingDisabled || info.ChannelSetting.K3AllowReasoningEffortNone || info.ChannelSetting.K3TemperatureCompatibility || info.ChannelSetting.K3TopPCompatibility || info.ChannelSetting.K3PresencePenaltyCompatibility || info.ChannelSetting.K3FrequencyPenaltyCompatibility) {
 		return nil, chatCompatibilityConfigurationError("Chat-to-Responses conversion is not supported with the selected compatibility policy")
 	}
 	if !info.ChannelSetting.GatewayVisibleContentStop {
@@ -244,8 +259,9 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 }
 
 // normalizeK3ReasoningEffort accepts only strings or explicit null. Invalid
-// strings and null become high; an absent field stays absent.
-func normalizeK3ReasoningEffort(fields map[string]json.RawMessage) (bool, error) {
+// strings and null become high; an absent field stays absent. Exact none is
+// preserved only for a channel that opted in to the upstream capability.
+func normalizeK3ReasoningEffort(fields map[string]json.RawMessage, allowNone bool) (bool, error) {
 	raw, exists := fields["reasoning_effort"]
 	if !exists {
 		return false, nil
@@ -254,7 +270,7 @@ func normalizeK3ReasoningEffort(fields map[string]json.RawMessage) (bool, error)
 	if err := common.Unmarshal(raw, &effort); err != nil {
 		return false, fmt.Errorf("reasoning_effort must be a string or null")
 	}
-	if slices.Contains([]string{"low", "high", "max"}, effort) {
+	if slices.Contains([]string{"low", "high", "max"}, effort) || (allowNone && effort == "none") {
 		return false, nil
 	}
 	fields["reasoning_effort"] = json.RawMessage(`"high"`)
@@ -393,7 +409,7 @@ func validateChatToolMessages(raw json.RawMessage) error {
 // Rules are from K3, not K2.x: https://platform.kimi.com/docs/api/models-overview
 // and https://platform.kimi.com/docs/guide/kimi-k3-quickstart . Unset and null
 // retain the existing request behavior; no default value is supplied here.
-func validateK3Parameters(fields map[string]json.RawMessage) (string, error) {
+func validateK3Parameters(fields map[string]json.RawMessage, allowNone bool) (string, error) {
 	for _, rule := range []struct {
 		name, value string
 	}{{"temperature", "1"}, {"top_p", "0.95"}, {"n", "1"}, {"presence_penalty", "0"}, {"frequency_penalty", "0"}} {
@@ -413,7 +429,7 @@ func validateK3Parameters(fields map[string]json.RawMessage) (string, error) {
 	}
 	if raw := bytes.TrimSpace(fields["reasoning_effort"]); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		var value string
-		if err := common.Unmarshal(raw, &value); err != nil || !slices.Contains([]string{"low", "high", "max"}, value) {
+		if err := common.Unmarshal(raw, &value); err != nil || (!slices.Contains([]string{"low", "high", "max"}, value) && !(allowNone && value == "none")) {
 			return "reasoning_effort", fmt.Errorf("reasoning_effort must be low, high or max for this model")
 		}
 	}

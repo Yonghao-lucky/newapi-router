@@ -115,6 +115,94 @@ func TestResponseModelAliasPreservesOpenAIHandlerOutput(t *testing.T) {
 	}
 }
 
+func TestOaiStreamPreservesTerminalChoiceWhenUsageIsExcluded(t *testing.T) {
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+
+	for _, tc := range []struct {
+		name, finishReason          string
+		includeUsage, separateUsage bool
+		forceFormat, visibleStop    bool
+	}{
+		{"combined stop raw", "stop", false, false, false, false},
+		{"combined length formatted", "length", false, false, true, false},
+		{"combined tool calls", "tool_calls", false, false, true, false},
+		{"combined stop with visible stop enabled", "stop", false, false, true, true},
+		{"separate usage", "stop", false, true, true, false},
+		{"include usage", "stop", true, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType:       constant.ChannelTypeOpenAI,
+					UpstreamModelName: "kimi-k3",
+					ChannelSetting:    dto.ChannelSettings{ForceFormat: tc.forceFormat},
+				},
+				RelayFormat:        types.RelayFormatOpenAI,
+				RelayMode:          relayconstant.RelayModeChatCompletions,
+				ShouldIncludeUsage: tc.includeUsage,
+				DisablePing:        true,
+			}
+			if tc.visibleStop {
+				info.VisibleStop = []string{"NEVER_MATCH"}
+			}
+			frames := []string{
+				`{"id":"fixture","model":"kimi-k3","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}`,
+			}
+			terminal := map[string]any{
+				"id": "fixture", "model": "kimi-k3",
+				"choices": []any{map[string]any{
+					"index": 0, "delta": map[string]any{}, "finish_reason": tc.finishReason,
+				}},
+			}
+			upstreamUsage := map[string]any{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+			if !tc.separateUsage {
+				terminal["usage"] = upstreamUsage
+			}
+			terminalJSON, err := common.Marshal(terminal)
+			require.NoError(t, err)
+			frames = append(frames, string(terminalJSON))
+			if tc.separateUsage {
+				usageJSON, err := common.Marshal(map[string]any{
+					"id": "fixture", "model": "kimi-k3", "choices": []any{}, "usage": upstreamUsage,
+				})
+				require.NoError(t, err)
+				frames = append(frames, string(usageJSON))
+			}
+			body := "data: " + strings.Join(frames, "\n\ndata: ") + "\n\ndata: [DONE]\n\n"
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+			usage, apiErr := OaiStreamHandler(c, info, resp)
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, 12, usage.TotalTokens)
+			assert.Equal(t, 1, strings.Count(w.Body.String(), "data: [DONE]"))
+
+			var finishReasons []string
+			var reportedUsage bool
+			for line := range strings.SplitSeq(w.Body.String(), "\n") {
+				payload, ok := strings.CutPrefix(line, "data: ")
+				if !ok || payload == "[DONE]" {
+					continue
+				}
+				var event dto.ChatCompletionsStreamResponse
+				require.NoError(t, common.Unmarshal([]byte(payload), &event))
+				for _, choice := range event.Choices {
+					if choice.FinishReason != nil {
+						finishReasons = append(finishReasons, *choice.FinishReason)
+					}
+				}
+				reportedUsage = reportedUsage || event.Usage != nil
+			}
+			assert.Equal(t, []string{tc.finishReason}, finishReasons)
+			assert.Equal(t, tc.includeUsage, reportedUsage)
+		})
+	}
+}
+
 type modelAliasFlushRecorder struct {
 	*httptest.ResponseRecorder
 	flushed chan string

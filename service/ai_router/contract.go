@@ -21,6 +21,8 @@ type RouteDemand struct {
 	UnknownParam            string               `json:"-"`
 	ThinkingDisabled        bool                 `json:"-"`
 	RequireThinkingDisabled bool                 `json:"-"`
+	ReasoningEffortNone     bool                 `json:"-"`
+	RequireReasoningNone    bool                 `json:"-"`
 	// OriginalModality is trusted server-side provenance, before preprocessing.
 	// Modality continues to describe the actual upstream capability required.
 	OriginalModality    Modality `json:"-"`
@@ -33,6 +35,7 @@ type RouteDemand struct {
 
 type ChannelRouteConstraints struct {
 	RequireThinkingDisabled bool     `json:"-"`
+	RequireReasoningNone    bool     `json:"-"`
 	VideoRequest            bool     `json:"video_request"`
 	RequiredModality        Modality `json:"required_modality"`
 	RequireTools            bool     `json:"require_tools"`

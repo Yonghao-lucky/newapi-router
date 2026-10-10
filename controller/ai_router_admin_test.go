@@ -256,7 +256,7 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 				})
 				assert.False(t, channel.GetSetting().K3ToolChoiceCompatibility)
 				for _, enabled := range []bool{true, false} {
-					body, err := common.Marshal(map[string]any{"router": channel.GetOtherSettings().Router, "chat_compatibility": aiRouterChatCompatibility{K3ReasoningCompatibility: true, K3ToolChoiceCompatibility: &enabled, K3TemperatureCompatibility: &enabled, K3TopPCompatibility: &enabled, K3PresencePenaltyCompatibility: &enabled, K3FrequencyPenaltyCompatibility: &enabled, K3AllowThinkingDisabled: &enabled, Models: []string{"kimi-k3"}}})
+					body, err := common.Marshal(map[string]any{"router": channel.GetOtherSettings().Router, "chat_compatibility": aiRouterChatCompatibility{K3ReasoningCompatibility: true, K3ToolChoiceCompatibility: &enabled, K3TemperatureCompatibility: &enabled, K3TopPCompatibility: &enabled, K3PresencePenaltyCompatibility: &enabled, K3FrequencyPenaltyCompatibility: &enabled, K3AllowThinkingDisabled: &enabled, K3AllowReasoningEffortNone: &enabled, Models: []string{"kimi-k3"}}})
 					require.NoError(t, err)
 					aiRouterAdminRequest(t, router, http.MethodPut, path, string(body))
 					var page struct {
@@ -279,6 +279,7 @@ func TestAIRouterChannelManagementDatabaseMatrix(t *testing.T) {
 					assert.Equal(t, enabled, stored.GetSetting().K3PresencePenaltyCompatibility)
 					assert.Equal(t, enabled, stored.GetSetting().K3FrequencyPenaltyCompatibility)
 					assert.Equal(t, enabled, stored.GetSetting().K3AllowThinkingDisabled)
+					assert.Equal(t, enabled, stored.GetSetting().K3AllowReasoningEffortNone)
 					assert.True(t, stored.GetSetting().K3ReasoningCompatibility)
 					assert.Contains(t, *stored.Setting, `9007199254740993`)
 				}

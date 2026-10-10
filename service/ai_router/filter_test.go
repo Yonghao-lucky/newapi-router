@@ -59,6 +59,12 @@ func TestThinkingAndMixedContentNeverSelectIncompatibleFallback(t *testing.T) {
 	require.Len(t, selected, 1)
 	assert.Equal(t, channels[0].ID, selected[0].ID)
 	assert.Empty(t, FilterChannelsWithExclusions(channels, constraints, "default", map[int]bool{channels[0].ID: true}))
+	channels[0].AllowsReasoningNone = true
+	noneConstraints := BuildConstraints(RouteDemand{Modality: ModalityText, RequireReasoningNone: true}, ai_router_setting.DefaultSettings())
+	noneCandidates := FilterChannels(channels, noneConstraints, "default")
+	require.Len(t, noneCandidates, 1)
+	assert.Equal(t, channels[0].ID, noneCandidates[0].ID)
+	assert.Empty(t, FilterChannelsWithExclusions(channels, noneConstraints, "default", map[int]bool{channels[0].ID: true}))
 	constraints = BuildConstraints(RouteDemand{Modality: ModalityVideo, UnknownContentTypes: []string{"document"}}, ai_router_setting.DefaultSettings())
 	assert.Empty(t, FilterChannels(channels, constraints, "default"))
 	channels[2].RoutingProfile.UnknownFallback = true

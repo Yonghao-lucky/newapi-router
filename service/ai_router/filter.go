@@ -11,6 +11,7 @@ import (
 // RouterChannel is a decoupled view of a channel for routing purposes.
 type RouterChannel struct {
 	AllowsThinkingDisabled bool
+	AllowsReasoningNone    bool
 	ID                     int
 	Priority               int64
 	Weight                 int
@@ -26,6 +27,7 @@ func BuildConstraints(demand RouteDemand, settings ai_router_setting.Settings) C
 		RequireTools:            settings.ToolFilterEnabled && demand.HasTools,
 		UnknownFallbackOnly:     demand.Modality == ModalityUnknown || len(demand.UnknownContentTypes) > 0,
 		RequireThinkingDisabled: demand.RequireThinkingDisabled,
+		RequireReasoningNone:    demand.RequireReasoningNone,
 	}
 }
 
@@ -51,6 +53,9 @@ func matchesCapability(c RouterChannel, constraints ChannelRouteConstraints) boo
 		return false
 	}
 	if constraints.RequireThinkingDisabled && !c.AllowsThinkingDisabled {
+		return false
+	}
+	if constraints.RequireReasoningNone && !c.AllowsReasoningNone {
 		return false
 	}
 	if constraints.UnknownFallbackOnly && !p.UnknownFallback {

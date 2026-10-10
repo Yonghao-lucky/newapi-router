@@ -31,6 +31,7 @@ type ChannelSettings struct {
 	K3PresencePenaltyCompatibility  bool     `json:"k3_presence_penalty_compatibility,omitempty"`
 	K3FrequencyPenaltyCompatibility bool     `json:"k3_frequency_penalty_compatibility,omitempty"`
 	K3AllowThinkingDisabled         bool     `json:"k3_allow_thinking_disabled,omitempty"`
+	K3AllowReasoningEffortNone      bool     `json:"k3_allow_reasoning_effort_none,omitempty"`
 	GatewayVisibleContentStop       bool     `json:"gateway_visible_content_stop,omitempty"`
 	ChatCompatibilityModels         []string `json:"chat_compatibility_models,omitempty"`
 	// HTTPProtocol controls outbound HTTP version negotiation for this channel.

@@ -91,7 +91,7 @@ func TestChatCompatibilityK3Parameters(t *testing.T) {
 		t.Run(tc.body, func(t *testing.T) {
 			var fields map[string]json.RawMessage
 			require.NoError(t, common.Unmarshal([]byte(tc.body), &fields))
-			param, err := validateK3Parameters(fields)
+			param, err := validateK3Parameters(fields, false)
 			if tc.invalid == "" {
 				require.NoError(t, err)
 			} else {
@@ -414,13 +414,18 @@ func TestK3ReasoningCompatibilityDispatch(t *testing.T) {
 
 func TestK3ReasoningCompatibility(t *testing.T) {
 	for _, tc := range []struct {
-		name, original, outgoing, want                     string
-		disabled, noValidation, outsideScope, viaResponses bool
-		status                                             int
+		name, original, outgoing, want                                string
+		disabled, noValidation, outsideScope, viaResponses, allowNone bool
+		status                                                        int
 	}{
 		{name: "medium", original: `"medium"`, outgoing: `"medium"`, want: `"high"`},
 		{name: "ultra", original: `"ultra"`, outgoing: `"ultra"`, want: `"high"`},
 		{name: "none", original: `"none"`, outgoing: `"none"`, want: `"high"`},
+		{name: "none opt-in", original: `"none"`, outgoing: `"none"`, want: `"none"`, allowNone: true},
+		{name: "none restored when omitted", original: `"none"`, want: `"none"`, allowNone: true},
+		{name: "none without reasoning compatibility", original: `"none"`, outgoing: `"none"`, want: `"none"`, allowNone: true, disabled: true},
+		{name: "none conflicting override", original: `"none"`, outgoing: `"high"`, status: 500, allowNone: true},
+		{name: "none Responses conversion blocked", original: `"none"`, outgoing: `"none"`, status: 500, allowNone: true, viaResponses: true},
 		{name: "null omitted by DTO", original: `null`, want: `"high"`},
 		{name: "empty omitted by DTO", original: `""`, want: `"high"`},
 		{name: "whitespace", original: `"  "`, outgoing: `"  "`, want: `"high"`},
@@ -458,7 +463,7 @@ func TestK3ReasoningCompatibility(t *testing.T) {
 			t.Cleanup(func() { common.CleanupBodyStorage(c) })
 			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI,
 				ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: dto.ChannelSettings{
-					K3ParameterValidation: !tc.noValidation, K3ReasoningCompatibility: !tc.disabled, ChatCompatibilityModels: []string{"kimi-k3"},
+					K3ParameterValidation: !tc.noValidation, K3ReasoningCompatibility: !tc.disabled, K3AllowReasoningEffortNone: tc.allowNone, ChatCompatibilityModels: []string{"kimi-k3"},
 				}},
 			}
 			if tc.outsideScope {

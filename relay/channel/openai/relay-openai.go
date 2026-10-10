@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -168,6 +169,18 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		&containStreamUsage, info, &shouldSendLastResp); err != nil {
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
+	lastOutgoingData := lastStreamData
+	if !info.ShouldIncludeUsage && containStreamUsage && shouldSendLastResp {
+		// Billing keeps the upstream usage, but a final event with both choices
+		// and usage must not leak usage or lose its finish_reason to the client.
+		var fields map[string]json.RawMessage
+		if err := common.UnmarshalJsonStr(lastStreamData, &fields); err == nil {
+			delete(fields, "usage")
+			if stripped, marshalErr := common.Marshal(fields); marshalErr == nil {
+				lastOutgoingData = string(stripped)
+			}
+		}
+	}
 
 	// 部分兼容网关把完整的累计usage附在倒数第二个事件上，随后发送一个空的最后事件。
 	// 仅当最后一个事件没有有效usage时，回退到倒数第二个事件的完整快照。
@@ -196,7 +209,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if visibleStop != nil && c.Request.Context().Err() == nil && info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 			// Process the last frame even when it also carries usage: a terminal
 			// choice must not disappear merely because include_usage is false.
-			outgoing, err := visibleStop.process(lastStreamData)
+			outgoing, err := visibleStop.process(lastOutgoingData)
 			var pending string
 			if err == nil {
 				pending, err = visibleStop.flush()
@@ -216,7 +229,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				info.StreamStatus.RecordError(err.Error())
 			}
 		} else if visibleStop == nil && shouldSendLastResp && c.Request.Context().Err() == nil {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			_ = sendStreamData(c, info, lastOutgoingData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
 		}
 	}
 

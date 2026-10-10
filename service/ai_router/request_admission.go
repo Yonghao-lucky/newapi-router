@@ -16,6 +16,18 @@ func ChannelAllowsThinkingDisabled(channel *model.Channel, clientModel string) b
 	if !settings.K3AllowThinkingDisabled {
 		return false
 	}
+	return channelMatchesChatCompatibilityModel(channel, clientModel)
+}
+
+// ChannelAllowsReasoningEffortNone is opt-in for verified upstream resources.
+// The model scope is the exact outgoing name after channel mapping.
+func ChannelAllowsReasoningEffortNone(channel *model.Channel, clientModel string) bool {
+	settings := channel.GetSetting()
+	return settings.K3AllowReasoningEffortNone && channelMatchesChatCompatibilityModel(channel, clientModel)
+}
+
+func channelMatchesChatCompatibilityModel(channel *model.Channel, clientModel string) bool {
+	settings := channel.GetSetting()
 	modelName := clientModel
 	if channel.ModelMapping != nil && *channel.ModelMapping != "" {
 		var mapping map[string]string
@@ -37,7 +49,7 @@ func AdmitRouteInput(demand *RouteDemand, group string, policy *TargetPolicy) *t
 		return demand.ContentError.APIError()
 	}
 	unknown := len(demand.UnknownContentTypes) > 0
-	if !unknown && !demand.ThinkingDisabled {
+	if !unknown && !demand.ThinkingDisabled && !demand.ReasoningEffortNone {
 		return nil
 	}
 	configured, ready := model.CachedConfiguredChannelsForGroupModel(group, demand.Model)
@@ -51,7 +63,7 @@ func AdmitRouteInput(demand *RouteDemand, group string, policy *TargetPolicy) *t
 			allowed[c.ChannelID] = true
 		}
 	}
-	known, unknownSupported, thinkingSupported := false, false, false
+	known, unknownSupported, thinkingSupported, noneSupported := false, false, false, false
 	for _, channel := range configured {
 		if restricted && !allowed[channel.Id] {
 			continue
@@ -61,6 +73,7 @@ func AdmitRouteInput(demand *RouteDemand, group string, policy *TargetPolicy) *t
 		profile := otherSettings.RoutingProfile()
 		unknownSupported = unknownSupported || profile.UnknownFallback
 		thinkingSupported = thinkingSupported || ChannelAllowsThinkingDisabled(channel, demand.Model)
+		noneSupported = noneSupported || ChannelAllowsReasoningEffortNone(channel, demand.Model)
 	}
 	if !known {
 		return types.WithOpenAIError(types.OpenAIError{Type: "server_unavailable", Code: "no_available_channel", Message: "no configured channel is available for this route"}, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
@@ -83,7 +96,11 @@ func AdmitRouteInput(demand *RouteDemand, group string, policy *TargetPolicy) *t
 	if demand.ThinkingDisabled && strict && !thinkingSupported {
 		return (&ChatValidationError{Param: "thinking.type", Message: "This route does not support thinking.type 'disabled'; use a route configured to allow disabling thinking.", Code: "unsupported_thinking_mode"}).APIError()
 	}
+	if demand.ReasoningEffortNone && strict && !noneSupported {
+		return (&ChatValidationError{Param: "reasoning_effort", Message: "This route does not support reasoning_effort 'none'; use a route configured to allow disabling reasoning.", Code: "unsupported_reasoning_effort"}).APIError()
+	}
 	// Legacy non-strict routes stay unchanged unless explicitly opted in.
 	demand.RequireThinkingDisabled = demand.ThinkingDisabled && thinkingSupported
+	demand.RequireReasoningNone = demand.ReasoningEffortNone && noneSupported
 	return nil
 }

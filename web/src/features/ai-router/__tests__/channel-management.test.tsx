@@ -223,6 +223,10 @@ it.each([
   ['K3 presence_penalty compatibility', 'k3_presence_penalty_compatibility'],
   ['K3 frequency_penalty compatibility', 'k3_frequency_penalty_compatibility'],
   ['Allow requests to disable thinking', 'k3_allow_thinking_disabled'],
+  [
+    'Allow reasoning_effort=none to disable thinking',
+    'k3_allow_reasoning_effort_none',
+  ],
 ] as const)(
   'saves %s from its default off state and reloads both enabled and disabled values',
   async (label, key) => {
@@ -286,6 +290,8 @@ it.each([
               key === 'k3_frequency_penalty_compatibility' && enabled,
             k3_allow_thinking_disabled:
               key === 'k3_allow_thinking_disabled' && enabled,
+            k3_allow_reasoning_effort_none:
+              key === 'k3_allow_reasoning_effort_none' && enabled,
             k3_reasoning_compatibility:
               key === 'k3_reasoning_compatibility' && enabled,
             k3_tool_choice_compatibility:

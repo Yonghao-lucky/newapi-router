@@ -72,6 +72,26 @@ func TestStrictInspectionCacheAndPolicySnapshot(t *testing.T) {
 	assert.Same(t, snapshot, RequestPolicySnapshot(c))
 }
 
+func TestReasoningEffortNoneIsDetectedWithoutInspectingMessageContent(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		want        bool
+	}{
+		{"none", `"none"`, true},
+		{"high", `"high"`, false},
+		{"case sensitive", `"None"`, false},
+		{"null", `null`, false},
+		{"object", `{"value":"none"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"kimi-k3","messages":[{"role":"user","content":"none is an ordinary word"}],"reasoning_effort":` + tc.field + `}`
+			inspection, err := InspectChatRequest(strings.NewReader(body))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, inspection.Demand.ReasoningEffortNone)
+		})
+	}
+}
+
 func TestStrictChatInspection(t *testing.T) {
 	for _, tc := range []struct{ name, fields, messages, param string }{
 		{name: "bad role", messages: `[{"role":"badrole","content":"x"}]`, param: "messages[0].role"},

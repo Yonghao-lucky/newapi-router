@@ -268,6 +268,7 @@ export const channelFormSchema = z
     k3_presence_penalty_compatibility: z.boolean().optional(),
     k3_frequency_penalty_compatibility: z.boolean().optional(),
     k3_allow_thinking_disabled: z.boolean().optional(),
+    k3_allow_reasoning_effort_none: z.boolean().optional(),
     k3_tool_choice_compatibility: z.boolean().optional(),
     gateway_visible_content_stop: z.boolean().optional(),
     chat_compatibility_models: z.string().optional(),
@@ -479,6 +480,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   k3_presence_penalty_compatibility: false,
   k3_frequency_penalty_compatibility: false,
   k3_allow_thinking_disabled: false,
+  k3_allow_reasoning_effort_none: false,
   k3_tool_choice_compatibility: false,
   gateway_visible_content_stop: false,
   chat_compatibility_models: '',
@@ -540,6 +542,7 @@ export function transformChannelToFormDefaults(
     k3_presence_penalty_compatibility: false,
     k3_frequency_penalty_compatibility: false,
     k3_allow_thinking_disabled: false,
+    k3_allow_reasoning_effort_none: false,
     k3_tool_choice_compatibility: false,
     gateway_visible_content_stop: false,
     chat_compatibility_models: '',
@@ -574,6 +577,8 @@ export function transformChannelToFormDefaults(
         k3_frequency_penalty_compatibility:
           parsed.k3_frequency_penalty_compatibility === true,
         k3_allow_thinking_disabled: parsed.k3_allow_thinking_disabled === true,
+        k3_allow_reasoning_effort_none:
+          parsed.k3_allow_reasoning_effort_none === true,
         k3_tool_choice_compatibility:
           parsed.k3_tool_choice_compatibility === true,
         gateway_visible_content_stop:
@@ -759,6 +764,8 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     k3_frequency_penalty_compatibility:
       formData.k3_frequency_penalty_compatibility === true,
     k3_allow_thinking_disabled: formData.k3_allow_thinking_disabled === true,
+    k3_allow_reasoning_effort_none:
+      formData.k3_allow_reasoning_effort_none === true,
     k3_tool_choice_compatibility:
       formData.k3_tool_choice_compatibility === true,
     gateway_visible_content_stop:

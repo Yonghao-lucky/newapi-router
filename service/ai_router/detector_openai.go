@@ -26,6 +26,7 @@ type detectorState struct {
 	contentError        *ChatValidationError
 	unknownParam        string
 	thinkingDisabled    bool
+	reasoningEffortNone bool
 	lastContentNull     bool
 }
 
@@ -140,6 +141,12 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 			seen[key] = true
 		}
 		switch key {
+		case "reasoning_effort":
+			value, err := readChatScalar(decoder)
+			if err != nil {
+				return err
+			}
+			state.reasoningEffortNone = value == "none"
 		case "thinking":
 			validation := state.validation
 			if validation == nil {
@@ -565,6 +572,7 @@ func (state *detectorState) routeDemand() RouteDemand {
 		ContentError:        state.contentError,
 		UnknownParam:        state.unknownParam,
 		ThinkingDisabled:    state.thinkingDisabled,
+		ReasoningEffortNone: state.reasoningEffortNone,
 	}
 }
 

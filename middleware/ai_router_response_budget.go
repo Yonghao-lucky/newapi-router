@@ -107,6 +107,7 @@ func AIRouterResponseBudget() gin.HandlerFunc {
 			return
 		}
 		c.Set("ai_router_require_thinking_disabled", inspection.Demand.RequireThinkingDisabled)
+		c.Set("ai_router_require_reasoning_none", inspection.Demand.RequireReasoningNone)
 		c.Set("ai_router_has_unknown_input", len(inspection.Demand.UnknownContentTypes) > 0)
 		ctx, budget := common.NewRouterResponseBudget(c.Request.Context(), time.Duration(settings.IdleTimeoutSeconds)*time.Second)
 		c.Request = c.Request.WithContext(ctx)

@@ -1308,6 +1308,7 @@ test('new channels leave Chat compatibility disabled and without a model scope',
     strict_chat_tool_messages: false,
     k3_parameter_validation: false,
     k3_reasoning_compatibility: false,
+    k3_allow_reasoning_effort_none: false,
     k3_tool_choice_compatibility: false,
     gateway_visible_content_stop: false,
     chat_compatibility_models: [],
@@ -1318,6 +1319,10 @@ test.each([
   ['strict_chat_tool_messages', 'Strict tool message validation'],
   ['k3_parameter_validation', 'Kimi K3 parameter validation'],
   ['k3_reasoning_compatibility', 'Kimi K3 reasoning effort compatibility'],
+  [
+    'k3_allow_reasoning_effort_none',
+    'Allow reasoning_effort=none to disable thinking',
+  ],
   ['k3_tool_choice_compatibility', 'Kimi K3 tool choice compatibility'],
   ['gateway_visible_content_stop', 'Gateway visible-content stop'],
 ] as const)(
@@ -1349,6 +1354,8 @@ test.each([
       strict_chat_tool_messages: settingName === 'strict_chat_tool_messages',
       k3_parameter_validation: settingName === 'k3_parameter_validation',
       k3_reasoning_compatibility: settingName === 'k3_reasoning_compatibility',
+      k3_allow_reasoning_effort_none:
+        settingName === 'k3_allow_reasoning_effort_none',
       k3_tool_choice_compatibility:
         settingName === 'k3_tool_choice_compatibility',
       gateway_visible_content_stop:
@@ -1363,6 +1370,7 @@ test('saved Chat compatibility loads all switches and preserves the model scope 
     strict_chat_tool_messages: true,
     k3_parameter_validation: true,
     k3_reasoning_compatibility: true,
+    k3_allow_reasoning_effort_none: true,
     k3_tool_choice_compatibility: true,
     gateway_visible_content_stop: true,
     chat_compatibility_models: ['kimi-k3', 'provider/model-v1'],
@@ -1388,6 +1396,7 @@ test('saved Chat compatibility loads all switches and preserves the model scope 
     'Strict tool message validation',
     'Kimi K3 parameter validation',
     'Kimi K3 reasoning effort compatibility',
+    'Allow reasoning_effort=none to disable thinking',
     'Kimi K3 tool choice compatibility',
     'Gateway visible-content stop',
   ]) {
