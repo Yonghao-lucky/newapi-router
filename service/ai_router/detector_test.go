@@ -17,6 +17,30 @@ import (
 
 const detectorChatPath = "/v1/chat/completions"
 
+func TestContentDiagnosticsAndMixedOrder(t *testing.T) {
+	for _, tc := range []struct{ content, param, code string }{
+		{`[{}]`, "messages[0].content[0].type", "missing_required_parameter"},
+		{`[{"type":4}]`, "messages[0].content[0].type", "invalid_parameter_type"},
+		{`[false]`, "messages[0].content[0]", "invalid_parameter_type"},
+		{`42`, "messages[0].content", "invalid_parameter_type"},
+		{`null`, "messages[0].content", "invalid_parameter_type"},
+	} {
+		inspection, err := InspectChatRequest(strings.NewReader(`{"model":"kimi-k3","messages":[{"role":"user","content":` + tc.content + `}]}`))
+		require.NoError(t, err)
+		require.NotNil(t, inspection.Demand.ContentError)
+		assert.Equal(t, tc.param, inspection.Demand.ContentError.Param)
+		assert.Equal(t, tc.code, inspection.Demand.ContentError.Code)
+		assert.Equal(t, 400, inspection.Demand.ContentError.APIError().StatusCode)
+	}
+	for _, content := range []string{`[{"type":"document"},{"type":"image_url"}]`, `[{"type":"image_url"},{"type":"document"}]`} {
+		inspection, err := InspectChatRequest(strings.NewReader(`{"model":"kimi-k3","messages":[{"role":"user","content":` + content + `}]}`))
+		require.NoError(t, err)
+		assert.Equal(t, ModalityUnknown, inspection.Demand.Modality)
+		assert.Equal(t, []string{"document"}, inspection.Demand.UnknownContentTypes)
+		assert.NotEmpty(t, inspection.Demand.UnknownParam)
+	}
+}
+
 func TestStrictInspectionCacheAndPolicySnapshot(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body, err := common.CreateBodyStorage([]byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"Hi"}],"thinking":{"type":"disabled"}}`))
@@ -109,7 +133,11 @@ func TestStrictChatInspection(t *testing.T) {
 			assert.Equal(t, 400, apiErr.StatusCode)
 			assert.True(t, types.IsSkipRetryError(apiErr))
 			assert.Equal(t, "invalid_request_error", apiErr.ToOpenAIError().Type)
-			assert.Equal(t, "invalid_request", apiErr.ToOpenAIError().Code)
+			if tc.name == "thinking disabled" {
+				assert.Equal(t, "unsupported_thinking_mode", apiErr.ToOpenAIError().Code)
+			} else {
+				assert.Equal(t, "invalid_request", apiErr.ToOpenAIError().Code)
+			}
 		})
 	}
 }

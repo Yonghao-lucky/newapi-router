@@ -16,15 +16,25 @@ import (
 type ChatValidationError struct {
 	Param   string
 	Message string
+	Code    string
 }
 
+func (e *ChatValidationError) Error() string { return e.Message }
+
 func (e *ChatValidationError) APIError() *types.NewAPIError {
-	return types.WithOpenAIError(types.OpenAIError{Type: "invalid_request_error", Code: "invalid_request", Param: e.Param, Message: e.Message}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	code := e.Code
+	if code == "" {
+		code = "invalid_request"
+	}
+	return types.WithOpenAIError(types.OpenAIError{Type: "invalid_request_error", Code: code, Param: e.Param, Message: e.Message}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 }
 
 // Keep a single error, ordered by field path so JSON object key order cannot
 // change which error wins. Payloads are neither retained nor modified.
-type chatValidation struct{ first *ChatValidationError }
+type chatValidation struct {
+	first            *ChatValidationError
+	thinkingDisabled bool
+}
 
 func (v *chatValidation) add(param, message string) {
 	if v == nil {
@@ -253,7 +263,7 @@ func (v *chatValidation) object(d *common.JSONTokenDecoder, path, kind string) e
 	switch kind {
 	case "thinking":
 		if typeName == "disabled" {
-			v.add(path+".type", "this model does not support disabling thinking; omit thinking or set thinking.type to 'enabled'")
+			v.thinkingDisabled = true
 		} else if typeName != "enabled" {
 			v.add(path+".type", "thinking.type must be 'enabled' for this model")
 		}

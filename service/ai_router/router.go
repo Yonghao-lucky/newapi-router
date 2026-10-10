@@ -1,7 +1,7 @@
 package ai_router
 
 import (
-	"fmt"
+	"net/http"
 	"slices"
 	"time"
 
@@ -79,11 +79,7 @@ func RunFallbackLoop(
 			if lastError != nil {
 				return lastError
 			}
-			return types.NewError(
-				fmt.Errorf("no compatible channel for modality %s", rc.Demand.Modality),
-				types.ErrorCodeGetChannelFailed,
-				types.ErrOptionWithSkipRetry(),
-			)
+			return types.WithOpenAIError(types.OpenAIError{Type: "server_unavailable", Code: "no_available_channel", Message: "No available channel for this request; please retry later."}, http.StatusServiceUnavailable, types.ErrOptionWithSkipRetry())
 		}
 
 		decision, err := SelectChannel(candidates, rc.Constraints, attempt)

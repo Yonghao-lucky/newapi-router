@@ -17,6 +17,10 @@ const (
 )
 
 type RouteDemand struct {
+	ContentError            *ChatValidationError `json:"-"`
+	UnknownParam            string               `json:"-"`
+	ThinkingDisabled        bool                 `json:"-"`
+	RequireThinkingDisabled bool                 `json:"-"`
 	// OriginalModality is trusted server-side provenance, before preprocessing.
 	// Modality continues to describe the actual upstream capability required.
 	OriginalModality    Modality `json:"-"`
@@ -28,11 +32,12 @@ type RouteDemand struct {
 }
 
 type ChannelRouteConstraints struct {
-	VideoRequest        bool     `json:"video_request"`
-	RequiredModality    Modality `json:"required_modality"`
-	RequireTools        bool     `json:"require_tools"`
-	UnknownFallbackOnly bool     `json:"unknown_fallback_only"`
-	ExcludedChannelIDs  []int    `json:"excluded_channel_ids,omitempty"`
+	RequireThinkingDisabled bool     `json:"-"`
+	VideoRequest            bool     `json:"video_request"`
+	RequiredModality        Modality `json:"required_modality"`
+	RequireTools            bool     `json:"require_tools"`
+	UnknownFallbackOnly     bool     `json:"unknown_fallback_only"`
+	ExcludedChannelIDs      []int    `json:"excluded_channel_ids,omitempty"`
 }
 
 type RouteDecision struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ai_router_setting"
 
 	"github.com/glebarez/sqlite"
@@ -119,6 +120,34 @@ func TestSaveTargetPolicyPublishesSnapshot(t *testing.T) {
 	_, _, err = SaveTargetPolicy(input, policy.Id)
 	require.NoError(t, err)
 	assert.False(t, GetTargetPolicySnapshot().HasStrictValidation())
+}
+
+func TestRouteAdmissionCapabilitiesAndUnavailableChannels(t *testing.T) {
+	setupPolicyServiceTest(t)
+	channel := policyTestChannel(t, 940099, "capability", "default", "kimi-k3", true)
+	policy := &TargetPolicy{Model: "kimi-k3", GroupId: "default", Enabled: true, K3StrictValidation: true, Candidates: []TargetPolicyCandidate{{ChannelID: channel.Id, Enabled: true}}}
+	demand := RouteDemand{Model: "kimi-k3", Modality: ModalityText, ThinkingDisabled: true}
+	err := AdmitRouteInput(&demand, "default", policy)
+	require.NotNil(t, err)
+	assert.Equal(t, 400, err.StatusCode)
+	channel.SetSetting(dto.ChannelSettings{K3AllowThinkingDisabled: true, ChatCompatibilityModels: []string{"kimi-k3"}})
+	require.NoError(t, model.DB.Model(channel).Updates(map[string]any{"setting": channel.Setting, "status": common.ChannelStatusManuallyDisabled}).Error)
+	model.InitChannelCache()
+	require.Nil(t, AdmitRouteInput(&demand, "default", policy), "disabled capacity is not unsupported input")
+	assert.True(t, demand.RequireThinkingDisabled)
+	rc := NewRouteContext(demand, 1)
+	err = RunFallbackLoop(rc, nil, "default", ai_router_setting.DefaultSettings(), func() *types.NewAPIError { t.Fatal("must not call upstream"); return nil })
+	require.NotNil(t, err)
+	assert.Equal(t, 503, err.StatusCode)
+	unknown := RouteDemand{Model: "kimi-k3", Modality: ModalityUnknown, UnknownContentTypes: []string{"document"}, UnknownParam: "messages[0].content[0].type"}
+	err = AdmitRouteInput(&unknown, "default", policy)
+	require.NotNil(t, err)
+	assert.Equal(t, 400, err.StatusCode)
+	assert.Equal(t, unknown.UnknownParam, err.ToOpenAIError().Param)
+	channel.SetOtherSettings(dto.ChannelOtherSettings{Router: &dto.ChannelRoutingProfile{Enabled: true, UnknownFallback: true}})
+	require.NoError(t, model.DB.Model(channel).Update("settings", channel.OtherSettings).Error)
+	model.InitChannelCache()
+	require.Nil(t, AdmitRouteInput(&unknown, "default", policy))
 }
 
 func TestSaveTargetPolicyValidationErrors(t *testing.T) {

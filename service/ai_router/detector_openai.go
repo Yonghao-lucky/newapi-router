@@ -23,6 +23,10 @@ type detectorState struct {
 	imageCount          int
 	validation          *chatValidation
 	modelNames          []string
+	contentError        *ChatValidationError
+	unknownParam        string
+	thinkingDisabled    bool
+	lastContentNull     bool
 }
 
 func newDetectorState() *detectorState {
@@ -81,6 +85,9 @@ func inspectChatRequest(body io.Reader, validate bool) (ChatInspection, error) {
 	result := ChatInspection{Demand: demand, VideoCount: state.videoCount, ExistingImages: state.imageCount, ModelNames: state.modelNames}
 	if state.validation != nil {
 		result.ValidationError = state.validation.first
+		if result.ValidationError == nil && state.thinkingDisabled {
+			result.ValidationError = &ChatValidationError{Param: "thinking.type", Message: "this route does not support disabling thinking; omit thinking or use a route supporting disabled", Code: "unsupported_thinking_mode"}
+		}
 	}
 	return result, nil
 }
@@ -133,6 +140,15 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 			seen[key] = true
 		}
 		switch key {
+		case "thinking":
+			validation := state.validation
+			if validation == nil {
+				validation = &chatValidation{}
+			}
+			if err := validation.object(decoder, "thinking", "thinking"); err != nil {
+				return err
+			}
+			state.thinkingDisabled = validation.thinkingDisabled
 		case "model":
 			if state.inspectAll && state.modelSeen && state.validation == nil {
 				return fmt.Errorf("model must be provided once")
@@ -208,10 +224,7 @@ func scanMessages(decoder *common.JSONTokenDecoder, state *detectorState) (bool,
 
 	index := 0
 	for decoder.More() {
-		var path string
-		if state.validation != nil {
-			path = fmt.Sprintf("messages[%d]", index)
-		}
+		path := fmt.Sprintf("messages[%d]", index)
 		index++
 		message, err := decoder.Token()
 		if err != nil {
@@ -244,6 +257,8 @@ func scanMessages(decoder *common.JSONTokenDecoder, state *detectorState) (bool,
 
 func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path string) (bool, error) {
 	contentSeen := false
+	contentNull := false
+	role := ""
 	roleSeen := false
 	toolsSeen := false
 	for decoder.More() {
@@ -253,12 +268,6 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 		}
 		switch key {
 		case "role":
-			if state.validation == nil {
-				if err := skipValue(decoder); err != nil {
-					return false, err
-				}
-				continue
-			}
 			if roleSeen {
 				state.validation.add(path+".role", path+".role must be provided once")
 			}
@@ -270,6 +279,7 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 			if !validChatRole(value) {
 				state.validation.add(path+".role", path+".role is not a supported role")
 			}
+			role, _ = value.(string)
 		case "content":
 			if state.inspectAll && contentSeen {
 				if state.validation == nil {
@@ -278,7 +288,8 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 				state.validation.add(path+".content", path+".content must be provided once")
 			}
 			contentSeen = true
-			stopped, err := scanContent(decoder, state)
+			stopped, err := scanContent(decoder, state, path+".content")
+			contentNull = state.lastContentNull
 			if err != nil {
 				return false, err
 			}
@@ -304,6 +315,9 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 	if !roleSeen {
 		state.validation.add(path+".role", path+".role is required")
 	}
+	if contentNull && (role == "user" || role == "system" || role == "developer" || role == "tool") {
+		state.invalidContent(path+".content", "must not be null for this message role", "invalid_parameter_type")
+	}
 	if _, err := decoder.Token(); err != nil {
 		return false, err
 	}
@@ -313,31 +327,40 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 // scanContent inspects a message content value without retaining it. A plain
 // string is the text baseline; a list is walked part by part; anything else is
 // conservatively unknown.
-func scanContent(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
+func scanContent(decoder *common.JSONTokenDecoder, state *detectorState, path string) (bool, error) {
+	state.lastContentNull = false
 	value, err := decoder.StructuralToken()
 	if err != nil {
 		return false, err
 	}
 	switch typed := value.(type) {
-	case nil, string:
+	case nil:
+		state.lastContentNull = true
+		return false, nil
+	case string:
 		return false, nil
 	case json.Delim:
 		if typed == '[' {
-			return scanContentParts(decoder, state)
+			return scanContentParts(decoder, state, path)
 		}
 		if err := skipRemainder(decoder, value); err != nil {
 			return false, err
 		}
 		state.observeUnknown("")
+		state.invalidContent(path, "must be a string or an array of content objects", "invalid_parameter_type")
 		return false, nil
 	default:
 		state.observeUnknown("")
+		state.invalidContent(path, "must be a string or an array of content objects", "invalid_parameter_type")
 		return false, nil
 	}
 }
 
-func scanContentParts(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
+func scanContentParts(decoder *common.JSONTokenDecoder, state *detectorState, path string) (bool, error) {
+	index := 0
 	for decoder.More() {
+		partPath := fmt.Sprintf("%s[%d]", path, index)
+		index++
 		part, err := decoder.Token()
 		if err != nil {
 			return false, err
@@ -348,9 +371,10 @@ func scanContentParts(decoder *common.JSONTokenDecoder, state *detectorState) (b
 				return false, err
 			}
 			state.observeUnknown("")
+			state.invalidContent(partPath, "must be an object containing a type field", "invalid_parameter_type")
 			continue
 		}
-		stopped, err := scanContentPart(decoder, state)
+		stopped, err := scanContentPart(decoder, state, partPath)
 		if err != nil {
 			return false, err
 		}
@@ -367,7 +391,7 @@ func scanContentParts(decoder *common.JSONTokenDecoder, state *detectorState) (b
 // scanContentPart reads only the discriminator field, so sibling fields such
 // as a base64 payload are not read unless the scan must continue to find the
 // model name. It reports whether the whole request scan can stop.
-func scanContentPart(decoder *common.JSONTokenDecoder, state *detectorState) (bool, error) {
+func scanContentPart(decoder *common.JSONTokenDecoder, state *detectorState, path string) (bool, error) {
 	typeSeen := false
 	for decoder.More() {
 		key, err := decodeKey(decoder)
@@ -381,14 +405,19 @@ func scanContentPart(decoder *common.JSONTokenDecoder, state *detectorState) (bo
 			continue
 		}
 		if state.inspectAll && typeSeen {
-			return false, fmt.Errorf("content type must be provided once")
+			state.invalidContent(path+".type", "must be provided once", "invalid_request")
+			return false, state.contentError
 		}
 		typeSeen = true
 		value, err := decoder.Token()
 		if err != nil {
 			return false, err
 		}
-		contentType, _ := value.(string)
+		contentType, isString := value.(string)
+		if !isString || contentType == "" {
+			state.invalidContent(path+".type", "must be a non-empty string", "invalid_parameter_type")
+		}
+		beforeUnknown := len(state.unknownContentTypes)
 		if state.observeContentType(contentType) {
 			if state.stop() {
 				return true, nil
@@ -400,6 +429,9 @@ func scanContentPart(decoder *common.JSONTokenDecoder, state *detectorState) (bo
 				return false, drainObject(decoder)
 			}
 		}
+		if len(state.unknownContentTypes) > beforeUnknown && state.unknownParam == "" {
+			state.unknownParam = path + ".type"
+		}
 		if err := skipRemainder(decoder, value); err != nil {
 			return false, err
 		}
@@ -409,6 +441,7 @@ func scanContentPart(decoder *common.JSONTokenDecoder, state *detectorState) (bo
 	}
 	if !typeSeen {
 		state.observeUnknown("")
+		state.invalidContent(path+".type", "is required and must be a non-empty string", "missing_required_parameter")
 	}
 	return false, nil
 }
@@ -500,7 +533,7 @@ func (state *detectorState) observeContentType(contentType string) bool {
 		return true
 	case contentTypeImageURL, contentTypeImage, contentTypeInputImage:
 		state.imageCount++
-		if !state.videoFound {
+		if !state.videoFound && len(state.unknownContentTypes) == 0 {
 			state.modality = ModalityImage
 		}
 	case contentTypeText, contentTypeInputText:
@@ -529,5 +562,14 @@ func (state *detectorState) routeDemand() RouteDemand {
 		HasTools:            state.hasTools,
 		UnknownContentTypes: state.unknownContentTypes,
 		DetectorFamily:      DetectorFamilyOpenAIChat,
+		ContentError:        state.contentError,
+		UnknownParam:        state.unknownParam,
+		ThinkingDisabled:    state.thinkingDisabled,
+	}
+}
+
+func (state *detectorState) invalidContent(param, message, code string) {
+	if state.contentError == nil {
+		state.contentError = &ChatValidationError{Param: param, Message: param + " " + message, Code: code}
 	}
 }

@@ -39,7 +39,7 @@ export function ValidationAlert(props: { issues: AIRouterValidationIssue[] }) {
           <AlertDescription>
             <ul className='list-disc pl-4'>
               {errors.map((issue) => (
-                <li key={issue.code}>{issue.message}</li>
+                <li key={`${issue.code}-${issue.message}`}>{issue.message}</li>
               ))}
             </ul>
           </AlertDescription>
@@ -51,7 +51,7 @@ export function ValidationAlert(props: { issues: AIRouterValidationIssue[] }) {
           <AlertDescription>
             <ul className='list-disc pl-4'>
               {warnings.map((issue) => (
-                <li key={issue.code}>{issue.message}</li>
+                <li key={`${issue.code}-${issue.message}`}>{issue.message}</li>
               ))}
             </ul>
           </AlertDescription>

@@ -22,12 +22,17 @@ type ChannelSettings struct {
 	SystemPromptOverride      bool   `json:"system_prompt_override,omitempty"`
 	// Chat compatibility is opt-in per channel and exact outgoing model name.
 	// An empty model list matches no models; client aliases are not matched.
-	StrictChatToolMessages    bool     `json:"strict_chat_tool_messages,omitempty"`
-	K3ParameterValidation     bool     `json:"k3_parameter_validation,omitempty"`
-	K3ReasoningCompatibility  bool     `json:"k3_reasoning_compatibility,omitempty"`
-	K3ToolChoiceCompatibility bool     `json:"k3_tool_choice_compatibility,omitempty"`
-	GatewayVisibleContentStop bool     `json:"gateway_visible_content_stop,omitempty"`
-	ChatCompatibilityModels   []string `json:"chat_compatibility_models,omitempty"`
+	StrictChatToolMessages          bool     `json:"strict_chat_tool_messages,omitempty"`
+	K3ParameterValidation           bool     `json:"k3_parameter_validation,omitempty"`
+	K3ReasoningCompatibility        bool     `json:"k3_reasoning_compatibility,omitempty"`
+	K3ToolChoiceCompatibility       bool     `json:"k3_tool_choice_compatibility,omitempty"`
+	K3TemperatureCompatibility      bool     `json:"k3_temperature_compatibility,omitempty"`
+	K3TopPCompatibility             bool     `json:"k3_top_p_compatibility,omitempty"`
+	K3PresencePenaltyCompatibility  bool     `json:"k3_presence_penalty_compatibility,omitempty"`
+	K3FrequencyPenaltyCompatibility bool     `json:"k3_frequency_penalty_compatibility,omitempty"`
+	K3AllowThinkingDisabled         bool     `json:"k3_allow_thinking_disabled,omitempty"`
+	GatewayVisibleContentStop       bool     `json:"gateway_visible_content_stop,omitempty"`
+	ChatCompatibilityModels         []string `json:"chat_compatibility_models,omitempty"`
 	// HTTPProtocol controls outbound HTTP version negotiation for this channel.
 	// Accepted values: "", "auto" (default), "http1".
 	HTTPProtocol string `json:"http_protocol,omitempty"`

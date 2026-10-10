@@ -21,7 +21,7 @@ func chatCompatibilityConfigured(info *relaycommon.RelayInfo) bool {
 	settings := info.ChannelSetting
 	return info.RelayMode == relayconstant.RelayModeChatCompletions &&
 		info.RelayFormat == types.RelayFormatOpenAI && len(settings.ChatCompatibilityModels) > 0 &&
-		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.K3ToolChoiceCompatibility || settings.GatewayVisibleContentStop)
+		(settings.StrictChatToolMessages || settings.K3ParameterValidation || settings.K3ReasoningCompatibility || settings.K3ToolChoiceCompatibility || settings.GatewayVisibleContentStop || settings.K3TemperatureCompatibility || settings.K3TopPCompatibility || settings.K3PresencePenaltyCompatibility || settings.K3FrequencyPenaltyCompatibility || settings.K3AllowThinkingDisabled)
 }
 
 func chatCompatibilityClientError(param, message string) *types.NewAPIError {
@@ -117,6 +117,25 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 reasoning compatibility applied; outgoing reasoning_effort = "+effort)
 		}
 	}
+	if info.ChannelSetting.K3AllowThinkingDisabled {
+		for i, fields := range []map[string]json.RawMessage{original, outgoing} {
+			raw, exists := fields["thinking"]
+			if !exists {
+				continue
+			}
+			var thinking struct {
+				Type string  `json:"type"`
+				Keep *string `json:"keep"`
+			}
+			if common.Unmarshal(raw, &thinking) != nil || (thinking.Type != "enabled" && thinking.Type != "disabled") || (thinking.Keep != nil && *thinking.Keep != "all") {
+				message := "thinking must contain type 'enabled' or 'disabled'; keep, when provided, must be 'all'"
+				if i == 0 {
+					return nil, chatCompatibilityClientError("thinking", message)
+				}
+				return nil, chatCompatibilityConfigurationError(message)
+			}
+		}
+	}
 	if info.ChannelSetting.K3ToolChoiceCompatibility {
 		switch info.ApiType {
 		case constant.APITypeOpenAI, constant.APITypeOpenRouter, constant.APITypeMoonshot, constant.APITypeNewAPI:
@@ -138,6 +157,49 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 tool_choice compatibility applied")
 		}
 	}
+	// Only normalize numeric fields on attempt-local copies. Never modify the
+	// replayable body, response usage, or unrelated request fields.
+	samplingChanged := false
+	for _, rule := range []struct {
+		name, value string
+		enabled     bool
+	}{
+		{"temperature", "1", info.ChannelSetting.K3TemperatureCompatibility},
+		{"top_p", "0.95", info.ChannelSetting.K3TopPCompatibility},
+		{"presence_penalty", "0", info.ChannelSetting.K3PresencePenaltyCompatibility},
+		{"frequency_penalty", "0", info.ChannelSetting.K3FrequencyPenaltyCompatibility},
+	} {
+		if !rule.enabled {
+			continue
+		}
+		changed := false
+		for i, fields := range []map[string]json.RawMessage{original, outgoing} {
+			raw := bytes.TrimSpace(fields[rule.name])
+			if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+				continue
+			}
+			if common.GetJsonType(raw) != "number" {
+				if i == 0 {
+					return nil, chatCompatibilityClientError(rule.name, rule.name+" must be a number")
+				}
+				return nil, chatCompatibilityConfigurationError(rule.name + " must be a number")
+			}
+			if !k3FixedNumberMatches(raw, rule.value) {
+				fields[rule.name] = json.RawMessage(rule.value)
+				changed = true
+			}
+		}
+		if changed {
+			samplingChanged = true
+			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 sampling compatibility applied: "+rule.name+" = "+rule.value)
+		}
+	}
+	if samplingChanged {
+		body, err = common.Marshal(outgoing)
+		if err != nil {
+			return nil, chatCompatibilityConfigurationError("cannot encode sampling compatibility")
+		}
+	}
 	if info.ChannelSetting.K3ParameterValidation {
 		if param, err := validateK3Parameters(original); err != nil {
 			return nil, chatCompatibilityClientError(param, err.Error())
@@ -148,7 +210,7 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 	}
 	// Chat-to-Responses changes both the outgoing protocol and response handler.
 	// Do not silently bypass a channel's Chat compatibility contract.
-	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility || info.ChannelSetting.K3ToolChoiceCompatibility) {
+	if viaResponses && (info.ChannelSetting.StrictChatToolMessages || info.ChannelSetting.K3ParameterValidation || info.ChannelSetting.K3ReasoningCompatibility || info.ChannelSetting.K3ToolChoiceCompatibility || info.ChannelSetting.K3AllowThinkingDisabled || info.ChannelSetting.K3TemperatureCompatibility || info.ChannelSetting.K3TopPCompatibility || info.ChannelSetting.K3PresencePenaltyCompatibility || info.ChannelSetting.K3FrequencyPenaltyCompatibility) {
 		return nil, chatCompatibilityConfigurationError("Chat-to-Responses conversion is not supported with the selected compatibility policy")
 	}
 	if !info.ChannelSetting.GatewayVisibleContentStop {
@@ -339,22 +401,7 @@ func validateK3Parameters(fields map[string]json.RawMessage) (string, error) {
 		if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 			continue
 		}
-		value, err := decimal.NewFromString(string(raw))
-		if common.GetJsonType(raw) != "number" || err != nil {
-			return rule.name, fmt.Errorf("%s must be the number %s for this model", rule.name, rule.value)
-		}
-		// Compare exact decimal coefficients, not rounded float64 values. Avoid
-		// Decimal.Equal's exponent rescaling: a tiny 1e-2147483648 input must
-		// not allocate a power of ten proportional to its exponent.
-		expected := decimal.RequireFromString(rule.value)
-		matches := value.IsZero() && expected.IsZero()
-		if !value.IsZero() && !expected.IsZero() {
-			coefficient := value.Coefficient().String()
-			digits := strings.TrimRight(coefficient, "0")
-			exponent := int64(value.Exponent()) + int64(len(coefficient)-len(digits))
-			matches = digits == expected.Coefficient().String() && exponent == int64(expected.Exponent())
-		}
-		if !matches {
+		if !k3FixedNumberMatches(raw, rule.value) {
 			return rule.name, fmt.Errorf("%s must be the number %s for this model", rule.name, rule.value)
 		}
 		if rule.name == "n" {
@@ -371,6 +418,26 @@ func validateK3Parameters(fields map[string]json.RawMessage) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// Compare coefficients without exponent rescaling or float rounding. This
+// preserves equivalent numeric spellings without allocating enormous powers.
+func k3FixedNumberMatches(raw json.RawMessage, fixed string) bool {
+	if common.GetJsonType(raw) != "number" {
+		return false
+	}
+	value, err := decimal.NewFromString(string(raw))
+	if err != nil {
+		return false
+	}
+	expected := decimal.RequireFromString(fixed)
+	if value.IsZero() || expected.IsZero() {
+		return value.IsZero() && expected.IsZero()
+	}
+	coefficient := value.Coefficient().String()
+	digits := strings.TrimRight(coefficient, "0")
+	exponent := int64(value.Exponent()) + int64(len(coefficient)-len(digits))
+	return digits == expected.Coefficient().String() && exponent == int64(expected.Exponent())
 }
 
 func parseVisibleContentStops(raw json.RawMessage) ([]string, error) {

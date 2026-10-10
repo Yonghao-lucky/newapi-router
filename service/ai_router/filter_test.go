@@ -51,6 +51,22 @@ func TestFilterChannels(t *testing.T) {
 	}
 }
 
+func TestThinkingAndMixedContentNeverSelectIncompatibleFallback(t *testing.T) {
+	channels := fixtureChannels()
+	channels[0].AllowsThinkingDisabled = true
+	constraints := BuildConstraints(RouteDemand{Modality: ModalityText, RequireThinkingDisabled: true}, ai_router_setting.DefaultSettings())
+	selected := FilterChannels(channels, constraints, "default")
+	require.Len(t, selected, 1)
+	assert.Equal(t, channels[0].ID, selected[0].ID)
+	assert.Empty(t, FilterChannelsWithExclusions(channels, constraints, "default", map[int]bool{channels[0].ID: true}))
+	constraints = BuildConstraints(RouteDemand{Modality: ModalityVideo, UnknownContentTypes: []string{"document"}}, ai_router_setting.DefaultSettings())
+	assert.Empty(t, FilterChannels(channels, constraints, "default"))
+	channels[2].RoutingProfile.UnknownFallback = true
+	selected = FilterChannels(channels, constraints, "default")
+	require.Len(t, selected, 1)
+	assert.Equal(t, channels[2].ID, selected[0].ID)
+}
+
 func TestSelectChannelHighestPriority(t *testing.T) {
 	constraints := BuildConstraints(RouteDemand{Modality: ModalityText}, ai_router_setting.DefaultSettings())
 	filtered := FilterChannels(fixtureChannels(), constraints, "default")

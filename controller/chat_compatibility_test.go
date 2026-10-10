@@ -113,6 +113,8 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 	require.NoError(t, model.DB.Model(token).Updates(map[string]any{"model_limits_enabled": true, "model_limits": "other"}).Error)
 	denied := request(`{"model":"kimi-k3","messages":[]}`)
 	assert.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+	deniedContent := request(`{"model":"kimi-k3","messages":[{"role":"user","content":[{}]}]}`)
+	assert.Equal(t, http.StatusForbidden, deniedContent.Code, deniedContent.Body.String())
 	require.NoError(t, model.DB.Model(token).Update("model_limits_enabled", false).Error)
 	downstream.Store(0)
 	malformed := request(`{"model":"kimi-k3","messages":[{"role":"user","content":"Hi"}]} {}`)
@@ -142,7 +144,11 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 			var response struct{ Error types.OpenAIError }
 			require.NoError(t, common.Unmarshal(w.Body.Bytes(), &response))
 			assert.Equal(t, tc.param, response.Error.Param)
-			assert.Equal(t, "invalid_request", response.Error.Code)
+			if tc.param == "thinking.type" {
+				assert.Equal(t, "unsupported_thinking_mode", response.Error.Code)
+			} else {
+				assert.Equal(t, "invalid_request", response.Error.Code)
+			}
 			assert.Equal(t, "invalid_request_error", response.Error.Type)
 			assert.NotEmpty(t, response.Error.Message)
 			assert.Zero(t, calls.Load())
@@ -181,6 +187,23 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 			if stream {
 				assert.Contains(t, w.Body.String(), "data: [DONE]")
 			}
+		}
+	}
+	for _, allow := range []bool{true, false} {
+		channel.SetSetting(dto.ChannelSettings{K3AllowThinkingDisabled: allow, K3ParameterValidation: true, K3TemperatureCompatibility: true, ChatCompatibilityModels: []string{"kimi-k3"}})
+		require.NoError(t, model.DB.Model(channel).Update("setting", channel.Setting).Error)
+		model.InitChannelCache()
+		for _, stream := range []bool{false, true} {
+			w := request(fmt.Sprintf(`{"model":"kimi-k3","stream":%t,"max_tokens":16,"temperature":0.4,"thinking":{"type":"disabled"},"reasoning_effort":"high","messages":[{"role":"user","content":"Hi"}]}`, stream))
+			if !allow {
+				assert.Equal(t, 400, w.Code, w.Body.String())
+				continue
+			}
+			require.Equal(t, 200, w.Code, w.Body.String())
+			assert.Equal(t, map[string]any{"type": "disabled"}, sent["thinking"])
+			assert.Equal(t, "high", sent["reasoning_effort"])
+			assert.Equal(t, float64(1), sent["temperature"])
+			assert.Contains(t, w.Body.String(), `"total_tokens":3`)
 		}
 	}
 	configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)

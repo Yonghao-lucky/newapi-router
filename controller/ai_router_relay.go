@@ -57,6 +57,10 @@ func runAIRouterRelay(
 		}
 	}
 	demand.Model = relayInfo.OriginModelName
+	demand.RequireThinkingDisabled = c.GetBool("ai_router_require_thinking_disabled")
+	if c.GetBool("ai_router_has_unknown_input") && len(demand.UnknownContentTypes) == 0 {
+		demand.UnknownContentTypes = []string{"unrecognized_input"}
+	}
 	if common.GetContextKeyBool(c, constant.ContextKeyVideoPreprocessed) &&
 		common.GetContextKeyString(c, constant.ContextKeyVideoOriginalModality) == string(ai_router.ModalityVideo) {
 		demand.OriginalModality = ai_router.ModalityVideo
@@ -229,11 +233,12 @@ func collectChannelsForGroup(group, modelName string, filters []dto.ChannelFilte
 		otherSettings := ch.GetOtherSettings()
 		profile := otherSettings.RoutingProfile()
 		result = append(result, ai_router.RouterChannel{
-			ID:             ch.Id,
-			Priority:       ch.GetPriority(),
-			Weight:         ch.GetWeight(),
-			Group:          group,
-			RoutingProfile: profile,
+			AllowsThinkingDisabled: ai_router.ChannelAllowsThinkingDisabled(ch, modelName),
+			ID:                     ch.Id,
+			Priority:               ch.GetPriority(),
+			Weight:                 ch.GetWeight(),
+			Group:                  group,
+			RoutingProfile:         profile,
 		})
 	}
 	return result

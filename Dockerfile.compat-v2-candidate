@@ -1,0 +1,4 @@
+FROM new-api-video-router:4318a0cad
+COPY new-api /new-api
+ARG VCS_REF=uncommitted-compat-v2
+LABEL org.opencontainers.image.revision="${VCS_REF}"

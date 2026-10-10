@@ -106,6 +106,11 @@ const capabilityValue = (
 }
 
 const channelFormSchema = z.object({
+  k3TemperatureCompatibility: z.boolean(),
+  k3TopPCompatibility: z.boolean(),
+  k3PresencePenaltyCompatibility: z.boolean(),
+  k3FrequencyPenaltyCompatibility: z.boolean(),
+  k3AllowThinkingDisabled: z.boolean(),
   k3ReasoningCompatibility: z.boolean(),
   k3ToolChoiceCompatibility: z.boolean(),
   chatCompatibilityModels: z.string(),
@@ -152,6 +157,16 @@ const routerEnabledValue = (
 
 const toFormValues = (channel: AIRouterChannel): ChannelFormValues => {
   return {
+    k3TemperatureCompatibility:
+      channel.chat_compatibility?.k3_temperature_compatibility === true,
+    k3TopPCompatibility:
+      channel.chat_compatibility?.k3_top_p_compatibility === true,
+    k3PresencePenaltyCompatibility:
+      channel.chat_compatibility?.k3_presence_penalty_compatibility === true,
+    k3FrequencyPenaltyCompatibility:
+      channel.chat_compatibility?.k3_frequency_penalty_compatibility === true,
+    k3AllowThinkingDisabled:
+      channel.chat_compatibility?.k3_allow_thinking_disabled === true,
     k3ReasoningCompatibility:
       channel.chat_compatibility?.k3_reasoning_compatibility === true,
     k3ToolChoiceCompatibility:
@@ -274,10 +289,23 @@ export function ChannelDrawer(props: {
           models: formValues.responseModelAliasModels,
         },
         form.getFieldState('k3ReasoningCompatibility').isDirty ||
+          form.getFieldState('k3TemperatureCompatibility').isDirty ||
+          form.getFieldState('k3TopPCompatibility').isDirty ||
+          form.getFieldState('k3PresencePenaltyCompatibility').isDirty ||
+          form.getFieldState('k3FrequencyPenaltyCompatibility').isDirty ||
+          form.getFieldState('k3AllowThinkingDisabled').isDirty ||
           form.getFieldState('k3ToolChoiceCompatibility').isDirty ||
           form.getFieldState('chatCompatibilityModels').isDirty
           ? {
               k3_reasoning_compatibility: formValues.k3ReasoningCompatibility,
+              k3_temperature_compatibility:
+                formValues.k3TemperatureCompatibility,
+              k3_top_p_compatibility: formValues.k3TopPCompatibility,
+              k3_presence_penalty_compatibility:
+                formValues.k3PresencePenaltyCompatibility,
+              k3_frequency_penalty_compatibility:
+                formValues.k3FrequencyPenaltyCompatibility,
+              k3_allow_thinking_disabled: formValues.k3AllowThinkingDisabled,
               k3_tool_choice_compatibility:
                 formValues.k3ToolChoiceCompatibility,
               chat_compatibility_models: [
@@ -560,6 +588,129 @@ export function ChannelDrawer(props: {
                       checked={field.value}
                       onCheckedChange={field.onChange}
                     />
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3TemperatureCompatibility'
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between gap-4'>
+                      <div>
+                        <FormLabel>
+                          {t('K3 temperature compatibility')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Normalize numeric values only: temperature=1, top_p=0.95, penalties=0. Each switch controls its own field; missing/null stay unchanged and invalid types are rejected.'
+                          )}
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          disabled={save.isPending}
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3TopPCompatibility'
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between gap-4'>
+                      <div>
+                        <FormLabel>{t('K3 top_p compatibility')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Normalize numeric values only: temperature=1, top_p=0.95, penalties=0. Each switch controls its own field; missing/null stay unchanged and invalid types are rejected.'
+                          )}
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          disabled={save.isPending}
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3PresencePenaltyCompatibility'
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between gap-4'>
+                      <div>
+                        <FormLabel>
+                          {t('K3 presence_penalty compatibility')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Normalize numeric values only: temperature=1, top_p=0.95, penalties=0. Each switch controls its own field; missing/null stay unchanged and invalid types are rejected.'
+                          )}
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          disabled={save.isPending}
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3FrequencyPenaltyCompatibility'
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between gap-4'>
+                      <div>
+                        <FormLabel>
+                          {t('K3 frequency_penalty compatibility')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Normalize numeric values only: temperature=1, top_p=0.95, penalties=0. Each switch controls its own field; missing/null stay unchanged and invalid types are rejected.'
+                          )}
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          disabled={save.isPending}
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='k3AllowThinkingDisabled'
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between gap-4'>
+                      <div>
+                        <FormLabel>
+                          {t('Allow requests to disable thinking')}
+                        </FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Pass thinking enabled/disabled and reasoning_effort unchanged. Only enable for verified upstream resources; reasoning output and usage are never rewritten.'
+                          )}
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          disabled={save.isPending}
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
                   )}
                 />
               </SideDrawerSection>

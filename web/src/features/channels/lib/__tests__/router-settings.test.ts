@@ -18,10 +18,41 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { expect, it } from 'vitest'
 
+import { channelSchema } from '../../types'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
+  buildSettingJSON,
+  transformChannelToFormDefaults,
   transformFormDataToCreatePayload,
 } from '../channel-form'
+
+it('preserves independent K3 flags when saving through the ordinary channel editor', () => {
+  const setting = {
+    k3_temperature_compatibility: true,
+    k3_top_p_compatibility: false,
+    k3_presence_penalty_compatibility: true,
+    k3_frequency_penalty_compatibility: false,
+    k3_allow_thinking_disabled: true,
+  }
+  const channel = channelSchema.parse({
+    id: 48,
+    name: 'fixture',
+    type: 1,
+    key: 'mock-only',
+    created_time: 0,
+    test_time: 0,
+    response_time: 0,
+    balance_updated_time: 0,
+    status: 1,
+    group: 'default',
+    models: 'kimi-k3',
+    setting: JSON.stringify(setting),
+  })
+  const form = transformChannelToFormDefaults(channel)
+  expect(JSON.parse(buildSettingJSON(form))).toEqual(
+    expect.objectContaining(setting)
+  )
+})
 
 it('preserves scheduling and retry settings when editing channel capabilities', () => {
   const router = {

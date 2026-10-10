@@ -1,0 +1,65 @@
+name: new-api-router-k3-compat-v2-test
+services:
+  mock:
+    image: node:24-bookworm-slim
+    container_name: new-api-router-k3-compat-v2-test-mock
+    cpus: 0.5
+    mem_limit: 128m
+    command: ['node','/mock.mjs']
+    volumes:
+      - /root/new-api-router-k3-compat-v2-test-runtime/mock.mjs:/mock.mjs:ro
+    networks: [test]
+  postgres:
+    image: postgres:15
+    container_name: new-api-router-k3-compat-v2-test-postgres
+    cpus: 1
+    mem_limit: 1g
+    environment:
+      POSTGRES_USER: newapi
+      POSTGRES_DB: compat_v2
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - /root/new-api-router-k3-compat-v2-test-runtime/postgres:/var/lib/postgresql/data
+    networks: [test]
+  mysql:
+    image: mysql:8.0
+    container_name: new-api-router-k3-compat-v2-test-mysql
+    cpus: 1
+    mem_limit: 1g
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+      MYSQL_DATABASE: compat_v2
+      MYSQL_ROOT_HOST: '%'
+    volumes:
+      - /root/new-api-router-k3-compat-v2-test-runtime/mysql:/var/lib/mysql
+    networks: [test]
+  redis:
+    image: redis:7-alpine
+    container_name: new-api-router-k3-compat-v2-test-redis
+    cpus: 0.5
+    mem_limit: 256m
+    networks: [test]
+  app:
+    image: new-api-video-router:k3-compat-v2-candidate
+    container_name: new-api-router-k3-compat-v2-test-app
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 256
+    ports: ['127.0.0.1:13184:3000']
+    environment:
+      SQL_DSN: 'postgres://newapi@postgres:5432/compat_v2?sslmode=disable'
+      REDIS_CONN_STRING: 'redis://redis:6379'
+      MEMORY_CACHE_ENABLED: 'true'
+      GOMAXPROCS: '2'
+      GOMEMLIMIT: '1500MiB'
+      STREAMING_TIMEOUT: '1000'
+      RELAY_TIMEOUT: '0'
+      LOG_LEVEL: 'info'
+    volumes:
+      - /root/new-api-router-k3-compat-v2-test-runtime/app-data:/data
+      - /root/new-api-router-k3-compat-v2-test-runtime/logs:/app/logs
+      - /root/new-api-router-k3-compat-v2-test-runtime/video-tmp:/video-tmp
+    networks: [test]
+networks:
+  test:
+    name: new-api-router-k3-compat-v2-test-network

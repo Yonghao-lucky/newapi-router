@@ -495,6 +495,52 @@ func TestK3ReasoningCompatibility(t *testing.T) {
 	}
 }
 
+func TestK3IndependentSamplingCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+		settings        dto.ChannelSettings
+		status          int
+	}{
+		{"temperature", `"temperature":0.2,"top_p":0.3`, `"temperature":1,"top_p":0.3`, dto.ChannelSettings{K3TemperatureCompatibility: true}, 0},
+		{"equivalent number unchanged", `"temperature":1.0`, `"temperature":1.0`, dto.ChannelSettings{K3TemperatureCompatibility: true}, 0},
+		{"top p", `"top_p":0.3,"temperature":0.2`, `"top_p":0.95,"temperature":0.2`, dto.ChannelSettings{K3TopPCompatibility: true}, 0},
+		{"presence", `"presence_penalty":2,"frequency_penalty":1`, `"presence_penalty":0,"frequency_penalty":1`, dto.ChannelSettings{K3PresencePenaltyCompatibility: true}, 0},
+		{"frequency", `"frequency_penalty":2,"presence_penalty":1`, `"frequency_penalty":0,"presence_penalty":1`, dto.ChannelSettings{K3FrequencyPenaltyCompatibility: true}, 0},
+		{"null", `"temperature":null`, `"temperature":null`, dto.ChannelSettings{K3TemperatureCompatibility: true}, 0},
+		{"string rejected", `"temperature":"1"`, ``, dto.ChannelSettings{K3TemperatureCompatibility: true}, 400},
+		{"object rejected", `"top_p":{}`, ``, dto.ChannelSettings{K3TopPCompatibility: true}, 400},
+		{"off rejects", `"temperature":0.2`, ``, dto.ChannelSettings{K3ParameterValidation: true}, 400},
+		{"before fixed check", `"temperature":0.2`, `"temperature":1`, dto.ChannelSettings{K3TemperatureCompatibility: true, K3ParameterValidation: true}, 0},
+		{"thinking stays intact", `"thinking":{"type":"disabled"},"reasoning_effort":"high"`, `"thinking":{"type":"disabled"},"reasoning_effort":"high"`, dto.ChannelSettings{K3AllowThinkingDisabled: true, K3ReasoningCompatibility: true, K3ParameterValidation: true}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"x"}],` + tc.raw + `}`)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			tc.settings.ChatCompatibilityModels = []string{"kimi-k3"}
+			info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &relaycommon.ChannelMeta{ChannelSetting: tc.settings}}
+			result, apiErr := applyChatCompatibility(c, info, body, false)
+			if tc.status != 0 {
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.status, apiErr.StatusCode)
+				return
+			}
+			require.Nil(t, apiErr)
+			assert.JSONEq(t, `{"model":"kimi-k3","messages":[{"role":"user","content":"x"}],`+tc.want+`}`, string(result))
+			storage, err := common.GetBodyStorage(c)
+			require.NoError(t, err)
+			stored, err := storage.Bytes()
+			require.NoError(t, err)
+			assert.Equal(t, body, stored)
+			info.ChannelSetting = dto.ChannelSettings{}
+			retry, apiErr := applyChatCompatibility(c, info, stored, false)
+			require.Nil(t, apiErr)
+			assert.Equal(t, body, retry)
+		})
+	}
+}
+
 func TestChatCompatibilityAttemptIsolation(t *testing.T) {
 	original := `{"model":"customer-alias","messages":[{"role":"user","content":"hello"}],"stop":["END","结束"],"temperature":null,"stream":false,"reasoning_effort":"medium"}`
 	outgoing := strings.Replace(original, "customer-alias", "upstream-model", 1)

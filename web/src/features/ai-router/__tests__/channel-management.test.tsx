@@ -88,6 +88,75 @@ beforeEach(() => {
   }))
 })
 
+it('shows failed policy saves without closing or losing the candidate list', async () => {
+  const user = userEvent.setup()
+  const row: AIRouterTargetPolicy = {
+    id: 5,
+    model: 'kimi-k3',
+    group_id: 'default',
+    enabled: true,
+    max_attempts: 3,
+    created_at: 0,
+    updated_at: 0,
+    candidates: [
+      { id: 1, policy_id: 5, channel_id: 23, enabled: true, channel: null },
+    ],
+  }
+  vi.mocked(api.get).mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url.endsWith('/targets/5') ? row : { items: [channel], total: 1 },
+    },
+  }))
+  vi.spyOn(api, 'put').mockResolvedValue({
+    data: {
+      success: false,
+      message: 'channel 23 does not exist or is disabled',
+      data: {
+        blocking: true,
+        issues: [
+          {
+            level: 'error',
+            code: 'candidate_channel_unavailable',
+            message: 'channel 23 does not exist or is disabled',
+          },
+          {
+            level: 'error',
+            code: 'candidate_channel_unavailable',
+            message: 'channel 48 is disabled',
+          },
+        ],
+      },
+    },
+  })
+  const close = vi.fn()
+  renderWithClient(<PolicyDrawer open currentRow={row} onOpenChange={close} />)
+  await screen.findByDisplayValue('kimi-k3')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  expect(await screen.findByText('channel 48 is disabled')).toBeVisible()
+  expect(
+    screen.getAllByText('channel 23 does not exist or is disabled').length
+  ).toBeGreaterThan(0)
+  expect(close).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+})
+
+it('shows a failed validation request and leaves save available', async () => {
+  const user = userEvent.setup()
+  vi.spyOn(api, 'post').mockRejectedValue(
+    new Error('Validation service unavailable')
+  )
+  renderWithClient(
+    <PolicyDrawer open currentRow={null} onOpenChange={vi.fn()} />
+  )
+  await user.click(screen.getByRole('button', { name: 'Validate' }))
+  expect(
+    await screen.findByText('Validation service unavailable')
+  ).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Validate' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+})
+
 it('saves strict validation from its legacy off default and reloads enabled and disabled values without changing candidates', async () => {
   const user = userEvent.setup()
   let saved: AIRouterTargetPolicy = {
@@ -149,6 +218,11 @@ it('saves strict validation from its legacy off default and reloads enabled and 
 it.each([
   ['Kimi K3 reasoning effort compatibility', 'k3_reasoning_compatibility'],
   ['Kimi K3 tool choice compatibility', 'k3_tool_choice_compatibility'],
+  ['K3 temperature compatibility', 'k3_temperature_compatibility'],
+  ['K3 top_p compatibility', 'k3_top_p_compatibility'],
+  ['K3 presence_penalty compatibility', 'k3_presence_penalty_compatibility'],
+  ['K3 frequency_penalty compatibility', 'k3_frequency_penalty_compatibility'],
+  ['Allow requests to disable thinking', 'k3_allow_thinking_disabled'],
 ] as const)(
   'saves %s from its default off state and reloads both enabled and disabled values',
   async (label, key) => {
@@ -203,6 +277,15 @@ it.each([
         '/api/ai-router/channels/1/router',
         expect.objectContaining({
           chat_compatibility: {
+            k3_temperature_compatibility:
+              key === 'k3_temperature_compatibility' && enabled,
+            k3_top_p_compatibility: key === 'k3_top_p_compatibility' && enabled,
+            k3_presence_penalty_compatibility:
+              key === 'k3_presence_penalty_compatibility' && enabled,
+            k3_frequency_penalty_compatibility:
+              key === 'k3_frequency_penalty_compatibility' && enabled,
+            k3_allow_thinking_disabled:
+              key === 'k3_allow_thinking_disabled' && enabled,
             k3_reasoning_compatibility:
               key === 'k3_reasoning_compatibility' && enabled,
             k3_tool_choice_compatibility:

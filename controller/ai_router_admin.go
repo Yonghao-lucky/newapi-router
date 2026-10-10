@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -447,7 +448,7 @@ func CreateAIRouterTargetPolicy(c *gin.Context) {
 	}
 	policy, issues, err := ai_router.SaveTargetPolicy(input, 0)
 	if err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error(), "data": gin.H{"issues": issues, "blocking": true}})
 		return
 	}
 	common.ApiSuccess(c, gin.H{
@@ -470,7 +471,7 @@ func UpdateAIRouterTargetPolicy(c *gin.Context) {
 	}
 	policy, issues, err := ai_router.SaveTargetPolicy(input, id)
 	if err != nil {
-		common.ApiErrorMsg(c, err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error(), "data": gin.H{"issues": issues, "blocking": true}})
 		return
 	}
 	common.ApiSuccess(c, gin.H{
@@ -543,9 +544,14 @@ type aiRouterChannelView struct {
 }
 
 type aiRouterChatCompatibility struct {
-	K3ReasoningCompatibility  bool     `json:"k3_reasoning_compatibility"`
-	K3ToolChoiceCompatibility *bool    `json:"k3_tool_choice_compatibility,omitempty"`
-	Models                    []string `json:"chat_compatibility_models"`
+	K3TemperatureCompatibility      *bool    `json:"k3_temperature_compatibility,omitempty"`
+	K3TopPCompatibility             *bool    `json:"k3_top_p_compatibility,omitempty"`
+	K3PresencePenaltyCompatibility  *bool    `json:"k3_presence_penalty_compatibility,omitempty"`
+	K3FrequencyPenaltyCompatibility *bool    `json:"k3_frequency_penalty_compatibility,omitempty"`
+	K3AllowThinkingDisabled         *bool    `json:"k3_allow_thinking_disabled,omitempty"`
+	K3ReasoningCompatibility        bool     `json:"k3_reasoning_compatibility"`
+	K3ToolChoiceCompatibility       *bool    `json:"k3_tool_choice_compatibility,omitempty"`
+	Models                          []string `json:"chat_compatibility_models"`
 }
 
 type aiRouterChannelRouterView struct {
@@ -630,7 +636,7 @@ func GetAIRouterChannels(c *gin.Context) {
 			Priority:           ch.GetPriority(),
 			Weight:             ch.GetWeight(),
 			ResponseModelAlias: otherSettings.ResponseModelAlias,
-			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, K3ToolChoiceCompatibility: common.GetPointer(settings.K3ToolChoiceCompatibility), Models: settings.ChatCompatibilityModels},
+			ChatCompatibility:  aiRouterChatCompatibility{K3ReasoningCompatibility: settings.K3ReasoningCompatibility, K3ToolChoiceCompatibility: common.GetPointer(settings.K3ToolChoiceCompatibility), Models: settings.ChatCompatibilityModels, K3TemperatureCompatibility: common.GetPointer(settings.K3TemperatureCompatibility), K3TopPCompatibility: common.GetPointer(settings.K3TopPCompatibility), K3PresencePenaltyCompatibility: common.GetPointer(settings.K3PresencePenaltyCompatibility), K3FrequencyPenaltyCompatibility: common.GetPointer(settings.K3FrequencyPenaltyCompatibility), K3AllowThinkingDisabled: common.GetPointer(settings.K3AllowThinkingDisabled)},
 			RoutingProfile: aiRouterChannelRouterView{
 				VideoPriority:     profile.VideoPriority,
 				Enabled:           profile.Enabled,
@@ -767,6 +773,21 @@ func UpdateAIRouterChannelRouter(c *gin.Context) {
 			}
 		}
 		settings["k3_reasoning_compatibility"] = json.RawMessage(strconv.FormatBool(req.ChatCompatibility.K3ReasoningCompatibility))
+		if req.ChatCompatibility.K3TemperatureCompatibility != nil {
+			settings["k3_temperature_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3TemperatureCompatibility))
+		}
+		if req.ChatCompatibility.K3TopPCompatibility != nil {
+			settings["k3_top_p_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3TopPCompatibility))
+		}
+		if req.ChatCompatibility.K3PresencePenaltyCompatibility != nil {
+			settings["k3_presence_penalty_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3PresencePenaltyCompatibility))
+		}
+		if req.ChatCompatibility.K3FrequencyPenaltyCompatibility != nil {
+			settings["k3_frequency_penalty_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3FrequencyPenaltyCompatibility))
+		}
+		if req.ChatCompatibility.K3AllowThinkingDisabled != nil {
+			settings["k3_allow_thinking_disabled"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3AllowThinkingDisabled))
+		}
 		if req.ChatCompatibility.K3ToolChoiceCompatibility != nil {
 			settings["k3_tool_choice_compatibility"] = json.RawMessage(strconv.FormatBool(*req.ChatCompatibility.K3ToolChoiceCompatibility))
 		}

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -55,7 +55,13 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
-import { requireServerSuccess } from '@/lib/server-error-message'
+import { handleServerError } from '@/lib/handle-server-error'
+import {
+  getServerErrorMessage,
+  getServerErrorSources,
+  getServerErrorStatus,
+  requireServerSuccess,
+} from '@/lib/server-error-message'
 
 import {
   createAIRouterTargetPolicy,
@@ -96,9 +102,12 @@ export function PolicyDrawer(props: {
     defaultValues: transformPolicyToFormDefaults(props.currentRow),
   })
   const [issues, setIssues] = useState<AIRouterValidationIssue[]>([])
+  const [operationError, setOperationError] = useState('')
+  const [validating, setValidating] = useState(false)
   const [closeConfirm, setCloseConfirm] = useState(false)
   const [pendingRemove, setPendingRemove] = useState<number | null>(null)
   const [order, setOrder] = useState<AIRouterChannelOrder>('priority')
+  const hydratedPolicy = useRef<number | null>(null)
 
   // Load the full policy when editing: the list row may be stale and the
   // detail endpoint refreshes the joined channel info.
@@ -114,11 +123,22 @@ export function PolicyDrawer(props: {
   const savedRow = detailQuery.data ?? props.currentRow
 
   useEffect(() => {
-    if (!props.open) return
-    setIssues([])
-    setCloseConfirm(false)
+    if (!props.open) {
+      hydratedPolicy.current = null
+      return
+    }
+    if (
+      hydratedPolicy.current === (savedRow?.id ?? 0) &&
+      form.formState.isDirty
+    ) {
+      return
+    }
     if (!isEditing || detailQuery.isSuccess) {
+      setIssues([])
+      setOperationError('')
+      setCloseConfirm(false)
       form.reset(transformPolicyToFormDefaults(savedRow))
+      hydratedPolicy.current = savedRow?.id ?? 0
     }
   }, [props.open, savedRow, detailQuery.isSuccess, form, isEditing])
 
@@ -206,13 +226,49 @@ export function PolicyDrawer(props: {
   const save = useMutation({
     meta: { errorToast: false },
     mutationFn: async () => {
+      setOperationError('')
       const payload = transformFormToPolicyPayload(form.getValues())
       const policyId = props.currentRow?.id ?? 0
       const result =
         isEditing && policyId > 0
           ? await updateAIRouterTargetPolicy(policyId, payload)
           : await createAIRouterTargetPolicy(payload)
+      await getAIRouterTargetPolicy(result.policy.id)
       return result
+    },
+    onError: (error) => {
+      setOperationError(getServerErrorMessage(error))
+      for (const source of getServerErrorSources(error)) {
+        const data = source.data
+        if (
+          data &&
+          typeof data === 'object' &&
+          'issues' in data &&
+          Array.isArray(data.issues)
+        ) {
+          setIssues(
+            data.issues.filter(
+              (issue): issue is AIRouterValidationIssue =>
+                !!issue &&
+                typeof issue === 'object' &&
+                typeof issue.message === 'string' &&
+                typeof issue.level === 'string' &&
+                typeof issue.code === 'string'
+            )
+          )
+        }
+      }
+      handleServerError(error)
+      if (
+        getServerErrorStatus(error) === undefined &&
+        !getServerErrorSources(error).some((source) => source.success === false)
+      ) {
+        setOperationError(
+          t(
+            'Save result is uncertain. Reload the policy to confirm before retrying.'
+          )
+        )
+      }
     },
     onSuccess: (result) => {
       setIssues(result.issues ?? [])
@@ -234,7 +290,7 @@ export function PolicyDrawer(props: {
       props.onOpenChange(false)
     },
   })
-  const isSubmitting = save.isPending
+  const isSubmitting = save.isPending || validating
   const dirty = form.formState.isDirty
   const close = (open: boolean) => {
     if (!open && isSubmitting) return
@@ -270,16 +326,24 @@ export function PolicyDrawer(props: {
       })
   }, [candidateIds, candidateChannelMap, order])
 
-  const runValidate = () => {
+  const runValidate = async () => {
+    setValidating(true)
+    setOperationError('')
     const payload = transformFormToPolicyPayload(form.getValues())
-    void validateAIRouterTargetPolicy(payload).then((result) => {
+    try {
+      const result = await validateAIRouterTargetPolicy(payload)
       setIssues(result.issues)
       if (result.blocking) {
         toast.error(t('Fix validation errors before saving'))
       } else if (result.issues.length === 0) {
         toast.success(t('Validation passed'))
       }
-    })
+    } catch (error) {
+      setOperationError(getServerErrorMessage(error))
+      handleServerError(error)
+    } finally {
+      setValidating(false)
+    }
   }
 
   return (
@@ -552,6 +616,17 @@ export function PolicyDrawer(props: {
               </SideDrawerSection>
 
               <ValidationAlert issues={issues} />
+              {operationError && (
+                <ValidationAlert
+                  issues={[
+                    {
+                      level: 'error',
+                      code: 'operation_failed',
+                      message: operationError,
+                    },
+                  ]}
+                />
+              )}
             </form>
           </Form>
 

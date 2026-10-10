@@ -25,6 +25,32 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 var channel2advancedCustomConfig map[int]*kitdto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
 
+// CachedConfiguredChannelsForGroupModel includes disabled channels so a
+// temporary outage cannot be mistaken for unsupported client input. No DB I/O.
+// Returned channel pointers are read-only, as with existing cache readers.
+func CachedConfiguredChannelsForGroupModel(group, name string) ([]*Channel, bool) {
+	if !common.MemoryCacheEnabled {
+		return nil, false
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	if channelsIDM == nil {
+		return nil, false
+	}
+	var result []*Channel
+	normalized := ratio_setting.RoutingMatchModelName(name)
+	for _, channel := range channelsIDM {
+		if !slices.Contains(channel.GetGroups(), group) {
+			continue
+		}
+		models := channel.GetModels()
+		if slices.Contains(models, name) || slices.Contains(models, normalized) {
+			result = append(result, channel)
+		}
+	}
+	return result, true
+}
+
 // CachedChannelModelKnown deliberately includes disabled channels and all
 // groups. No candidate in the current group is not proof of a missing model.
 // Without a populated cache, callers must retain the existing error behavior.

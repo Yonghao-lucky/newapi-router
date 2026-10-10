@@ -10,20 +10,22 @@ import (
 
 // RouterChannel is a decoupled view of a channel for routing purposes.
 type RouterChannel struct {
-	ID             int
-	Priority       int64
-	Weight         int
-	Group          string
-	RoutingProfile dto.ChannelRoutingProfile
+	AllowsThinkingDisabled bool
+	ID                     int
+	Priority               int64
+	Weight                 int
+	Group                  string
+	RoutingProfile         dto.ChannelRoutingProfile
 }
 
 // BuildConstraints converts a RouteDemand into filtering constraints.
 func BuildConstraints(demand RouteDemand, settings ai_router_setting.Settings) ChannelRouteConstraints {
 	return ChannelRouteConstraints{
-		VideoRequest:        demand.Modality == ModalityVideo || demand.OriginalModality == ModalityVideo,
-		RequiredModality:    demand.Modality,
-		RequireTools:        settings.ToolFilterEnabled && demand.HasTools,
-		UnknownFallbackOnly: demand.Modality == ModalityUnknown,
+		VideoRequest:            demand.Modality == ModalityVideo || demand.OriginalModality == ModalityVideo,
+		RequiredModality:        demand.Modality,
+		RequireTools:            settings.ToolFilterEnabled && demand.HasTools,
+		UnknownFallbackOnly:     demand.Modality == ModalityUnknown || len(demand.UnknownContentTypes) > 0,
+		RequireThinkingDisabled: demand.RequireThinkingDisabled,
 	}
 }
 
@@ -46,6 +48,12 @@ func FilterChannels(channels []RouterChannel, constraints ChannelRouteConstraint
 func matchesCapability(c RouterChannel, constraints ChannelRouteConstraints) bool {
 	p := c.RoutingProfile
 	if !p.Enabled {
+		return false
+	}
+	if constraints.RequireThinkingDisabled && !c.AllowsThinkingDisabled {
+		return false
+	}
+	if constraints.UnknownFallbackOnly && !p.UnknownFallback {
 		return false
 	}
 	switch constraints.RequiredModality {
