@@ -79,6 +79,8 @@ func TestStrictPolicyMigrationDatabaseMatrix(t *testing.T) {
 					var policy AIRouterTargetPolicy
 					require.NoError(t, db.Preload("Candidates").First(&policy, 99).Error)
 					assert.False(t, policy.K3StrictValidation)
+					// The opt-in rejection switch backfills to off on both paths.
+					assert.False(t, policy.RejectEnableThinking)
 					assert.Equal(t, 3, policy.MaxAttempts)
 					if upgrade {
 						require.Len(t, policy.Candidates, 1)
@@ -88,6 +90,11 @@ func TestStrictPolicyMigrationDatabaseMatrix(t *testing.T) {
 						require.NoError(t, db.Model(&policy).Update("k3_strict_validation", enabled).Error)
 						require.NoError(t, db.First(&policy, 99).Error)
 						assert.Equal(t, enabled, policy.K3StrictValidation)
+					}
+					for _, reject := range []bool{true, false} {
+						require.NoError(t, db.Model(&policy).Update("reject_enable_thinking", reject).Error)
+						require.NoError(t, db.First(&policy, 99).Error)
+						assert.Equal(t, reject, policy.RejectEnableThinking)
 					}
 					require.Error(t, db.Create(&AIRouterTargetPolicy{Model: "kimi-k3", GroupId: "default"}).Error)
 					if upgrade {
