@@ -108,8 +108,12 @@ func TestStrictChatInspection(t *testing.T) {
 		{name: "thinking invalid", fields: `,"thinking":{"type":"bogus"}`, param: "thinking.type"},
 		{name: "thinking null", fields: `,"thinking":null`, param: "thinking"},
 		{name: "thinking keep", fields: `,"thinking":{"type":"enabled","keep":"bogus"}`, param: "thinking.keep"},
-		{name: "nonstandard thinking", fields: `,"enable_thinking":false`, param: "enable_thinking"},
-		{name: "null nonstandard thinking", fields: `,"enable_thinking":null`, param: "enable_thinking"},
+		{name: "legacy enable thinking false", fields: `,"enable_thinking":false`},
+		{name: "legacy enable thinking true", fields: `,"enable_thinking":true`},
+		{name: "legacy enable thinking null", fields: `,"enable_thinking":null`},
+		{name: "legacy enable thinking string", fields: `,"enable_thinking":"true"`},
+		{name: "legacy enable thinking object", fields: `,"enable_thinking":{"type":"enabled"}`},
+		{name: "legacy enable thinking duplicate", fields: `,"enable_thinking":true,"enable_thinking":false`},
 		{name: "invalid format", fields: `,"response_format":{"type":"bad"}`, param: "response_format.type"},
 		{name: "missing schema", fields: `,"response_format":{"type":"json_schema"}`, param: "response_format.json_schema"},
 		{name: "invalid schema", fields: `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":[]}}`, param: "response_format.json_schema.schema"},
@@ -486,4 +490,30 @@ func TestInspectChatRequestValidatesSkippedPayloadsAndCountsEveryVideo(t *testin
 		_, err := InspectChatRequest(strings.NewReader(bad))
 		require.Error(t, err, bad)
 	}
+}
+
+func TestEnableThinkingIsAcceptedAndReported(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+	}{
+		{"true", `true`},
+		{"false", `false`},
+		{"string", `"true"`},
+		{"number", `1`},
+		{"object", `{"type":"enabled"}`},
+		{"array", `["enabled"]`},
+		{"null", `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"kimi-k3","messages":[{"role":"user","content":"Hi"}],"enable_thinking":` + tc.field + `}`
+			inspection, err := InspectChatRequestWithValidation(strings.NewReader(body))
+			require.NoError(t, err)
+			assert.Nil(t, inspection.ValidationError)
+			assert.True(t, inspection.Demand.EnableThinking)
+		})
+	}
+
+	inspection, err := InspectChatRequestWithValidation(strings.NewReader(`{"model":"kimi-k3","messages":[{"role":"user","content":"Hi"}]}`))
+	require.NoError(t, err)
+	assert.False(t, inspection.Demand.EnableThinking)
 }

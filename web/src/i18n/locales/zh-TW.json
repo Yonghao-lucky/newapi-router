@@ -3156,6 +3156,8 @@
     "K3 frequency_penalty compatibility": "K3 頻率懲罰相容",
     "K3 presence_penalty compatibility": "K3 存在懲罰相容",
     "K3 strict request validation": "K3 請求嚴格驗證",
+    "Reject enable_thinking": "拒絕 enable_thinking",
+    "When on, requests carrying enable_thinking are rejected with 400 instead of being forwarded unchanged.": "開啟後，攜帶 enable_thinking 的請求將回傳 400，而不是原樣轉發。",
     "K3 temperature compatibility": "K3 溫度相容",
     "K3 top_p compatibility": "K3 Top P 相容",
     "Keep affinity when channel is disabled": "渠道停用後保留親和",

@@ -20,6 +20,7 @@ type RouteDemand struct {
 	ContentError            *ChatValidationError `json:"-"`
 	UnknownParam            string               `json:"-"`
 	ThinkingDisabled        bool                 `json:"-"`
+	EnableThinking          bool                 `json:"-"`
 	RequireThinkingDisabled bool                 `json:"-"`
 	ReasoningEffortNone     bool                 `json:"-"`
 	RequireReasoningNone    bool                 `json:"-"`

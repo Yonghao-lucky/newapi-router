@@ -92,6 +92,7 @@ export interface AIRouterTargetPolicy {
   enabled: boolean
   max_attempts: number
   k3_strict_validation?: boolean
+  reject_enable_thinking?: boolean
   created_at: number
   updated_at: number
   candidates: AIRouterTargetCandidate[]
@@ -108,6 +109,7 @@ export interface TargetPolicyInput {
   enabled: boolean
   max_attempts: number
   k3_strict_validation?: boolean
+  reject_enable_thinking?: boolean
   candidates: TargetPolicyCandidateInput[]
 }
 

@@ -12,13 +12,14 @@ type TargetPolicyCandidate struct {
 
 // TargetPolicy is the immutable view of one (model, group) policy.
 type TargetPolicy struct {
-	Id                 int
-	Model              string
-	GroupId            string
-	Enabled            bool
-	MaxAttempts        int
-	K3StrictValidation bool
-	Candidates         []TargetPolicyCandidate
+	Id                   int
+	Model                string
+	GroupId              string
+	Enabled              bool
+	MaxAttempts          int
+	K3StrictValidation   bool
+	RejectEnableThinking bool
+	Candidates           []TargetPolicyCandidate
 }
 
 // TargetPolicySnapshot is the published runtime view of all target policies.

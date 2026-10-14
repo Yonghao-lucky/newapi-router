@@ -3156,6 +3156,8 @@
     "K3 frequency_penalty compatibility": "K3 frequency_penalty 互換",
     "K3 presence_penalty compatibility": "K3 presence_penalty 互換",
     "K3 strict request validation": "K3 リクエストの厳格な検証",
+    "Reject enable_thinking": "enable_thinking を拒否",
+    "When on, requests carrying enable_thinking are rejected with 400 instead of being forwarded unchanged.": "有効にすると、enable_thinking を含むリクエストはそのまま転送されず 400 で拒否されます。",
     "K3 temperature compatibility": "K3 temperature 互換",
     "K3 top_p compatibility": "K3 top_p 互換",
     "Keep affinity when channel is disabled": "チャネル無効時にアフィニティを保持",

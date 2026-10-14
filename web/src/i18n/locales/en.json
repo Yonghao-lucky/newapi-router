@@ -3156,6 +3156,8 @@
     "K3 frequency_penalty compatibility": "K3 frequency_penalty compatibility",
     "K3 presence_penalty compatibility": "K3 presence_penalty compatibility",
     "K3 strict request validation": "K3 strict request validation",
+    "Reject enable_thinking": "Reject enable_thinking",
+    "When on, requests carrying enable_thinking are rejected with 400 instead of being forwarded unchanged.": "When on, requests carrying enable_thinking are rejected with 400 instead of being forwarded unchanged.",
     "K3 temperature compatibility": "K3 temperature compatibility",
     "K3 top_p compatibility": "K3 top_p compatibility",
     "Keep affinity when channel is disabled": "Keep affinity when channel is disabled",

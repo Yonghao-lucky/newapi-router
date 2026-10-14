@@ -27,6 +27,7 @@ type detectorState struct {
 	unknownParam        string
 	thinkingDisabled    bool
 	reasoningEffortNone bool
+	enableThinking      bool
 	lastContentNull     bool
 }
 
@@ -147,6 +148,14 @@ func scanChatRequest(decoder *common.JSONTokenDecoder, state *detectorState) err
 				return err
 			}
 			state.reasoningEffortNone = value == "none"
+		case "enable_thinking":
+			// Accepted for compatibility: the field is skipped unread and forwarded
+			// upstream unchanged. The opt-in RejectEnableThinking policy switch
+			// restores the 400 for routes that require its absence.
+			state.enableThinking = true
+			if err := skipValue(decoder); err != nil {
+				return err
+			}
 		case "thinking":
 			validation := state.validation
 			if validation == nil {
@@ -572,6 +581,7 @@ func (state *detectorState) routeDemand() RouteDemand {
 		ContentError:        state.contentError,
 		UnknownParam:        state.unknownParam,
 		ThinkingDisabled:    state.thinkingDisabled,
+		EnableThinking:      state.enableThinking,
 		ReasoningEffortNone: state.reasoningEffortNone,
 	}
 }

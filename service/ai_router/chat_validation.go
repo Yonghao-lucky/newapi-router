@@ -47,7 +47,7 @@ func (v *chatValidation) add(param, message string) {
 
 func chatControlledField(key string) bool {
 	switch key {
-	case "model", "messages", "tools", "response_format", "max_tokens", "temperature", "top_p", "thinking", "enable_thinking":
+	case "model", "messages", "tools", "response_format", "max_tokens", "temperature", "top_p", "thinking":
 		return true
 	}
 	return false
@@ -85,9 +85,6 @@ func readChatScalar(d *common.JSONTokenDecoder) (any, error) {
 
 func (v *chatValidation) parameter(d *common.JSONTokenDecoder, name string) error {
 	switch name {
-	case "enable_thinking":
-		v.add(name, "enable_thinking is not supported for this model; omit this parameter")
-		return d.Skip()
 	case "thinking", "response_format":
 		return v.object(d, name, name)
 	default:

@@ -48,6 +48,10 @@ func AdmitRouteInput(demand *RouteDemand, group string, policy *TargetPolicy) *t
 	if demand.ContentError != nil {
 		return demand.ContentError.APIError()
 	}
+	strict := policy != nil && policy.Enabled && policy.K3StrictValidation
+	if strict && demand.EnableThinking && policy.RejectEnableThinking {
+		return (&ChatValidationError{Param: "enable_thinking", Message: "enable_thinking is not supported for this model; omit this parameter"}).APIError()
+	}
 	unknown := len(demand.UnknownContentTypes) > 0
 	if !unknown && !demand.ThinkingDisabled && !demand.ReasoningEffortNone {
 		return nil
@@ -92,7 +96,6 @@ func AdmitRouteInput(demand *RouteDemand, group string, policy *TargetPolicy) *t
 		}
 		return (&ChatValidationError{Param: demand.UnknownParam, Message: message, Code: "unsupported_content_type"}).APIError()
 	}
-	strict := policy != nil && policy.Enabled && policy.K3StrictValidation
 	if demand.ThinkingDisabled && strict && !thinkingSupported {
 		return (&ChatValidationError{Param: "thinking.type", Message: "This route does not support thinking.type 'disabled'; use a route configured to allow disabling thinking.", Code: "unsupported_thinking_mode"}).APIError()
 	}

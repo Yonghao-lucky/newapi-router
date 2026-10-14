@@ -101,10 +101,10 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 		engine.ServeHTTP(w, req)
 		return w
 	}
-	publish := func(strict bool) {
-		ai_router.PublishTargetPolicySnapshot(ai_router.BuildTargetPolicySnapshot([]ai_router.TargetPolicy{{Model: "kimi-k3", GroupId: "default", Enabled: true, MaxAttempts: 2, K3StrictValidation: strict, Candidates: []ai_router.TargetPolicyCandidate{{ChannelID: channel.Id, Enabled: true}}}}))
+	publish := func(strict, rejectEnableThinking bool) {
+		ai_router.PublishTargetPolicySnapshot(ai_router.BuildTargetPolicySnapshot([]ai_router.TargetPolicy{{Model: "kimi-k3", GroupId: "default", Enabled: true, MaxAttempts: 2, K3StrictValidation: strict, RejectEnableThinking: rejectEnableThinking, Candidates: []ai_router.TargetPolicyCandidate{{ChannelID: channel.Id, Enabled: true}}}}))
 	}
-	publish(true)
+	publish(true, false)
 	// Authentication and model authorization keep precedence over validation.
 	unauthenticated := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"kimi-k3","messages":[]}`))
 	unauthorized := httptest.NewRecorder()
@@ -128,7 +128,6 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 			{messages: `[{"content":"Hi"}]`, param: "messages[0].role"},
 			{messages: `[{"role":"badrole"}]`, param: "messages[0].role"},
 			{fields: `,"thinking":{"type":"disabled"}`, param: "thinking.type"},
-			{fields: `,"enable_thinking":false`, param: "enable_thinking"},
 			{fields: `,"tools":[{"bad":"x"}]`, param: "tools[0].type"},
 			{fields: `,"max_tokens":0`, param: "max_tokens"},
 			{fields: `,"temperature":"1"`, param: "temperature"},
@@ -252,7 +251,7 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 	}
 	require.NoError(t, model.DB.Model(token).Update("group", "").Error)
 	// Disabling the new contract preserves the old permissive thinking path.
-	publish(false)
+	publish(false, false)
 	w := request(`{"model":"kimi-k3","messages":[{"role":"user","content":"Hi"}],"thinking":{"type":"disabled"}}`)
 	assert.Equal(t, 200, w.Code, w.Body.String())
 	// An upstream rejection before any SSE event is ordinary JSON, not SSE.
@@ -261,6 +260,19 @@ func TestStrictK3IngressAndChannelCompatibilityHTTP(t *testing.T) {
 	assert.Equal(t, 400, w.Code, w.Body.String())
 	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 	require.Eventually(t, func() bool { return gopool.WorkerCount() == 0 }, 5*time.Second, time.Millisecond)
+	failUpstream.Store(false)
+	// enable_thinking is ignored by default and forwarded unchanged; the
+	// opt-in switch restores the rejection. This stays last: the accepted
+	// request costs one upstream call, and the assertions above require the
+	// call counter to stay at zero.
+	legacy := request(`{"model":"kimi-k3","stream":false,"messages":[{"role":"user","content":"Hi"}],"enable_thinking":true}`)
+	require.Equal(t, 200, legacy.Code, legacy.Body.String())
+	require.Equal(t, true, sent["enable_thinking"], "the field must reach upstream unchanged")
+	publish(true, true)
+	rejected := request(`{"model":"kimi-k3","stream":false,"messages":[{"role":"user","content":"Hi"}],"enable_thinking":true}`)
+	require.Equal(t, 400, rejected.Code, rejected.Body.String())
+	assert.Contains(t, rejected.Body.String(), `"param":"enable_thinking"`)
+	publish(true, false)
 }
 
 func TestChatCompatibilityHTTPRejectionRefundAndFallback(t *testing.T) {

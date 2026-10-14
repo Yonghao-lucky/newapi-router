@@ -338,15 +338,16 @@ type aiRouterCandidateView struct {
 // enriched with the read-only channel view (scheduling/capabilities sourced
 // from the Channel itself).
 type aiRouterTargetPolicyView struct {
-	Id                 int                     `json:"id"`
-	Model              string                  `json:"model"`
-	GroupId            string                  `json:"group_id"`
-	Enabled            bool                    `json:"enabled"`
-	MaxAttempts        int                     `json:"max_attempts"`
-	K3StrictValidation bool                    `json:"k3_strict_validation"`
-	CreatedAt          int64                   `json:"created_at"`
-	UpdatedAt          int64                   `json:"updated_at"`
-	Candidates         []aiRouterCandidateView `json:"candidates"`
+	Id                   int                     `json:"id"`
+	Model                string                  `json:"model"`
+	GroupId              string                  `json:"group_id"`
+	Enabled              bool                    `json:"enabled"`
+	MaxAttempts          int                     `json:"max_attempts"`
+	K3StrictValidation   bool                    `json:"k3_strict_validation"`
+	RejectEnableThinking bool                    `json:"reject_enable_thinking"`
+	CreatedAt            int64                   `json:"created_at"`
+	UpdatedAt            int64                   `json:"updated_at"`
+	Candidates           []aiRouterCandidateView `json:"candidates"`
 }
 
 // enrichTargetPolicies joins candidate channels with their live channel data.
@@ -365,15 +366,16 @@ func enrichTargetPolicies(policies []*model.AIRouterTargetPolicy) []aiRouterTarg
 	views := make([]aiRouterTargetPolicyView, 0, len(policies))
 	for _, policy := range policies {
 		view := aiRouterTargetPolicyView{
-			Id:                 policy.Id,
-			Model:              policy.Model,
-			GroupId:            policy.GroupId,
-			Enabled:            policy.Enabled,
-			MaxAttempts:        policy.MaxAttempts,
-			K3StrictValidation: policy.K3StrictValidation,
-			CreatedAt:          policy.CreatedAt,
-			UpdatedAt:          policy.UpdatedAt,
-			Candidates:         make([]aiRouterCandidateView, 0, len(policy.Candidates)),
+			Id:                   policy.Id,
+			Model:                policy.Model,
+			GroupId:              policy.GroupId,
+			Enabled:              policy.Enabled,
+			MaxAttempts:          policy.MaxAttempts,
+			K3StrictValidation:   policy.K3StrictValidation,
+			RejectEnableThinking: policy.RejectEnableThinking,
+			CreatedAt:            policy.CreatedAt,
+			UpdatedAt:            policy.UpdatedAt,
+			Candidates:           make([]aiRouterCandidateView, 0, len(policy.Candidates)),
 		}
 		for _, candidate := range policy.Candidates {
 			view.Candidates = append(view.Candidates, aiRouterCandidateView{

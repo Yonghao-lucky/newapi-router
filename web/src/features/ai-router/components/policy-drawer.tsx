@@ -480,6 +480,29 @@ export function PolicyDrawer(props: {
                       </FormItem>
                     )}
                   />
+                  <FormField
+                    control={form.control}
+                    name='reject_enable_thinking'
+                    render={({ field }) => (
+                      <FormItem className='sm:col-span-2'>
+                        <div className='flex items-center justify-between gap-3'>
+                          <FormLabel>{t('Reject enable_thinking')}</FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value}
+                              onCheckedChange={field.onChange}
+                              disabled={isSubmitting}
+                            />
+                          </FormControl>
+                        </div>
+                        <FormDescription>
+                          {t(
+                            'When on, requests carrying enable_thinking are rejected with 400 instead of being forwarded unchanged.'
+                          )}
+                        </FormDescription>
+                      </FormItem>
+                    )}
+                  />
                 </div>
               </SideDrawerSection>
 

@@ -3156,6 +3156,8 @@
     "K3 frequency_penalty compatibility": "Tương thích frequency_penalty K3",
     "K3 presence_penalty compatibility": "Tương thích presence_penalty K3",
     "K3 strict request validation": "Kiểm tra nghiêm ngặt yêu cầu K3",
+    "Reject enable_thinking": "Từ chối enable_thinking",
+    "When on, requests carrying enable_thinking are rejected with 400 instead of being forwarded unchanged.": "Khi bật, yêu cầu chứa enable_thinking sẽ bị từ chối với mã 400 thay vì được chuyển tiếp nguyên trạng.",
     "K3 temperature compatibility": "Tương thích temperature K3",
     "K3 top_p compatibility": "Tương thích top_p K3",
     "Keep affinity when channel is disabled": "Giữ ưu tiên khi kênh bị tắt",

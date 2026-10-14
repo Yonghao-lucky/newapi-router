@@ -327,3 +327,32 @@ func TestMigrateV1TargetPoliciesIdempotent(t *testing.T) {
 	require.NoError(t, model.DB.Model(&model.AIRouterTargetPolicy{}).Count(&policyCount).Error)
 	assert.Equal(t, int64(2), policyCount)
 }
+
+func TestEnableThinkingRejectionIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		strict, reject bool
+		wantRejected   bool
+	}{
+		{"ignored by default", true, false, false},
+		{"rejected when both switches are on", true, true, true},
+		{"not rejected without strict validation", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := &TargetPolicy{
+				Model: "kimi-k3", GroupId: "default", Enabled: true,
+				K3StrictValidation: tc.strict, RejectEnableThinking: tc.reject,
+			}
+			demand := RouteDemand{Model: "kimi-k3", Modality: ModalityText, EnableThinking: true}
+			err := AdmitRouteInput(&demand, "default", policy)
+			if !tc.wantRejected {
+				require.Nil(t, err)
+				return
+			}
+			require.NotNil(t, err)
+			assert.Equal(t, 400, err.StatusCode)
+			assert.Equal(t, "enable_thinking", err.ToOpenAIError().Param)
+			assert.Equal(t, "invalid_request", err.ToOpenAIError().Code)
+		})
+	}
+}

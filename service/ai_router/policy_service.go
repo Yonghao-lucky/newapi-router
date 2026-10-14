@@ -29,12 +29,13 @@ type ValidationIssue struct {
 // TargetPolicyInput is the payload for create/update. Candidates reference
 // channels by ID; all scheduling data stays on the Channel itself.
 type TargetPolicyInput struct {
-	Model              string                       `json:"model"`
-	GroupId            string                       `json:"group_id"`
-	Enabled            bool                         `json:"enabled"`
-	MaxAttempts        int                          `json:"max_attempts"`
-	K3StrictValidation *bool                        `json:"k3_strict_validation,omitempty"`
-	Candidates         []TargetPolicyCandidateInput `json:"candidates"`
+	Model                string                       `json:"model"`
+	GroupId              string                       `json:"group_id"`
+	Enabled              bool                         `json:"enabled"`
+	MaxAttempts          int                          `json:"max_attempts"`
+	K3StrictValidation   *bool                        `json:"k3_strict_validation,omitempty"`
+	RejectEnableThinking *bool                        `json:"reject_enable_thinking,omitempty"`
+	Candidates           []TargetPolicyCandidateInput `json:"candidates"`
 }
 
 type TargetPolicyCandidateInput struct {
@@ -209,6 +210,9 @@ func SaveTargetPolicy(input TargetPolicyInput, policyID int) (*model.AIRouterTar
 	if input.K3StrictValidation != nil {
 		policy.K3StrictValidation = *input.K3StrictValidation
 	}
+	if input.RejectEnableThinking != nil {
+		policy.RejectEnableThinking = *input.RejectEnableThinking
+	}
 
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		if policyID == 0 {
@@ -225,15 +229,19 @@ func SaveTargetPolicy(input TargetPolicyInput, policyID int) (*model.AIRouterTar
 			if input.K3StrictValidation == nil {
 				policy.K3StrictValidation = existing.K3StrictValidation
 			}
+			if input.RejectEnableThinking == nil {
+				policy.RejectEnableThinking = existing.RejectEnableThinking
+			}
 			if err := tx.Model(&model.AIRouterTargetPolicy{}).
 				Where("id = ?", policyID).
 				Updates(map[string]any{
-					"model":                policy.Model,
-					"group_id":             policy.GroupId,
-					"enabled":              policy.Enabled,
-					"max_attempts":         policy.MaxAttempts,
-					"k3_strict_validation": policy.K3StrictValidation,
-					"updated_at":           policy.UpdatedAt,
+					"model":                  policy.Model,
+					"group_id":               policy.GroupId,
+					"enabled":                policy.Enabled,
+					"max_attempts":           policy.MaxAttempts,
+					"k3_strict_validation":   policy.K3StrictValidation,
+					"reject_enable_thinking": policy.RejectEnableThinking,
+					"updated_at":             policy.UpdatedAt,
 				}).Error; err != nil {
 				return err
 			}
@@ -317,13 +325,14 @@ func ReloadTargetPolicySnapshot() error {
 	policies := make([]TargetPolicy, 0, len(rows))
 	for _, row := range rows {
 		policy := TargetPolicy{
-			Id:                 row.Id,
-			Model:              row.Model,
-			GroupId:            row.GroupId,
-			Enabled:            row.Enabled,
-			MaxAttempts:        row.MaxAttempts,
-			K3StrictValidation: row.K3StrictValidation,
-			Candidates:         make([]TargetPolicyCandidate, 0, len(row.Candidates)),
+			Id:                   row.Id,
+			Model:                row.Model,
+			GroupId:              row.GroupId,
+			Enabled:              row.Enabled,
+			MaxAttempts:          row.MaxAttempts,
+			K3StrictValidation:   row.K3StrictValidation,
+			RejectEnableThinking: row.RejectEnableThinking,
+			Candidates:           make([]TargetPolicyCandidate, 0, len(row.Candidates)),
 		}
 		for _, candidate := range row.Candidates {
 			policy.Candidates = append(policy.Candidates, TargetPolicyCandidate{

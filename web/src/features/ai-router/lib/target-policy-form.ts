@@ -26,6 +26,7 @@ export const targetPolicyFormSchema = z.object({
   group_id: z.string().min(1, 'Group is required'),
   enabled: z.boolean(),
   k3_strict_validation: z.boolean(),
+  reject_enable_thinking: z.boolean(),
   max_attempts: z
     .number()
     .int()
@@ -50,6 +51,7 @@ export function transformPolicyToFormDefaults(
     group_id: policy?.group_id ?? 'default',
     enabled: policy?.enabled ?? true,
     k3_strict_validation: policy?.k3_strict_validation ?? false,
+    reject_enable_thinking: policy?.reject_enable_thinking ?? false,
     max_attempts: policy?.max_attempts ?? 3,
     candidates:
       policy?.candidates.map((candidate) => ({
@@ -65,6 +67,7 @@ export function transformFormToPolicyPayload(values: TargetPolicyFormValues) {
     group_id: values.group_id.trim(),
     enabled: values.enabled,
     k3_strict_validation: values.k3_strict_validation,
+    reject_enable_thinking: values.reject_enable_thinking,
     max_attempts: values.max_attempts,
     candidates: values.candidates,
   }

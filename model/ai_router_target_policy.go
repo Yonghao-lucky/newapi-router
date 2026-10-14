@@ -6,15 +6,16 @@ package model
 // NOT copied here — they keep using the Channel's own fields as the single
 // source of truth.
 type AIRouterTargetPolicy struct {
-	Id                 int                        `json:"id" gorm:"primaryKey"`
-	Model              string                     `json:"model" gorm:"type:varchar(191);uniqueIndex:uk_router_target_model_group"`
-	GroupId            string                     `json:"group_id" gorm:"type:varchar(191);uniqueIndex:uk_router_target_model_group"`
-	Enabled            bool                       `json:"enabled"`
-	MaxAttempts        int                        `json:"max_attempts"`
-	K3StrictValidation bool                       `json:"k3_strict_validation"`
-	CreatedAt          int64                      `json:"created_at" gorm:"bigint"`
-	UpdatedAt          int64                      `json:"updated_at" gorm:"bigint"`
-	Candidates         []*AIRouterTargetCandidate `json:"candidates,omitempty" gorm:"foreignKey:PolicyId"`
+	Id                   int                        `json:"id" gorm:"primaryKey"`
+	Model                string                     `json:"model" gorm:"type:varchar(191);uniqueIndex:uk_router_target_model_group"`
+	GroupId              string                     `json:"group_id" gorm:"type:varchar(191);uniqueIndex:uk_router_target_model_group"`
+	Enabled              bool                       `json:"enabled"`
+	MaxAttempts          int                        `json:"max_attempts"`
+	K3StrictValidation   bool                       `json:"k3_strict_validation"`
+	RejectEnableThinking bool                       `json:"reject_enable_thinking"`
+	CreatedAt            int64                      `json:"created_at" gorm:"bigint"`
+	UpdatedAt            int64                      `json:"updated_at" gorm:"bigint"`
+	Candidates           []*AIRouterTargetCandidate `json:"candidates,omitempty" gorm:"foreignKey:PolicyId"`
 }
 
 func (AIRouterTargetPolicy) TableName() string {
