@@ -259,9 +259,12 @@ func (v *chatValidation) object(d *common.JSONTokenDecoder, path, kind string) e
 	}
 	switch kind {
 	case "thinking":
-		if typeName == "disabled" {
+		switch {
+		case typeName == "disabled":
 			v.thinkingDisabled = true
-		} else if typeName != "enabled" {
+		case typeName == "enabled", !seen["type"]:
+			// An omitted type is the documented default: thinking stays enabled.
+		default:
 			v.add(path+".type", "thinking.type must be 'enabled' for this model")
 		}
 	case "response_format":

@@ -130,6 +130,8 @@ func TestStrictChatInspection(t *testing.T) {
 		{name: "duplicate model", fields: `,"model":"other"`, param: "model"},
 		{name: "valid omit"},
 		{name: "enabled thinking", fields: `,"thinking":{"type":"enabled","keep":"all"}`},
+		{name: "thinking without type", fields: `,"thinking":{"keep":"all"}`},
+		{name: "empty thinking object", fields: `,"thinking":{}`},
 		{name: "compatibility left to channel", fields: `,"reasoning_effort":"medium","tool_choice":"any"`},
 		{name: "valid custom", fields: `,"tools":[{"type":"custom","custom":{"name":"lookup","format":{"type":"text"}}}]`},
 		{name: "irrelevant schema envelope", fields: `,"response_format":{"type":"text","json_schema":null}`},
