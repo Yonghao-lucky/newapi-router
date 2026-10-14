@@ -517,6 +517,15 @@ func TestK3IndependentSamplingCompatibility(t *testing.T) {
 		{"off rejects", `"temperature":0.2`, ``, dto.ChannelSettings{K3ParameterValidation: true}, 400},
 		{"before fixed check", `"temperature":0.2`, `"temperature":1`, dto.ChannelSettings{K3TemperatureCompatibility: true, K3ParameterValidation: true}, 0},
 		{"thinking stays intact", `"thinking":{"type":"disabled"},"reasoning_effort":"high"`, `"thinking":{"type":"disabled"},"reasoning_effort":"high"`, dto.ChannelSettings{K3AllowThinkingDisabled: true, K3ReasoningCompatibility: true, K3ParameterValidation: true}, 0},
+		{"thinking without type", `"thinking":{"keep":"all"}`, `"thinking":{"keep":"all"}`, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 0},
+		{"empty thinking object", `"thinking":{}`, `"thinking":{}`, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 0},
+		{"thinking type null rejected", `"thinking":{"type":null}`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
+		{"thinking type empty rejected", `"thinking":{"type":""}`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
+		{"thinking type unknown rejected", `"thinking":{"type":"bogus"}`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
+		{"thinking type non string rejected", `"thinking":{"type":123}`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
+		{"thinking non object rejected", `"thinking":[]`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
+		{"thinking null rejected", `"thinking":null`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
+		{"thinking keep rejected", `"thinking":{"keep":"none"}`, ``, dto.ChannelSettings{K3AllowThinkingDisabled: true}, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":"x"}],` + tc.raw + `}`)

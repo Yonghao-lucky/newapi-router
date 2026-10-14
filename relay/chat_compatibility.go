@@ -139,11 +139,24 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 				continue
 			}
 			var thinking struct {
-				Type string  `json:"type"`
-				Keep *string `json:"keep"`
+				Type json.RawMessage `json:"type"`
+				Keep *string         `json:"keep"`
 			}
-			if common.Unmarshal(raw, &thinking) != nil || (thinking.Type != "enabled" && thinking.Type != "disabled") || (thinking.Keep != nil && *thinking.Keep != "all") {
-				message := "thinking must contain type 'enabled' or 'disabled'; keep, when provided, must be 'all'"
+			// An explicit null is not an object and keeps its previous rejection.
+			invalid := string(raw) == "null" || common.Unmarshal(raw, &thinking) != nil
+			if len(thinking.Type) > 0 {
+				// An omitted type is the documented default and stays enabled. Only a
+				// value the client actually sent has to name a supported mode.
+				var typeName string
+				if common.Unmarshal(thinking.Type, &typeName) != nil || (typeName != "enabled" && typeName != "disabled") {
+					invalid = true
+				}
+			}
+			if thinking.Keep != nil && *thinking.Keep != "all" {
+				invalid = true
+			}
+			if invalid {
+				message := "thinking.type, when provided, must be 'enabled' or 'disabled'; keep, when provided, must be 'all'"
 				if i == 0 {
 					return nil, chatCompatibilityClientError("thinking", message)
 				}
