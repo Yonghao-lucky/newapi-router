@@ -277,6 +277,7 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 	role := ""
 	roleSeen := false
 	toolsSeen := false
+	messageHasTools := false
 	for decoder.More() {
 		key, err := decodeKey(decoder)
 		if err != nil {
@@ -321,6 +322,7 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 			if err != nil {
 				return false, err
 			}
+			messageHasTools = messageHasTools || hasTools
 			state.hasTools = state.hasTools || hasTools
 		default:
 			if err := skipValue(decoder); err != nil {
@@ -331,7 +333,9 @@ func scanMessage(decoder *common.JSONTokenDecoder, state *detectorState, path st
 	if !roleSeen {
 		state.validation.add(path+".role", path+".role is required")
 	}
-	if contentNull && (role == "user" || role == "system" || role == "developer" || role == "tool") {
+	// A system message that carries its own tools declares dynamic tools; its
+	// content is optional, so an explicit null is not a protocol violation.
+	if contentNull && (role == "user" || (role == "system" && !messageHasTools) || role == "developer" || role == "tool") {
 		state.invalidContent(path+".content", "must not be null for this message role", "invalid_parameter_type")
 	}
 	if _, err := decoder.Token(); err != nil {

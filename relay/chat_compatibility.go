@@ -185,6 +185,23 @@ func applyChatCompatibility(c *gin.Context, info *relaycommon.RelayInfo, body []
 			info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 tool_choice compatibility applied")
 		}
 	}
+	// Dynamic declarations live in system messages, but this upstream only
+	// accepts top-level tools. A malformed declaration is the client's error;
+	// an outgoing-only failure reflects channel configuration.
+	if _, err := hoistDynamicTools(original); err != nil {
+		return nil, chatCompatibilityClientError("messages", err.Error())
+	}
+	hoisted, err := hoistDynamicTools(outgoing)
+	if err != nil {
+		return nil, chatCompatibilityConfigurationError("cannot hoist dynamic tool declarations: " + err.Error())
+	}
+	if hoisted {
+		info.ParamOverrideAudit = append(info.ParamOverrideAudit, "K3 dynamic tools hoisted to top-level tools")
+		body, err = common.Marshal(outgoing)
+		if err != nil {
+			return nil, chatCompatibilityConfigurationError("cannot encode hoisted tool declarations")
+		}
+	}
 	// Only normalize numeric fields on attempt-local copies. Never modify the
 	// replayable body, response usage, or unrelated request fields.
 	samplingChanged := false
@@ -288,6 +305,103 @@ func normalizeK3ReasoningEffort(fields map[string]json.RawMessage, allowNone boo
 	}
 	fields["reasoning_effort"] = json.RawMessage(`"high"`)
 	return true, nil
+}
+
+// hoistDynamicTools lifts K3 system-message tool declarations onto the top-level
+// tools array because the upstream only honors top-level declarations. Identical
+// definitions already declared at the top level are not duplicated, and a system
+// message left with nothing but declarations drops its null content, which strict
+// upstream nodes reject.
+func hoistDynamicTools(fields map[string]json.RawMessage) (bool, error) {
+	var messages []map[string]json.RawMessage
+	if err := common.Unmarshal(fields["messages"], &messages); err != nil {
+		return false, fmt.Errorf("messages must be an array")
+	}
+	var declared []json.RawMessage
+	hasTopLevel := common.GetJsonType(fields["tools"]) == "array"
+	if hasTopLevel {
+		if err := common.Unmarshal(fields["tools"], &declared); err != nil {
+			return false, fmt.Errorf("tools must be an array of tool definitions")
+		}
+	}
+	seen := make(map[string]bool, len(declared))
+	for _, tool := range declared {
+		var definition struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		}
+		if err := common.Unmarshal(tool, &definition); err != nil {
+			return false, fmt.Errorf("top-level tools must be an array of tool definitions")
+		}
+		if identity, ok := toolDefinitionIdentity(definition.Type, definition.Function.Name); ok {
+			seen[identity] = true
+		}
+	}
+	changed := false
+	for _, message := range messages {
+		var role string
+		if err := common.Unmarshal(message["role"], &role); err != nil {
+			return false, err
+		}
+		if role != "system" || common.GetJsonType(message["tools"]) != "array" {
+			continue
+		}
+		var dynamic []json.RawMessage
+		if err := common.Unmarshal(message["tools"], &dynamic); err != nil {
+			return false, fmt.Errorf("system tools must be an array of tool definitions")
+		}
+		for _, tool := range dynamic {
+			var definition struct {
+				Type     string `json:"type"`
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			}
+			if err := common.Unmarshal(tool, &definition); err != nil {
+				return false, fmt.Errorf("system tools must be an array of tool definitions")
+			}
+			if identity, ok := toolDefinitionIdentity(definition.Type, definition.Function.Name); ok {
+				if seen[identity] {
+					continue
+				}
+				seen[identity] = true
+			}
+			declared = append(declared, tool)
+		}
+		delete(message, "tools")
+		if common.GetJsonType(message["content"]) == "null" {
+			delete(message, "content")
+		}
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	if len(declared) > 0 {
+		tools, err := common.Marshal(declared)
+		if err != nil {
+			return false, err
+		}
+		fields["tools"] = tools
+	}
+	encoded, err := common.Marshal(messages)
+	if err != nil {
+		return false, err
+	}
+	fields["messages"] = encoded
+	return true, nil
+}
+
+// toolDefinitionIdentity keys a tool definition for deduplication. An unnamed
+// definition returns false because built-in tools carry their name beside the
+// type, so an empty name cannot distinguish two different definitions.
+func toolDefinitionIdentity(kind, name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	return kind + ":" + name, true
 }
 
 // restoreDynamicToolContentOmission undoes only the DTO-generated content:null

@@ -152,8 +152,10 @@ func TestK3ToolChoiceCompatibility(t *testing.T) {
 				fields["tools"] = json.RawMessage(tools)
 			}
 			if tc.dynamic {
-				delete(fields, "tools")
-				fields["messages"] = json.RawMessage(`[{"role":"system","tools":` + tools + `},{"role":"user","content":"Hi"}]`)
+				// The dynamic system declaration is hoisted to the top level and
+				// the declaring message is left with its role only.
+				fields["tools"] = json.RawMessage(tools)
+				fields["messages"] = json.RawMessage(`[{"role":"system"},{"role":"user","content":"Hi"}]`)
 			}
 			if tc.selector != "" {
 				fields["tool_choice"] = json.RawMessage(tc.selector)
@@ -720,9 +722,11 @@ func TestChatCompatibilityDynamicToolContentPresence(t *testing.T) {
 		wantContent              bool
 	}{
 		{name: "omitted restored despite inserted system prompt", original: `{"role":"system","tools":[{"type":"function","function":{"name":"lookup"}}]}`, outgoing: `{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"lookup"}}]}`},
-		{name: "explicit null retained", original: `{"role":"system","content":null,"tools":[]}`, outgoing: `{"role":"system","content":null,"tools":[]}`, wantContent: true},
+		// Hoisting rewrites every system message that declares tools, so its
+		// explicit null content is dropped rather than retained.
+		{name: "explicit null dropped by hoisting", original: `{"role":"system","content":null,"tools":[]}`, outgoing: `{"role":"system","content":null,"tools":[]}`},
 		{name: "override content retained", original: `{"role":"system","tools":[]}`, outgoing: `{"role":"system","content":"configured","tools":[]}`, wantContent: true},
-		{name: "changed declaration retained", original: `{"role":"system","tools":[]}`, outgoing: `{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"other"}}]}`, wantContent: true},
+		{name: "override declaration hoisted and null dropped", original: `{"role":"system","tools":[]}`, outgoing: `{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"other"}}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			original := []byte(`{"model":"target","messages":[` + tc.original + `,{"role":"user","content":"Hi"}]}`)
@@ -747,6 +751,62 @@ func TestChatCompatibilityDynamicToolContentPresence(t *testing.T) {
 			_, exists := response.Messages[1]["content"]
 			assert.Equal(t, tc.wantContent, exists)
 			assert.JSONEq(t, `"existing prompt"`, string(response.Messages[0]["content"]))
+		})
+	}
+}
+
+func TestHoistDynamicTools(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+		changed          bool
+	}{
+		{
+			name:    "single system tool hoisted and null content dropped",
+			body:    `{"messages":[{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"lookup"}}]},{"role":"user","content":"Hi"}]}`,
+			want:    `{"messages":[{"role":"system"},{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			changed: true,
+		},
+		{
+			name:    "top-level duplicate not repeated",
+			body:    `{"messages":[{"role":"system","tools":[{"type":"function","function":{"name":"lookup"}}]}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			want:    `{"messages":[{"role":"system"}],"tools":[{"type":"function","function":{"name":"lookup"}}]}`,
+			changed: true,
+		},
+		{
+			name:    "unnamed builtin tools all kept",
+			body:    `{"messages":[{"role":"system","tools":[{"type":"builtin_function","id":"search"},{"type":"builtin_function","id":"code"}]}]}`,
+			want:    `{"messages":[{"role":"system"}],"tools":[{"type":"builtin_function","id":"search"},{"type":"builtin_function","id":"code"}]}`,
+			changed: true,
+		},
+		{
+			name:    "empty system tools produce no top-level tools",
+			body:    `{"messages":[{"role":"system","content":"prompt","tools":[]}]}`,
+			want:    `{"messages":[{"role":"system","content":"prompt"}]}`,
+			changed: true,
+		},
+		{
+			name: "no dynamic tools leaves body untouched",
+			body: `{"messages":[{"role":"system","content":"prompt"},{"role":"user","content":"Hi"}]}`,
+			want: `{"messages":[{"role":"system","content":"prompt"},{"role":"user","content":"Hi"}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal([]byte(tc.body), &fields))
+			changed, err := hoistDynamicTools(fields)
+			require.NoError(t, err)
+			assert.Equal(t, tc.changed, changed)
+			result, err := common.Marshal(fields)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, string(result))
+			// The hoisted top-level tools key exists exactly when a declaration
+			// survived: never "tools":null and never an empty array.
+			var got, expected map[string]json.RawMessage
+			require.NoError(t, common.Unmarshal(result, &got))
+			require.NoError(t, common.Unmarshal([]byte(tc.want), &expected))
+			_, gotTools := got["tools"]
+			_, wantTools := expected["tools"]
+			assert.Equal(t, wantTools, gotTools)
 		})
 	}
 }

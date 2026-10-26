@@ -137,6 +137,7 @@ func TestStrictChatInspection(t *testing.T) {
 		{name: "irrelevant schema envelope", fields: `,"response_format":{"type":"text","json_schema":null}`},
 		{name: "valid builtin", fields: `,"tools":[{"type":"builtin_function","function":{"name":"$web_search"}}]`},
 		{name: "dynamic tools", messages: `[{"role":"system","tools":[{"type":"function","function":{"name":"weather"}}]}]`},
+		{name: "system null content with dynamic tools", messages: `[{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"weather"}}]}]`},
 		{name: "valid schema refs", fields: `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{"$defs":{"x":{"type":"string"}},"$ref":"#/$defs/x","thinking":{"type":"disabled"}}}}`},
 		{name: "boolean schema", fields: `,"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":true}}`},
 		{name: "payload not parameter", messages: `[{"role":"user","content":"thinking disabled enable_thinking false"}]`},
@@ -164,6 +165,32 @@ func TestStrictChatInspection(t *testing.T) {
 			} else {
 				assert.Equal(t, "invalid_request", apiErr.ToOpenAIError().Code)
 			}
+		})
+	}
+}
+
+// A system message may omit its content only when it declares dynamic tools.
+// The null-content rejection is reported as a content diagnostic, so both the
+// strict validation slot and Demand.ContentError are asserted.
+func TestSystemToolContentNullValidation(t *testing.T) {
+	for _, tc := range []struct{ name, message, param string }{
+		{name: "dynamic tools make content optional", message: `{"role":"system","content":null,"tools":[{"type":"function","function":{"name":"weather"}}]}`},
+		{name: "without tools still rejected", message: `{"role":"system","content":null}`, param: "messages[0].content"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"kimi-k3","messages":[` + tc.message + `]}`
+			inspection, err := InspectChatRequestWithValidation(strings.NewReader(body))
+			require.NoError(t, err)
+			if tc.param == "" {
+				assert.Nil(t, inspection.ValidationError)
+				assert.Nil(t, inspection.Demand.ContentError)
+				return
+			}
+			assert.Nil(t, inspection.ValidationError)
+			require.NotNil(t, inspection.Demand.ContentError)
+			assert.Equal(t, tc.param, inspection.Demand.ContentError.Param)
+			assert.Equal(t, "invalid_parameter_type", inspection.Demand.ContentError.Code)
+			assert.Equal(t, tc.param+" must not be null for this message role", inspection.Demand.ContentError.Message)
 		})
 	}
 }
