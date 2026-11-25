@@ -327,3 +327,31 @@ func TestSGLangRequestExtensionsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// Moonshot-compatible upstreams select the prompt-cache TTL from request-level
+// cache options; dropping them silently downgrades 1h writes to 5m.
+func TestGeneralOpenAIRequestPreservesTopLevelCacheOptions(t *testing.T) {
+	raw := []byte(`{"model":"kimi-k3.1-pro","cache_control":{"type":"ephemeral","ttl":"1h"},"prompt_cache_options":{"mode":"implicit","ttl":"1h"},"messages":[{"role":"user","content":"hi"}]}`)
+
+	var req GeneralOpenAIRequest
+	require.NoError(t, kitutil.Unmarshal(raw, &req))
+
+	encoded, err := kitutil.Marshal(req)
+	require.NoError(t, err)
+
+	assert.Equal(t, "1h", gjson.GetBytes(encoded, "cache_control.ttl").String())
+	assert.Equal(t, "implicit", gjson.GetBytes(encoded, "prompt_cache_options.mode").String())
+	assert.Equal(t, "1h", gjson.GetBytes(encoded, "prompt_cache_options.ttl").String())
+}
+
+func TestOpenAIResponsesRequestPreservesTopLevelCacheControl(t *testing.T) {
+	raw := []byte(`{"model":"kimi-k3.1-pro","cache_control":{"type":"ephemeral","ttl":"1h"},"input":"hi"}`)
+
+	var req OpenAIResponsesRequest
+	require.NoError(t, kitutil.Unmarshal(raw, &req))
+
+	encoded, err := kitutil.Marshal(req)
+	require.NoError(t, err)
+
+	assert.Equal(t, "1h", gjson.GetBytes(encoded, "cache_control.ttl").String())
+}

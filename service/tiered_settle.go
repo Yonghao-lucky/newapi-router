@@ -30,7 +30,11 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 	cc5m := float64(usage.PromptTokensDetails.CacheCreationTokensTotal())
 	cc1h := float64(0)
 
-	if usage.UsageSemantic == "anthropic" {
+	hasOpenAITTLSplit := usage.UsageSemantic == dto.BillingUsageSemanticOpenAI &&
+		(usage.ClaudeCacheCreation5mTokens > 0 || usage.ClaudeCacheCreation1hTokens > 0)
+	if usage.UsageSemantic == "anthropic" || hasOpenAITTLSplit {
+		// OpenAI-format usage gets its 5m/1h split from the upstream
+		// Msh-Usage-Cache-Write-Tokens-5m/1h headers; bill each bucket as reported.
 		cc1h = float64(usage.ClaudeCacheCreation1hTokens)
 		cc5m = float64(usage.ClaudeCacheCreation5mTokens)
 	}

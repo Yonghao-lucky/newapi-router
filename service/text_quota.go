@@ -317,14 +317,16 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		hasSplitCacheCreationTokens := summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0
 		if !dCachedCreationTokens.IsZero() || hasSplitCacheCreationTokens {
 			if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
+				// OpenAI prompt_tokens includes cache writes; price them separately.
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
-				cachedCreationTokensWithRatio = dCachedCreationTokens.Mul(dCacheCreationRatio)
-			} else {
-				remaining := max(summary.CacheCreationTokens-summary.CacheCreationTokens5m-summary.CacheCreationTokens1h, 0)
-				cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
-				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
-				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
 			}
+			// Split 5m/1h counts come from the upstream (Claude usage or the
+			// Msh-Usage-Cache-Write-Tokens-5m/1h headers); any unsplit remainder
+			// keeps the generic cache-creation price.
+			remaining := max(summary.CacheCreationTokens-summary.CacheCreationTokens5m-summary.CacheCreationTokens1h, 0)
+			cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
+			cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
+			cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
 		}
 
 		var imageTokensWithRatio decimal.Decimal

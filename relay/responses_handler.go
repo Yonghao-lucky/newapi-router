@@ -79,6 +79,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 
 	usageDto := usage.(*dto.Usage)
+	if httpResp != nil {
+		service.ApplyCacheWriteTTLSplitFromHeader(httpResp.Header, usageDto)
+	}
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		originModelName := info.OriginModelName
 		originPriceData := info.PriceData

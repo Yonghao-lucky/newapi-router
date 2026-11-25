@@ -147,6 +147,10 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 	if ExceedsMaxTokensLimit(request.MaxOutputTokens) {
 		return nil, errors.New("max_output_tokens is invalid")
 	}
+	if err := validateKimiCacheWriteOptions(request.Model, "prompt_cache_options", request.PromptCacheOptions,
+		map[string][]string{"mode": kimiPromptCacheModes, "ttl": kimiCacheTTLs}); err != nil {
+		return nil, err
+	}
 	return request, nil
 }
 
@@ -303,6 +307,32 @@ func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest
 	if ExceedsMaxTokensLimit(textRequest.MaxTokens, textRequest.MaxTokensToSample) {
 		return nil, errors.New("max_tokens is invalid")
 	}
+	if err := validateKimiCacheWriteOptions(textRequest.Model, "cache_control", textRequest.CacheControl,
+		map[string][]string{"type": kimiCacheTypes, "ttl": kimiCacheTTLs}); err != nil {
+		return nil, err
+	}
+	if isKimiModel(textRequest.Model) {
+		// Clients carry the Chat/Responses prompt_cache_options over to Messages.
+		// Validate it and, unless the official cache_control is present, map its
+		// ttl onto cache_control so the requested 5m/1h write takes effect.
+		var compat struct {
+			PromptCacheOptions json.RawMessage `json:"prompt_cache_options"`
+		}
+		if err := common.UnmarshalBodyReusable(c, &compat); err != nil {
+			return nil, err
+		}
+		if err := validateKimiCacheWriteOptions(textRequest.Model, "prompt_cache_options", compat.PromptCacheOptions,
+			map[string][]string{"mode": kimiMessagesPromptCacheModes, "ttl": kimiCacheTTLs}); err != nil {
+			return nil, err
+		}
+		if len(textRequest.CacheControl) == 0 && len(compat.PromptCacheOptions) > 0 {
+			cacheControl, err := kimiCacheControlFromPromptCacheOptions(compat.PromptCacheOptions)
+			if err != nil {
+				return nil, err
+			}
+			textRequest.CacheControl = cacheControl
+		}
+	}
 
 	//if textRequest.Stream {
 	//	relayInfo.IsStream = true
@@ -333,6 +363,10 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 	}
 	if textRequest.Model == "" {
 		return nil, errors.New("model is required")
+	}
+	if err := validateKimiCacheWriteOptions(textRequest.Model, "prompt_cache_options", textRequest.PromptCacheOptions,
+		map[string][]string{"mode": kimiPromptCacheModes, "ttl": kimiCacheTTLs}); err != nil {
+		return nil, err
 	}
 	if textRequest.WebSearchOptions != nil {
 		if textRequest.WebSearchOptions.SearchContextSize != "" {

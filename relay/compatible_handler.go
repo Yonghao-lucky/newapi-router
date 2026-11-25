@@ -195,6 +195,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr
 	}
+	if httpResp != nil {
+		service.ApplyCacheWriteTTLSplitFromHeader(httpResp.Header, usage.(*dto.Usage))
+	}
 
 	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)

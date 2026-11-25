@@ -52,19 +52,24 @@ func NewStreamScanner(reader io.Reader, maxBytes ...int) *bufio.Scanner {
 	return scanner
 }
 
-func copyCodexSSEHeaders(c *gin.Context, resp *http.Response) {
+// copyUpstreamSSEHeaders forwards upstream metadata headers that clients rely
+// on in streaming mode: Codex turn state and Moonshot (Msh-*) usage details such
+// as Msh-Usage-Cache-Write-Tokens-5m/1h, which are only reported via headers.
+func copyUpstreamSSEHeaders(c *gin.Context, resp *http.Response) {
 	if c == nil || c.Writer == nil || resp == nil {
 		return
 	}
-	// codex
-	for _, name := range []string{"X-Reasoning-Included", "X-Codex-Turn-State"} {
-		values := resp.Header.Values(name)
-		if !service.ShouldCopyUpstreamHeader(c, name, values) {
+	for name, values := range resp.Header {
+		canonical := http.CanonicalHeaderKey(name)
+		if canonical != "X-Reasoning-Included" && canonical != "X-Codex-Turn-State" && !strings.HasPrefix(canonical, "Msh-") {
+			continue
+		}
+		if !service.ShouldCopyUpstreamHeader(c, canonical, values) {
 			continue
 		}
 		for _, value := range values {
 			if value != "" {
-				c.Writer.Header().Add(name, value)
+				c.Writer.Header().Add(canonical, value)
 			}
 		}
 	}
@@ -159,7 +164,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	defer cleanup()
 
 	scanner.Split(bufio.ScanLines)
-	copyCodexSSEHeaders(c, resp)
+	copyUpstreamSSEHeaders(c, resp)
 	SetEventStreamHeaders(c)
 
 	ctx = context.WithValue(ctx, "stop_chan", stopChan)
