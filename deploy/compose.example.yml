@@ -1,0 +1,207 @@
+# 13000 视频抽帧网关：对外入口 0.0.0.0:13000 由 1Panel openresty（host 网络）监听，
+# 经 upstream video_router 转发到 app-a(127.0.0.1:13003) / app-b(127.0.0.1:13002)。
+# 旧单容器服务 app（new-api-video-router-app）仅在迁移期间保留用于回滚。
+name: new-api-video-router
+
+services:
+  app:
+    image: new-api-video-router:k3-strip-tools-none-v2
+    container_name: new-api-video-router-app
+    restart: unless-stopped
+    stop_grace_period: 240s
+    command: ["--log-dir", "/app/logs"]
+    ports:
+      - "0.0.0.0:13000:3000"
+    cpus: 48
+    mem_limit: 88g
+    memswap_limit: 88g
+    pids_limit: 2048
+    volumes:
+      - /root/new-api-router-video-runtime/data:/data
+      - /root/new-api-router-video-runtime/logs:/app/logs
+      - /root/new-api-router-video-runtime/video-tmp:/video-tmp
+    environment:
+      SQL_DSN: "<见 /root/newapi-router-deploy/.env>"
+      REDIS_CONN_STRING: "<见 /root/newapi-router-deploy/.env>"
+      SESSION_SECRET: "<见 /root/newapi-router-deploy/.env>"
+      VIDEO_PREPROCESS_TEMP_DIR: /video-tmp
+      TZ: UTC
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+      NODE_NAME: new-api-video-router-production
+      GOMAXPROCS: "48"
+      GOMEMLIMIT: "70GiB"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - new-api-video-router-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/status | grep -Eq '\"success\"[[:space:]]*:[[:space:]]*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  app-a:
+    image: ${APP_IMAGE:-new-api-video-router:latest}
+    container_name: new-api-video-router-a
+    restart: unless-stopped
+    stop_grace_period: 240s
+    command: ["--log-dir", "/app/logs"]
+    ports:
+      - "127.0.0.1:13003:3000"
+    cpus: 48
+    mem_limit: 88g
+    memswap_limit: 88g
+    pids_limit: 2048
+    volumes:
+      - /root/new-api-router-video-runtime/data:/data
+      - /root/new-api-router-video-runtime/logs:/app/logs
+      - /root/new-api-router-video-runtime/video-tmp:/video-tmp
+    environment:
+      SQL_DSN: "<见 /root/newapi-router-deploy/.env>"
+      REDIS_CONN_STRING: "<见 /root/newapi-router-deploy/.env>"
+      SESSION_SECRET: "<见 /root/newapi-router-deploy/.env>"
+      VIDEO_PREPROCESS_TEMP_DIR: /video-tmp
+      TZ: UTC
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+      NODE_NAME: new-api-video-router-a
+      NODE_TYPE: master
+      SHUTDOWN_TIMEOUT_SECONDS: "220"
+      GOMAXPROCS: "48"
+      GOMEMLIMIT: "70GiB"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - new-api-video-router-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/status | grep -Eq '\"success\"[[:space:]]*:[[:space:]]*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  app-b:
+    image: ${APP_IMAGE:-new-api-video-router:latest}
+    container_name: new-api-video-router-b
+    restart: unless-stopped
+    stop_grace_period: 240s
+    command: ["--log-dir", "/app/logs"]
+    ports:
+      - "127.0.0.1:13002:3000"
+    cpus: 48
+    mem_limit: 88g
+    memswap_limit: 88g
+    pids_limit: 2048
+    volumes:
+      - /root/new-api-router-video-runtime/data:/data
+      - /root/new-api-router-video-runtime/logs:/app/logs
+      - /root/new-api-router-video-runtime/video-tmp:/video-tmp
+    environment:
+      SQL_DSN: "<见 /root/newapi-router-deploy/.env>"
+      REDIS_CONN_STRING: "<见 /root/newapi-router-deploy/.env>"
+      SESSION_SECRET: "<见 /root/newapi-router-deploy/.env>"
+      VIDEO_PREPROCESS_TEMP_DIR: /video-tmp
+      TZ: UTC
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+      NODE_NAME: new-api-video-router-b
+      NODE_TYPE: slave
+      SHUTDOWN_TIMEOUT_SECONDS: "220"
+      GOMAXPROCS: "48"
+      GOMEMLIMIT: "70GiB"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - new-api-video-router-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/status | grep -Eq '\"success\"[[:space:]]*:[[:space:]]*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:15
+    container_name: new-api-video-router-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: newapi
+      POSTGRES_PASSWORD: "<见 /root/newapi-router-deploy/.env>"
+      POSTGRES_DB: new_api
+    cpus: 4
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 512
+    volumes:
+      - new-api-video-router-postgres-data:/var/lib/postgresql/data
+    networks:
+      - new-api-video-router-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newapi -d new_api"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: new-api-video-router-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--maxmemory", "1536mb", "--maxmemory-policy", "noeviction"]
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 256
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - new-api-video-router-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  new-api-video-router-postgres-data:
+    name: new-api-video-router-postgres-data
+
+networks:
+  new-api-video-router-network:
+    name: new-api-video-router-network
+    driver: bridge
