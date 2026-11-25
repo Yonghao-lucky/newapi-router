@@ -3,7 +3,7 @@
 #
 # 结构：1Panel openresty（host 网络）监听 172.17.0.1/127.0.0.1:13001（迁移完成后为 13000），
 # upstream video_router → app-a(127.0.0.1:13003) / app-b(127.0.0.1:13002)。
-# 编排文件：/root/newapi-router-deploy/compose.next.yml（pg、redis 同项目，勿执行 down / --remove-orphans）。
+# 编排文件：/root/newapi-router-deploy/compose.yml（pg、redis 同项目，勿执行 down / --remove-orphans）。
 #
 # 用法：
 #   deploy/rollout.sh [镜像名]          # 默认 new-api-video-router:next
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 PROJ=/root/newapi-router-deploy
-COMPOSE_FILE=compose.next.yml
+COMPOSE_FILE=compose.yml
 UP=/opt/1panel/www/conf.d/00-video-router-upstream.conf
 UPSTREAM=video_router
 SERVICES=(app-a app-b)

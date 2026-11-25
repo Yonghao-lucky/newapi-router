@@ -1,55 +1,9 @@
 # 13000 视频抽帧网关：对外入口 0.0.0.0:13000 由 1Panel openresty（host 网络）监听，
 # 经 upstream video_router 转发到 app-a(127.0.0.1:13003) / app-b(127.0.0.1:13002)。
-# 旧单容器服务 app（new-api-video-router-app）仅在迁移期间保留用于回滚。
+# 旧单容器 new-api-video-router-app 已于 2026-11-25 停用（镜像保留为 new-api-video-router:prev）。
 name: new-api-video-router
 
 services:
-  app:
-    image: new-api-video-router:k3-strip-tools-none-v2
-    container_name: new-api-video-router-app
-    restart: unless-stopped
-    stop_grace_period: 240s
-    command: ["--log-dir", "/app/logs"]
-    ports:
-      - "0.0.0.0:13000:3000"
-    cpus: 48
-    mem_limit: 88g
-    memswap_limit: 88g
-    pids_limit: 2048
-    volumes:
-      - /root/new-api-router-video-runtime/data:/data
-      - /root/new-api-router-video-runtime/logs:/app/logs
-      - /root/new-api-router-video-runtime/video-tmp:/video-tmp
-    environment:
-      SQL_DSN: "<见 /root/newapi-router-deploy/.env>"
-      REDIS_CONN_STRING: "<见 /root/newapi-router-deploy/.env>"
-      SESSION_SECRET: "<见 /root/newapi-router-deploy/.env>"
-      VIDEO_PREPROCESS_TEMP_DIR: /video-tmp
-      TZ: UTC
-      ERROR_LOG_ENABLED: "true"
-      BATCH_UPDATE_ENABLED: "true"
-      NODE_NAME: new-api-video-router-production
-      GOMAXPROCS: "48"
-      GOMEMLIMIT: "70GiB"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - new-api-video-router-network
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/status | grep -Eq '\"success\"[[:space:]]*:[[:space:]]*true'"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 60s
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "5"
-
   app-a:
     image: ${APP_IMAGE:-new-api-video-router:latest}
     container_name: new-api-video-router-a
